@@ -1,0 +1,25 @@
+# ── 密钥：绝对不入库 ──
+.env
+.env.local
+*.key
+
+# ── WorkBuddy 工作区数据（会话状态，不是项目内容）──
+.workbuddy/
+
+# ── 缓存与运行产物 ──
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 网页版上传的源书（版权内容 + 体积大）
+uploads/
+
+# 构建产物（可由源码重新生成）
+build/
+dist/
+
+# 其他
+*.log
+.DS_Store
+Thumbs.db
