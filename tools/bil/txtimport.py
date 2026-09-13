@@ -48,8 +48,102 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_MD_HEAD_RE = re.compile(r"^(#{1,6})\s+(\S.*?)\s*#*\s*$")
+# md/txt 的标题只需**精准**修章号里的空格（「第 1 章」→「第1章」）：
+# 不能像 epub 那样激进地去汉字间空格，否则「第1章 合情推理」会被压成
+# 「第1章合情推理」，目录观感变差。
+_ZH_NUM_GAP_RE = re.compile(
+    r"第\s*([0-9一二三四五六七八九十百千两]+)\s*([章节卷回部])")
+
+
+def norm_heading(s: str) -> str:
+    return _ZH_NUM_GAP_RE.sub(r"第\1\2", s or "")
+
+
+def _strip_front_matter(text: str) -> str:
+    """剥掉 Markdown 的 YAML front-matter（--- 开头到第二个 ---）。"""
+    lines = text.split("\n")
+    if lines and lines[0].strip() in ("---", "+++"):
+        for i in range(1, min(len(lines), 200)):
+            if lines[i].strip() in ("---", "+++"):
+                return "\n".join(lines[i + 1:])
+    return text
+
+
+def load_md(path, lang: str) -> dict[str, list]:
+    """Markdown 原稿 → {伪路径: [Block]}。
+
+    与 txt 的差别（这是「中文侧允许 md」的关键）：
+      * 剥 YAML front-matter；
+      * `#`~`######` 是**显式层级** —— 含章号（第N章 / Chapter N）或序言/结论
+        这类顶层标题开新文档，其余层级（小节）保留为文档内的 heading 块，
+        层级写进 `Block.level`，供 `split_sections` 切小节；
+      * 「标题行」不限于章号：**最浅出现过的层级**也当章分界（应对
+        「章标题写成二级/三级」的不规范原稿）；
+      * 以空行分段（md 段落可跨多行），表格/公式/代码原样保留成段。
+    """
+    text = _strip_front_matter(
+        _read_text(Path(path)).replace("\r\n", "\n").replace("\r", "\n"))
+
+    # 先扫一遍层级，找出「最浅层级」= 顶层（章）层级
+    levels = [len(m.group(1)) for m in
+              (_MD_HEAD_RE.match(ln) for ln in text.split("\n")) if m]
+    top_level = min(levels) if levels else 2
+
+    docs: dict[str, list] = {}
+    cur_name, cur = "md000.xhtml", []
+    n_heads = 0
+    buf: list[str] = []
+
+    def flush():
+        if buf:
+            para = " ".join(x.strip() for x in buf if x.strip())
+            if para:
+                cur.append(Block(tag="p", cls="", html=_esc(para),
+                                 text=para, type="para"))
+            buf.clear()
+
+    def open_doc(title: str, level: int):
+        nonlocal n_heads, cur_name, cur
+        flush()
+        if cur:
+            docs[cur_name] = cur
+        n_heads += 1
+        cur_name = f"md{n_heads:03d}.xhtml"
+        cur = [Block(tag=f"h{min(level, 6)}", cls="", html=_esc(title),
+                     text=title, type="heading", level=level)]
+
+    for raw in text.split("\n"):
+        line = raw.rstrip()
+        m = _MD_HEAD_RE.match(line)
+        if m:
+            level = len(m.group(1))
+            title = norm_heading(m.group(2).strip())
+            is_chapter = (level <= top_level
+                          or _is_heading(title, lang))
+            if is_chapter:
+                open_doc(title, 1)
+            else:
+                flush()
+                cur.append(Block(tag=f"h{min(level, 6)}", cls="",
+                                 html=_esc(title), text=title,
+                                 type="heading", level=2))
+        elif not line.strip():
+            flush()
+        else:
+            buf.append(line)
+    flush()
+    if cur:
+        docs[cur_name] = cur
+    if not docs:
+        raise RuntimeError(f"{Path(path).name} 里没有读到任何内容")
+    return docs
+
+
 def load_docs(path, lang: str) -> dict[str, list]:
-    """txt → {伪路径: [Block]}。标题行开新文档，其余行成段。"""
+    """txt / md → {伪路径: [Block]}。标题行开新文档，其余成段。"""
+    if Path(path).suffix.lower() in (".md", ".markdown"):
+        return load_md(path, lang)
     lines = _read_text(Path(path)).replace("\r\n", "\n").replace("\r", "\n")
     docs: dict[str, list] = {}
     cur_name, cur = "txt000.xhtml", []
@@ -59,6 +153,7 @@ def load_docs(path, lang: str) -> dict[str, list]:
         if not line:
             continue
         if _is_heading(line, lang):
+            line = norm_heading(line)
             if cur:
                 docs[cur_name] = cur
             n_heads += 1

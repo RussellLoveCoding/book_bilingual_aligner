@@ -345,6 +345,36 @@ def parse_blocks(src: str, strict: bool = True,
             merged.append(blk)
             consumed.append(key)
 
+    # 占位符清理（必须）：图位占位符可能是**内联**在文字段落里的
+    # （`<p>正文 \x00VIS1\x00 续文</p>`），插回图块后若不清掉，
+    # 渲染时 \x00 被剥掉、就变成「VIS1」明文泄漏进成品
+    # —— 2026-09 实测《思考，快与慢》中文段落里能看到。
+    for b in merged:
+        for attr in ("html", "text", "caption"):
+            v = getattr(b, attr, "") or ""
+            if "\x00" in v or _VIS_PLACEHOLDER_RE.search(v):
+                v = v.replace("\x00", "")
+                v = _VIS_PLACEHOLDER_RE.sub("", v)
+                setattr(b, attr, re.sub(r"\s+", " ", v).strip())
+
+    # 注释引用锚点的可见文本改写：精排中文书的 noteref 锚点里塞的是转换残留
+    # （`<a type="noteref" href="#footnote-3-19">VIS1</a>`），成品里会直接显示
+    # 「VIS1」。按**文档内出现顺序**编号改写为 [1][2]…（正文引用顺序与章末
+    # 注释条目顺序一致），href 保留，点击跳转不变。
+    # ⚠ 与我们的图位占位符只是长得像：我们的是 \x00VISn\x00（已清除），
+    #    这个是源文件自带的可见文本。
+    n_ref = 0
+    for b in merged:
+        if not b.html or "noteref" not in b.html:
+            continue
+        def _relabel(m):
+            nonlocal n_ref
+            n_ref += 1
+            return f'{m.group(1)}[{n_ref}]{m.group(3)}'
+        b.html = _NOTEREF_A_RE.sub(_relabel, b.html)
+        if b.type != "heading":
+            b.text = strip_tags(b.html)
+
     # 盗版/广告图复核：能读到图片字节时用尺寸签名二次判定
     if zf is not None and doc_path:
         for b in merged:
@@ -382,6 +412,9 @@ def parse_blocks(src: str, strict: bool = True,
 
 
 _VIS_PLACEHOLDER = "\x00VIS{}\x00"
+# 源文件里 noteref 锚点的「可见文本」（转换残留，形如 VIS1）
+_NOTEREF_A_RE = re.compile(
+    r'(<a\b[^>]*type\s*=\s*"noteref"[^>]*>)(.*?)(</a>)', re.I | re.S)
 _VIS_PLACEHOLDER_RE = re.compile("\x00VIS(\\d+)\x00")
 
 # 承载图片的容器 class（中英文各书叫法不同，收集已知变体）

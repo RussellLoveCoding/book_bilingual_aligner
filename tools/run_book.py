@@ -29,10 +29,26 @@ EN_EPUB = "C:/Users/abc/AppData/Local/Temp/bil/en.epub"
 ZH_EPUB = "C:/Users/abc/AppData/Local/Temp/bil/zh.epub"
 
 
+def is_text_input(path) -> bool:
+    """txt / md 输入（中文侧常是 Markdown 译稿）。"""
+    return Path(path).suffix.lower() in (".txt", ".md", ".markdown")
+
+
 def load_all(en_path=EN_EPUB, zh_path=ZH_EPUB, llm=None):
-    ze, zz = E.open_epub(en_path), E.open_epub(zh_path)
-    en_docs = S.load_docs(ze, E.read_spine(ze))
-    zh_docs = S.load_docs(zz, E.read_spine(zz))
+    """支持 epub / txt / md 任意组合（混合模式：如英文 epub + 中文 md）。"""
+    from bil import txtimport as TX
+    en_txt, zh_txt = is_text_input(en_path), is_text_input(zh_path)
+    if en_txt or zh_txt:
+        ze = None if en_txt else E.open_epub(en_path)
+        zz = None if zh_txt else E.open_epub(zh_path)
+        en_docs = (TX.load_docs(en_path, "en") if en_txt
+                   else S.load_docs(ze, E.read_spine(ze)))
+        zh_docs = (TX.load_docs(zh_path, "zh") if zh_txt
+                   else S.load_docs(zz, E.read_spine(zz)))
+    else:
+        ze, zz = E.open_epub(en_path), E.open_epub(zh_path)
+        en_docs = S.load_docs(ze, E.read_spine(ze))
+        zh_docs = S.load_docs(zz, E.read_spine(zz))
     # llm 只用于「章号对不上时的标题配对」（输出仅 mapping，极便宜）
     pairs = S.map_chapters(en_docs, zh_docs, llm=llm)
     return en_docs, zh_docs, pairs
@@ -77,14 +93,15 @@ def main():
 
     en_docs, zh_docs, pairs = load_all(args.en, args.zh, llm=map_llm)
     # 图位渲染需要读到源 epub 里的图片字节，把 zip 句柄挂到结果上
-    _ze, _zz = E.open_epub(args.en), E.open_epub(args.zh)
+    _ze = None if is_text_input(args.en) else E.open_epub(args.en)
+    _zz = None if is_text_input(args.zh) else E.open_epub(args.zh)
     # 英文本的注释正文按 {注释id: 文本} 读进来。中文版是逆向来的，注区常常
     # 不全（实测 ch5 只有 108/126 条），缺的条目用英文原注兜底，
     # 否则正文里的 [n] 会指向不存在的锚点。
     _en_notes_map = {}
     try:
         from bil import notes as _NO
-        _doc = _NO.find_endnote_doc(_ze, E.read_spine(_ze))
+        _doc = _NO.find_endnote_doc(_ze, E.read_spine(_ze)) if _ze else None
         if _doc:
             _en_notes_map = _NO.extract_endnotes(
                 _ze.read(_doc).decode("utf-8", errors="replace"))
@@ -127,7 +144,7 @@ def main():
         res = P.process_chapter(en_docs[cp.en_path], zh_docs[cp.zh_path],
                                 key=cp.key, llm=llm,
                                 en_notes_map=_en_notes_map)
-        res.en_zip, res.zh_zip = _ze, _zz
+        res.en_zip, res.zh_zip = _ze, _zz   # 任一为 None 时图位自动降级
         if llm is not None and llm.enabled:
             st = P.apply_llm(res, llm, title=cp.en_title)
             # v4：内容审查勘误（删减/替换 + 边界错位打标 → 忠实补全）
@@ -159,7 +176,12 @@ def main():
         from bil import bookmeta as BM
         build.OUT_DIR = Path(args.out)
         # 沿用中文版的元数据与封面；书名没给就从中文版 OPF 里读，并补「双语」后缀
-        meta = BM.pick_meta(args.zh, args.en)
+        # 元数据/封面来自 epub；中文侧是 md/txt 时退回英文版，都没有就留空
+        if is_text_input(args.zh):
+            meta = None if is_text_input(args.en) else \
+                BM.pick_meta(args.en, args.en)
+        else:
+            meta = BM.pick_meta(args.zh, args.en)
         title = (args.title or "").strip()
         if title in ("双语版", "中英双语版"):
             title = ""
