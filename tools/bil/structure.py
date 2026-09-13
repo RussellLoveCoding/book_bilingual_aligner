@@ -84,8 +84,12 @@ def key_of_en(blocks) -> ChapterKey:
             n = _EN_NUM_WORDS.get(raw, -1)
         if n > 0:
             return ChapterKey("chapter", n, heads[-1][:40] if heads else "")
-    if not heads or sum(len(b.text) for b in blocks) < 400:
+    total = sum(len(b.text) for b in blocks)
+    if total < 400:                      # 短文档（封面/版权/献词/目录页）→ skip
         return ChapterKey("skip", 0, h0[:40])
+    if not heads:
+        # 无标题标签但有正文（精排 epub 常见）→ other，交给顺序兜底 / LLM 配对
+        return ChapterKey("other", 0, "")
     return ChapterKey("other", 0, h0[:40])
 
 

@@ -323,6 +323,18 @@ def parse_blocks(src: str, strict: bool = True,
         results.append(Block(tag=tag, cls=cls, html=inner.strip(), text=text,
                              type=btype, level=level))
 
+    # 无标题标签的精排 epub（实测 Jaynes《概率论沉思录》整本没有 h1-h6，
+    # 39 个文档全部被章级映射判成 skip → 0 段对）：把「看起来像标题的首段」
+    # 提升成标题块，否则这类书完全没有结构信号。
+    if not any(b.type == "heading" for b in results) and len(results) >= 2:
+        _first = results[0]
+        _t = (_first.text or "").strip()
+        if 0 < len(_t) <= 40 and not _t.endswith((".", "。", ",", "，",
+                                                 ";", "；", ":", "：")):
+            _first.type = "heading"
+            _first.tag = "h2"
+            _first.level = 1
+
     # 视觉单位插回：用占位符确定它原来在正文中的位置
     merged: list[Block] = []
     for b in results:
