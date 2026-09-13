@@ -133,6 +133,7 @@ class ChapterPair:
     en_title: str = ""
     zh_title: str = ""
     stats: dict = field(default_factory=dict)
+    map_src: str = ""      # 该章配对的来源：key / seq / llm（诊断与回退用）
 
 
 def _content_docs(docs: dict, keys: dict) -> list:
@@ -152,12 +153,16 @@ def _content_docs(docs: dict, keys: dict) -> list:
     return out
 
 
-def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list]) -> list[ChapterPair]:
+def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
+                 llm=None) -> list[ChapterPair]:
     """en_docs/zh_docs: {path: blocks}。返回按英文 spine 顺序的配对列表。
 
-    首选**章号键匹配**（Chapter 5 ↔ 第5章）；当两侧都提不出可用的章号
-    （典型：英文 z-lib split 版只给章名、中文版给「第N章」），键匹配会
-    把所有英文文档挤到同一个中文文档上 —— 这时退回**顺序配对**。
+    三级映射，逐级兜底：
+      ① **章号键匹配**（Chapter 5 ↔ 第5章）—— 最可靠，零成本；
+      ② **顺序兜底**：文档级 DP（可跳文档），用于英文没有章号的 z-lib 版；
+      ③ **LLM 标题配对**：① ② 都不可信时，只把「目录标题 + 段数」给 LLM
+         （输出仅 mapping，单次约 2k token）；校验不通过就退回确定性结果，
+         LLM **永远不是唯一来源**。
     """
     en_keys = {p: key_of_en(b) for p, b in en_docs.items()}
     zh_keys = {p: key_of_zh(b) for p, b in zh_docs.items()}
@@ -179,9 +184,104 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list]) -> list[Cha
     usable = [cp for cp in pairs
               if cp.zh_path and not cp.key.startswith("other")]
     if len(usable) >= max(3, len(pairs) * 0.5):
+        for cp in pairs:
+            cp.map_src = "key"
         return pairs
+
     seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
-    return seq or pairs
+    # ② ③：确定性结果留下当保底，先试 LLM 章级（只在给了客户端且可用时）
+    if llm is not None and getattr(llm, "enabled", False):
+        llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm)
+        if llm_pairs:
+            return llm_pairs
+    if seq:
+        for cp in seq:
+            cp.map_src = "seq"
+        return seq
+    for cp in pairs:
+        cp.map_src = "key"
+    return pairs
+
+
+def _valid_chapter_map(mapping, n: int, m: int, min_cov: float = 0.60) -> bool:
+    """章级映射校验：允许整章缺失（1:0 / 0:1），但必须单调、不越界、不交叉。
+
+    不能复用小节级的 `_valid_section_map`（它要求两侧全覆盖）——
+    章级天然会有「英文有、中文没有」的章（附录/注释编排不同），要求全覆盖
+    会把正确的 LLM 结果整份判死。这里改为覆盖度阈值。
+    """
+    if not mapping:
+        return False
+    es, zs = [], []
+    last_e, last_z = -1, -1
+    for ea, zb in mapping:
+        ea = list(ea or [])
+        zb = list(zb or [])
+        if not ea and not zb:
+            return False
+        if any(i <= last_e or not (0 <= i < n) for i in ea):
+            return False
+        if any(j <= last_z or not (0 <= j < m) for j in zb):
+            return False
+        if ea:
+            last_e = max(ea)
+        if zb:
+            last_z = max(zb)
+        es += ea
+        zs += zb
+    if len(set(es)) != len(es) or len(set(zs)) != len(zs):
+        return False
+    import math as _math
+    return (len(es) >= max(1, _math.ceil(min_cov * n))
+            and len(zs) >= max(1, _math.ceil(min_cov * m)))
+
+
+def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None):
+    """用 LLM 只吃「目录标题 + 段数」做章级配对。失败/不合规返回 []（调用方回退）。"""
+    if llm is None:
+        return []
+    en_seq = _content_docs(en_docs, en_keys)
+    zh_seq = _content_docs(zh_docs, zh_keys)
+    if len(en_seq) < 2 or len(zh_seq) < 2:
+        return []
+
+    def _titles(seq, docs):
+        out = []
+        for p in seq:
+            hs = [b.text.strip() for b in docs[p] if b.type == "heading"]
+            out.append(hs[0] if hs else "")
+        return out
+
+    def _counts(seq, docs):
+        return [sum(1 for b in docs[p]
+                    if b.type != "heading" and not E.is_note_item(b))
+                for p in seq]
+
+    try:
+        mapping = llm.map_titles(_titles(en_seq, en_docs),
+                                 _titles(zh_seq, zh_docs),
+                                 _counts(en_seq, en_docs),
+                                 _counts(zh_seq, zh_docs))
+    except Exception:                                              # noqa: BLE001
+        return []
+    if not mapping or not _valid_chapter_map(mapping, len(en_seq), len(zh_seq)):
+        return []
+
+    def _title(blocks):
+        return next((b.text for b in blocks if b.type == "heading"), "")
+
+    out, n = [], 0
+    for ei, zi in mapping:
+        ep = [en_seq[i] for i in ei if 0 <= i < len(en_seq)]
+        zp = [zh_seq[j] for j in zi if 0 <= j < len(zh_seq)]
+        if not ep and not zp:
+            continue
+        n += 1
+        out.append(ChapterPair(
+            ep[0] if ep else "", zp[0] if zp else "", f"chapter{n}",
+            " / ".join(_title(en_docs[p]) for p in ep),
+            " / ".join(_title(zh_docs[p]) for p in zp), map_src="llm"))
+    return out
 
 
 def _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, old_pairs):

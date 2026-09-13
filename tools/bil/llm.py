@@ -121,10 +121,52 @@ class LLM:
         self.cached_tokens = 0          # 服务端 prompt cache 命中部分
         self._lock = threading.Lock()
         self._pool = None
+        # ── 预算闸门（用户明确要求：LLM 主要只做 mapping，别烧钱）──
+        # only_mapping=True → translate / flag_errors / repair_censored 全部跳过，
+        #                     只有 map_titles / map_sections / refine_window 可用。
+        # budget_soft(元)  → 累计费用超过后自动转成 only_mapping
+        # budget_hard(元)  → 再超过就 self._stop=True，彻底停用（走确定性）
+        self.only_mapping = False
+        self.budget_soft: float | None = None
+        self.budget_hard: float | None = None
+        self._stop = False
+        self._budget_note = ""
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(self.api_key) and not self._stop
+
+    def set_budget(self, soft: float | None = None, hard: float | None = None):
+        if soft is not None:
+            self.budget_soft = soft
+        if hard is not None:
+            self.budget_hard = hard
+
+    def _check_budget(self) -> None:
+        """每次记账后检查预算：软上限转 mapping-only，硬上限停用。"""
+        if self.budget_soft is None and self.budget_hard is None:
+            return
+        cny = self.cost().cny()
+        if self.budget_hard is not None and cny >= self.budget_hard:
+            if not self._stop:
+                self._stop = True
+                self._budget_note = (f"已达硬上限 ¥{self.budget_hard:.2f}"
+                                     f"（实际 ¥{cny:.3f}），停用 LLM 走确定性")
+                print(f"[预算] {self._budget_note}")
+            return
+        if (self.budget_soft is not None and cny >= self.budget_soft
+                and not self.only_mapping):
+            self.only_mapping = True
+            self._budget_note = (f"已达软上限 ¥{self.budget_soft:.2f}"
+                                 f"（实际 ¥{cny:.3f}），转为只做章/节映射")
+            print(f"[预算] {self._budget_note}")
+
+    def usage(self) -> str:
+        c = self.cost()
+        return (f"调用 {self.calls} 次（缓存命中 {self.cache_hits}）· "
+                f"输入 {self.prompt_tokens:,} / 输出 {self.completion_tokens:,} tok"
+                f" · 约 ¥{c.cny():.3f}"
+                + (f" · {self._budget_note}" if self._budget_note else ""))
 
     def _executor(self) -> ThreadPoolExecutor:
         """懒建线程池（限速器与统计都是线程安全的）。"""
@@ -218,6 +260,7 @@ class LLM:
                         u.get("prompt_cache_hit_tokens")
                         or (u.get("prompt_tokens_details") or {}).get(
                             "cached_tokens", 0))
+                self._check_budget()          # 每次记账后检查软/硬上限
                 out = data["choices"][0]["message"]["content"]
                 if self.cache_dir:
                     (self.cache_dir / f"{k}.txt").write_text(out, encoding="utf-8")
@@ -278,36 +321,68 @@ class LLM:
         return [self._parse_json(t) for t in raws]
 
     # -------------------------------------------------------------- 能力 1：小节映射
-    def map_sections(self, en_titles: list[str], zh_titles: list[str],
-                     en_counts: list[int] | None = None,
-                     zh_counts: list[int] | None = None):
-        """返回 [(en_idx[], zh_idx[])]，或 None（不可用/失败）。
+    def _map_lists(self, en_titles: list[str], zh_titles: list[str],
+                   en_counts: list[int] | None = None,
+                   zh_counts: list[int] | None = None,
+                   level: str = "section"):
+        """标题配对内核：只传标题与段数，输出极短（纯 mapping metadata）。
 
-        只传标题与段数，输出极短；同一本书每章前缀相同，易命中 prompt cache。
+        level="section" → 章内小节配对（两版章节已确认对应）
+        level="chapter" → **章级配对**（两版切分方式可能不同：英文可能是
+        z-lib split 版没有 Chapter 标记，中文用「第N章」；或章序/合并不同）
+
+        返回 [(en_idx[], zh_idx[])]，或 None（不可用/失败/不合规）。
         """
         if not self.enabled:
             return None
-        en_lines = [f"{i}|{t or '(无标题)'}"
+        en_lines = [f"{i}|{(t or '(无标题)')[:60]}"
                     f"{'|' + str(en_counts[i]) if en_counts else ''}"
                     for i, t in enumerate(en_titles)]
-        zh_lines = [f"{j}|{t or '(无标题)'}"
+        zh_lines = [f"{j}|{(t or '(无标题)')[:60]}"
                     f"{'|' + str(zh_counts[j]) if zh_counts else ''}"
                     for j, t in enumerate(zh_titles)]
-        system = (
-            "你是双语书籍结构对齐助手。英文原著与中文译本的章节已确认一一对应，"
-            "现在需要把英文的小节与中文的小节对应起来。" + ACADEMIC_NOTICE
-        )
-        user = (
-            "英文小节（序号|标题|段数）：\n" + "\n".join(en_lines) +
-            "\n\n中文小节（序号|标题|段数）：\n" + "\n".join(zh_lines) +
-            "\n\n规则：\n"
-            "1. 中译本可能删掉某个英文小节，或把两个小节合并成一个，也可能把一个小节拆开。\n"
-            "2. 保持顺序；不要交叉。\n"
-            "3. 若某英文小节在中文版没有对应，输出 [i,null]；若某中文小节是多余的，输出 [null,j]。\n"
-            "4. 若不是严格 1:1，可以把「整段英文的译文都在其中」的若干中文小节合并：\n"
-            "   [i,[j1,j2]] 表示英文第 i 节对应中文 j1、j2 两节；[[i1,i2],j] 反之。\n"
-            "5. 只输出数组，例如 [[0,0],[1,1],[2,null],[3,[3,4]]]。"
-        )
+        unit = "章" if level == "chapter" else "小节"
+        if level == "chapter":
+            system = (
+                "你是双语书籍结构对齐助手。需要把英文原著的章与中文译本的章"
+                "按顺序对应起来。两版的章节切分方式可能不同：英文可能没有 "
+                "Chapter 标记、章号体系可能与中文不一致、也可能某章在其中"
+                "一版被合并或缺失。请依据标题语义与顺序判断，不要假设章号相同。"
+                + ACADEMIC_NOTICE
+            )
+            user = (
+                "英文章（序号|标题|段数）：\n" + "\n".join(en_lines) +
+                "\n\n中文章（序号|标题|段数）：\n" + "\n".join(zh_lines) +
+                "\n\n规则：\n"
+                "1. 中译本可能删掉某一章，或把两章合并成一章，也可能拆开。\n"
+                "2. 保持顺序；不要交叉。\n"
+                "3. 若某英文章在中文版没有对应，输出 [i,null]；"
+                "若某中文章是多余的，输出 [null,j]。\n"
+                "4. 若不是严格 1:1，可以合并：\n"
+                "   [i,[j1,j2]] 表示英文第 i 章对应中文 j1、j2 两章；"
+                "[[i1,i2],j] 反之。\n"
+                "5. 只输出数组，例如 [[0,0],[1,1],[2,null],[3,[3,4]]]。"
+            )
+        else:
+            # ⚠ 小节级 prompt 必须逐字保持原样：改一个字就会让磁盘缓存全部
+            # 失效（缓存键 = 模型+system+user 的哈希），等于重跑并可能变坏
+            # —— 2026-09 实测改动措辞后 Nexus 从 1163/1149/14/19 变成
+            # 1156/1123/33/57，全是缓存失效后被重新请求的结果。
+            system = (
+                "你是双语书籍结构对齐助手。英文原著与中文译本的章节已确认一一对应，"
+                "现在需要把英文的小节与中文的小节对应起来。" + ACADEMIC_NOTICE
+            )
+            user = (
+                "英文小节（序号|标题|段数）：\n" + "\n".join(en_lines) +
+                "\n\n中文小节（序号|标题|段数）：\n" + "\n".join(zh_lines) +
+                "\n\n规则：\n"
+                "1. 中译本可能删掉某个英文小节，或把两个小节合并成一个，也可能把一个小节拆开。\n"
+                "2. 保持顺序；不要交叉。\n"
+                "3. 若某英文小节在中文版没有对应，输出 [i,null]；若某中文小节是多余的，输出 [null,j]。\n"
+                "4. 若不是严格 1:1，可以把「整段英文的译文都在其中」的若干中文小节合并：\n"
+                "   [i,[j1,j2]] 表示英文第 i 节对应中文 j1、j2 两节；[[i1,i2],j] 反之。\n"
+                "5. 只输出数组，例如 [[0,0],[1,1],[2,null],[3,[3,4]]]。"
+            )
         out = self.json(system, user)
         if not isinstance(out, list):
             return None
@@ -322,6 +397,24 @@ class LLM:
                 return None
             norm.append((ea, zb))
         return norm
+
+    def map_sections(self, en_titles: list[str], zh_titles: list[str],
+                     en_counts: list[int] | None = None,
+                     zh_counts: list[int] | None = None):
+        """章**内**小节配对（两版章节已确认对应）。返回 [(en_idx[], zh_idx[])] 或 None。"""
+        return self._map_lists(en_titles, zh_titles, en_counts, zh_counts,
+                               level="section")
+
+    def map_titles(self, en_titles: list[str], zh_titles: list[str],
+                   en_counts: list[int] | None = None,
+                   zh_counts: list[int] | None = None):
+        """**章级**配对（两版章号体系/切分可能不同）。返回 [(en_idx[], zh_idx[])] 或 None。
+
+        只在确定性章级映射不可信时调用 —— 输入只有几十个标题，输出只有 mapping，
+        单次约 2k token，是整套 LLM 能力里最便宜的一个。
+        """
+        return self._map_lists(en_titles, zh_titles, en_counts, zh_counts,
+                               level="chapter")
 
     # -------------------------------------------------------------- 能力 2：窗口细化
     def refine_window(self, en_lines: list[str], zh_lines: list[str],
@@ -363,8 +456,12 @@ class LLM:
     # -------------------------------------------------------------- 能力 3：补译（两步）
     def translate(self, en_texts: list[str], context: str = "",
                   title: str = "") -> list[str] | None:
-        """先直译再润色。返回与 en_texts 等长的中文列表，或 None。"""
-        if not self.enabled or not en_texts:
+        """先直译再润色。返回与 en_texts 等长的中文列表，或 None。
+
+        ⚠ only_mapping 模式下直接跳过：翻译是「输出大段文本」的能力，
+        与「只输出 mapping 元数据」的定位相反，预算受限时第一个砍掉。
+        """
+        if not self.enabled or not en_texts or self.only_mapping:
             return None
         numbered = "\n".join(f"{i+1}|{t}" for i, t in enumerate(en_texts))
         system = ("你是学术著作的中文译者（英译中）。" + ACADEMIC_NOTICE)
@@ -393,9 +490,13 @@ class LLM:
 
         每组含 en_texts / context / title / 以及 step1/step2 两段 prompt。
         两阶段都并发：先全部直译，再全部润色，避免串行等待。
+
+        ⚠ only_mapping 模式下返回等长的 None 列表（跳过补译，保留调用方逻辑）。
         """
         if not groups:
             return []
+        if not self.enabled or self.only_mapping:
+            return [None] * len(groups)
         sys_t = "你是学术著作的中文译者（英译中）。" + ACADEMIC_NOTICE
         reqs1, reqs2 = [], []
         for g in groups:
@@ -450,7 +551,7 @@ class LLM:
           * "ok"      正常
         返回 {i: (标记, 说明)}；标记为 "ok" 的不返回，节省下游处理。
         """
-        if not self.enabled or not items:
+        if not self.enabled or not items or self.only_mapping:
             return {}
         out: dict[int, tuple] = {}
         system = (
@@ -501,7 +602,7 @@ class LLM:
         items: [{"i": 序号, "en": 英文原文, "zh": 现译文, "why": 问题说明}]
         要求忠实原文、不删减不改词不增加不扭曲。
         """
-        if not self.enabled or not items:
+        if not self.enabled or not items or self.only_mapping:
             return {}
         out: dict[int, str] = {}
         system = (

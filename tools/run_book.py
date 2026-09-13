@@ -29,11 +29,12 @@ EN_EPUB = "C:/Users/abc/AppData/Local/Temp/bil/en.epub"
 ZH_EPUB = "C:/Users/abc/AppData/Local/Temp/bil/zh.epub"
 
 
-def load_all(en_path=EN_EPUB, zh_path=ZH_EPUB):
+def load_all(en_path=EN_EPUB, zh_path=ZH_EPUB, llm=None):
     ze, zz = E.open_epub(en_path), E.open_epub(zh_path)
     en_docs = S.load_docs(ze, E.read_spine(ze))
     zh_docs = S.load_docs(zz, E.read_spine(zz))
-    pairs = S.map_chapters(en_docs, zh_docs)
+    # llm 只用于「章号对不上时的标题配对」（输出仅 mapping，极便宜）
+    pairs = S.map_chapters(en_docs, zh_docs, llm=llm)
     return en_docs, zh_docs, pairs
 
 
@@ -47,7 +48,15 @@ def main():
     ap.add_argument("--dump", action="store_true")
     ap.add_argument("--out", default="build", help="输出目录")
     ap.add_argument("--title", default="", help="留空=取中文版书名并加「中英双语版」后缀")
-    ap.add_argument("--llm", action="store_true", help="启用 LLM 小节映射/补译")
+    ap.add_argument("--llm", action="store_true", help="启用 LLM 章/节映射与补译")
+    ap.add_argument("--no-llm-chapters", action="store_true",
+                    help="禁止 LLM 参与**章级**配对（纯确定性章映射）")
+    ap.add_argument("--map-only", action="store_true",
+                    help="LLM 只做章/节映射，不做补译与勘误（省钱模式）")
+    ap.add_argument("--budget", type=float, default=1.5,
+                    help="单本书 LLM 软上限（元）；超过自动转 mapping-only")
+    ap.add_argument("--budget-hard", type=float, default=2.5,
+                    help="单本书 LLM 硬上限（元）；超过停用 LLM 走确定性")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="并发处理的章节数（LLM 章节级并发，默认 4）")
     args = ap.parse_args()
@@ -56,7 +65,17 @@ def main():
     if args.chapters:
         want = [c.strip() for c in args.chapters.split(",")]
 
-    en_docs, zh_docs, pairs = load_all(args.en, args.zh)
+    # ⚠ LLM 客户端必须在章级映射**之前**建好：章号对不上时要靠它做标题配对
+    llm = None
+    if args.llm:
+        from bil import llm as L
+        llm = L.get_client()
+        if not getattr(llm, "enabled", False):
+            print("[提示] 未检测到可用 LLM，全部走确定性对齐。")
+            llm = None
+    map_llm = None if args.no_llm_chapters else llm
+
+    en_docs, zh_docs, pairs = load_all(args.en, args.zh, llm=map_llm)
     # 图位渲染需要读到源 epub 里的图片字节，把 zip 句柄挂到结果上
     _ze, _zz = E.open_epub(args.en), E.open_epub(args.zh)
     # 英文本的注释正文按 {注释id: 文本} 读进来。中文版是逆向来的，注区常常
@@ -71,13 +90,15 @@ def main():
                 _ze.read(_doc).decode("utf-8", errors="replace"))
     except Exception as e:                      # noqa: BLE001
         print(f"[warn] 英文本注释读取失败，将跳过注释兜底：{e}")
-    llm = None
-    if args.llm:
-        from bil import llm as L
-        llm = L.get_client()
-        if not llm.enabled:
-            print("[提示] 未检测到 LLM_API_KEY，将只跑确定性部分"
-                  "（补译/细化会跳过，段落标记为待补）。")
+    # llm 已在章级映射前建好（见上方），这里只是按预算降级：
+    # 软上限 → mapping-only（停补译/勘误）；硬上限 → 直接停用 LLM。
+    if llm is not None and (args.map_only or args.budget <= 0):
+        llm.only_mapping = True
+    srcs = {}
+    for cp in pairs:
+        srcs[getattr(cp, "map_src", "") or "key"] = \
+            srcs.get(getattr(cp, "map_src", "") or "key", 0) + 1
+    print(f"[章映射] 来源分布 {srcs}")
 
     # 章节之间完全独立，并发跑能把 32 线程池压满（单章内部批次数有限，
     # 只靠池内并发经常喂不饱和）。每章内部仍走 llm.chat_many 的并发。
