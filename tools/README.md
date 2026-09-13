@@ -43,12 +43,15 @@ python tools/run_book.py --chapters chapter1,chapter5 --dump   # → review.md
 python tools/test_mock_llm.py
 ```
 
-输出（一次四个文件）：
+输出（一次四个文件，`<书名>` = 中文版书名）：
 
-- `build/bilingual.html` —— 浏览器预览，顶部「阅读模式」切 **中英对照 / 仅中文 / 仅英文**
-- `build/bilingual.epub` —— 段段对照
-- `build/chinese.epub` —— **仅中文**（生成时直接删掉英文元素，非 CSS 隐藏）
-- `build/english.epub` —— **仅英文**（同理，中文元素已删除）
+- `build/<书名>_bilingual.html` —— 浏览器预览，顶部「阅读模式」切 **中英对照 / 仅中文 / 仅英文**
+- `build/<书名>_bilingual.epub` —— 段段对照
+- `build/<书名>_中文.epub` —— **仅中文**（生成时直接删掉英文元素，非 CSS 隐藏）
+- `build/<书名>_English.epub` —— **仅英文**（同理，中文元素已删除）
+
+元数据（作者/出版社/ISBN）与封面**沿用中文版** epub，见 `bil/bookmeta.py`；
+书名自动补「（中英双语版）」后缀。
 
 **注意**：必须在项目根目录执行（`.env` 按 CWD 解析，放 `tools/` 下读不到）。
 章节 key 是 `chapter1` 而非 `ch1`，写错会静默跑 0 章。
@@ -86,6 +89,26 @@ python tools/test_mock_llm.py
 - `tools/app.py` 本地网页版（标准库 `http.server`）
 - `tools/pack.py` 打包为 `.pyz` / `.exe`
 - `tools/probe_book.py` 结构体检；`tools/test_mock_llm.py` 自测
+
+## 网页版 LLM 设置面板
+
+`tools/app.py` 的页面上有可折叠的「LLM 设置」，可在浏览器里改 LLM 配置，不必手改 `.env`。
+
+两个新增接口（都只碰 `LLM_*` 六键，其余行原样保留）：
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/config` | 回填当前配置（含默认值），`source` 标明来源 |
+| POST | `/api/config` | 合并写入 `.env`，并同步进 `os.environ` 立即生效 |
+| POST | `/api/test` | 用传入配置发一次最小请求，**不写盘** |
+
+实现要点：
+
+- `_read_env()` / `_write_env()` 是自写的行级合并，保留注释与未知键。
+- **空值不覆盖已有非空值** —— 只改模型名不会把 key 清掉。要清空传哨兵 `__CLEAR__`（仅供内部/手工调用）。
+- `_write_env()` 返回 `(written, refused)`，前端把 `refused` 显示为「未写入（沿用原值）」。
+- `/api/test` 用 `L.LLM(base_url=..., api_key=..., cache_dir=None)` 构造临时客户端，调 `chat(system, user)`；`cache_dir=None` 避免测试污染缓存。
+- 写盘后 `os.chmod(0o600)`，Windows 上语义有限但无害。
 
 ## 注释回填（zero-cost）
 

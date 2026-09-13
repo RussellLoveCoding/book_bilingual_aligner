@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--dump", action="store_true")
     ap.add_argument("--out", default="build", help="输出目录")
-    ap.add_argument("--title", default="双语版")
+    ap.add_argument("--title", default="", help="留空=取中文版书名并加「中英双语版」后缀")
     ap.add_argument("--llm", action="store_true", help="启用 LLM 小节映射/补译")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="并发处理的章节数（LLM 章节级并发，默认 4）")
@@ -135,8 +135,17 @@ def main():
         dump_review(results)
     if args.build:
         from bil import build
+        from bil import bookmeta as BM
         build.OUT_DIR = Path(args.out)
-        build.build_book(results, title=args.title)
+        # 沿用中文版的元数据与封面；书名没给就从中文版 OPF 里读，并补「双语」后缀
+        meta = BM.pick_meta(args.zh, args.en)
+        title = (args.title or "").strip()
+        if title in ("双语版", "中英双语版"):
+            title = ""
+        title = BM.bilingual_title(title or meta.title) or "中英双语版"
+        if meta.title:
+            print(f"[元数据] {meta.summary()}")
+        build.build_book(results, title=title, meta=meta)
 
 
 def _run_parallel(fn, jobs, workers):
