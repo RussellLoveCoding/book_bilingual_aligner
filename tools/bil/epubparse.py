@@ -25,7 +25,7 @@ import re
 import struct
 import zipfile
 from dataclasses import dataclass, field, asdict
-from typing import Iterable
+from typing import Iterable, Sequence
 
 # 块级元素：会成为 Block 的标签
 BLOCK_TAGS = {
@@ -185,6 +185,45 @@ def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     return "para"
 
 
+# 非小节容器：技术书（O'Reilly 系）用 <div data-type="equation"><h5>Equation 4-1. …
+# 当公式标签、<div data-type="warning"><h6>Warning</h6> 当提示框标题 —— 这些
+# heading **不是章节结构**。若照样当小节标题，《机器学习实战》第 4 章会被切成
+# 30 个「小节」（20+ 个是 Equation 标签），小节映射全错、bad 率 80%（2026-09-14 实测）。
+_NON_SECTION_TYPES = frozenset({
+    "equation", "programlisting", "listing", "example", "figure", "table",
+    "note", "tip", "warning", "caution", "important", "sidebar", "callout",
+    "indexterm", "footnote", "noteref", "xref", "annotation", "epigraph",
+})
+_NON_SECTION_CLS_RE = re.compile(
+    r"\b(?:equation|programlisting|listing|callout|sidebar|annotation)\b", re.I)
+# 「Equation 4-1.」「Figure 4-1.」「Table 3-1.」这类题注：容器没标 data-type 时的兜底
+_LABEL_HEAD_RE = re.compile(
+    r"^(?:Equation|Figure|Table|Listing|Example|Algorithm)\s*\d+\s*[-–—.]\s*\d+",
+    re.I)
+
+
+def _in_non_section(ancestors: Sequence[dict], own: dict) -> bool:
+    """判断一个元素是否处于「非小节容器」内（公式/代码/提示框/图注…）。
+
+    ⚠ 祖先链传进来的是 parse_blocks 的**帧字典**（`{"tag","attr","start","kids"}`），
+    属性在 `frame["attr"]` 里 —— 2026-09-14 踩过：直接 `frame.get("data-type")`
+    恒为 None，导致《机器学习实战》的「Warning/Note/Tip」提示框标题仍被当小节。
+    """
+    def _attrs_of(x):
+        if isinstance(x, dict) and isinstance(x.get("attr"), dict):
+            return x["attr"]
+        return x or {}
+
+    for a in [own, *ancestors]:
+        a = _attrs_of(a)
+        dt = (a.get("data-type") or a.get("epub:type") or "").strip().lower()
+        if dt and dt.split()[0] in _NON_SECTION_TYPES:
+            return True
+        if _NON_SECTION_CLS_RE.search(a.get("class") or ""):
+            return True
+    return False
+
+
 # 行内「注释标记图」：掌阅/多看系把整条注释塞在图片 alt / zy-footnote 里，
 # 正文中只留一枚小图。它们是**行内标记**、不是内容块，不能进守恒对账
 # （否则报「img 数不守恒」直接中断，2026-09 实测《思考，快与慢》中文版
@@ -320,6 +359,12 @@ def parse_blocks(src: str, strict: bool = True,
         if not text:
             continue
         level = int(tag[1]) if tag in HEADING_TAGS else 0
+        # 非小节容器里的 heading 要降级成正文段（见 _NON_SECTION_* 说明）：
+        # 此处 frames 已被 del 掉自身，剩下的就是祖先链。
+        if btype == "heading" and (
+                _in_non_section(frames, attrs)
+                or _LABEL_HEAD_RE.match(text.strip() or "")):
+            btype, level = "para", 0
         results.append(Block(tag=tag, cls=cls, html=inner.strip(), text=text,
                              type=btype, level=level))
 
@@ -365,8 +410,12 @@ def parse_blocks(src: str, strict: bool = True,
         for attr in ("html", "text", "caption"):
             v = getattr(b, attr, "") or ""
             if "\x00" in v or _VIS_PLACEHOLDER_RE.search(v):
-                v = v.replace("\x00", "")
-                v = _VIS_PLACEHOLDER_RE.sub("", v)
+                # ⚠ 顺序不能反：_VIS_PLACEHOLDER_RE 靠 \x00 当定界符，
+                # 若先把 \x00 删掉，正则再也匹配不上，残留的「VIS0」就
+                # 变成明文泄漏进成品（2026-09-14 实测《思考，快与慢》
+                # ch29/ch40 英文正文里出现「exactly VIS0%」）。
+                v = _VIS_PLACEHOLDER_RE.sub(" ", v)   # ① 先按完整占位符消掉
+                v = v.replace("\x00", "")             # ② 再清残留控制符
                 setattr(b, attr, re.sub(r"\s+", " ", v).strip())
 
     # 注释引用锚点的可见文本改写：精排中文书的 noteref 锚点里塞的是转换残留
