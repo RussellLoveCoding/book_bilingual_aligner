@@ -619,6 +619,8 @@ PAGE = """<!DOCTYPE html>
         background:var(--panel2);border:1px dashed var(--line);
         border-radius:8px;cursor:pointer;font-size:13px}
   .file:hover{border-color:var(--accent)}
+  .file.drag{border-color:var(--accent);border-style:solid;
+        background:color-mix(in srgb,var(--accent) 10%,var(--panel2))}
   .file span{color:var(--dim);overflow:hidden;text-overflow:ellipsis;
         white-space:nowrap}
   .file input{display:none}
@@ -715,12 +717,12 @@ PAGE = """<!DOCTYPE html>
     <div class="field">
       <label>英文 epub</label>
       <label class="file"><input type="file" id="en" accept=".epub">
-        <b style="color:var(--accent)">选择文件</b><span id="enN">未选择</span></label>
+        <b style="color:var(--accent)">选择或拖入文件</b><span id="enN">未选择</span></label>
     </div>
     <div class="field">
       <label>中文 epub</label>
       <label class="file"><input type="file" id="zh" accept=".epub">
-        <b style="color:var(--accent)">选择文件</b><span id="zhN">未选择</span></label>
+        <b style="color:var(--accent)">选择或拖入文件</b><span id="zhN">未选择</span></label>
     </div>
   </div>
   <div class="row" style="margin-top:16px">
@@ -847,10 +849,28 @@ const $=s=>document.querySelector(s);
 let timer=null, lastLen=0;
 
 function bindFile(id,nameId){
-  $(id).addEventListener('change',e=>{
-    const f=e.target.files[0];
-    $(nameId).textContent=f?f.name+' · '+(f.size/1048576).toFixed(1)+'MB':'未选择';
-    $(nameId).style.color=f?'var(--fg)':'var(--dim)';
+  const inp=$(id), lab=inp.closest('.file'), name=$(nameId);
+  const set=f=>{
+    name.textContent=f?f.name+' · '+(f.size/1048576).toFixed(1)+'MB':'未选择';
+    name.style.color=f?'var(--fg)':'var(--dim)';
+  };
+  inp.addEventListener('change',e=>set(e.target.files[0]));
+  /* 拖拽上传：拖到虚线框上松手即可，等价于点开文件选择器 */
+  ['dragenter','dragover'].forEach(ev=>lab.addEventListener(ev,e=>{
+    e.preventDefault(); lab.classList.add('drag');
+  }));
+  lab.addEventListener('dragleave',()=>lab.classList.remove('drag'));
+  lab.addEventListener('drop',e=>{
+    e.preventDefault(); lab.classList.remove('drag');
+    const f=e.dataTransfer&&e.dataTransfer.files[0];
+    if(!f) return;
+    if(!f.name.toLowerCase().endsWith('.epub')){
+      name.textContent='仅支持 .epub 文件'; name.style.color='#e06c5a';
+      return;
+    }
+    try{const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files;}
+    catch(err){/* 旧浏览器不支持程序化赋值；提示已更新即可 */}
+    set(f);
   });
 }
 bindFile('#en','#enN'); bindFile('#zh','#zhN');
