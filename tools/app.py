@@ -539,6 +539,25 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
              elapsed=time.time() - t0)
 
 
+def _demo_blocks(text: str, lang: str) -> list:
+    """把粘贴的纯文本切成段落块（与 txtimport 同一套规则，只是来源是字符串）。
+
+    演示页不需要章标题识别：一行一段，直接送进段落级 DP。
+    """
+    from bil.epubparse import Block
+    out = []
+    for raw in (text or "").replace("\r\n", "\n").replace("\r", "\n") \
+            .split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        out.append(Block(tag="p", cls="",
+                         html=line.replace("&", "&amp;")
+                         .replace("<", "&lt;").replace(">", "&gt;"),
+                         text=line, type="para"))
+    return out
+
+
 # ── HTTP ────────────────────────────────────────────────────────────
 PAGE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -647,6 +666,19 @@ PAGE = """<!DOCTYPE html>
   .file span{color:var(--dim);overflow:hidden;text-overflow:ellipsis;
         white-space:nowrap}
   .file input{display:none}
+  textarea{width:100%;box-sizing:border-box;min-height:180px;resize:vertical;
+        padding:8px 10px;background:var(--panel2);color:var(--fg);
+        border:1px solid var(--line);border-radius:8px;
+        font-size:13px;line-height:1.6;font-family:inherit}
+  textarea:focus{outline:none;border-color:var(--accent)}
+  .demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.demo-grid{grid-template-columns:1fr}}
+  .demo-out{margin-top:8px}
+  .demo-out .pair{padding:10px 0;border-bottom:1px solid var(--line)}
+  .demo-out .pair:last-child{border-bottom:0}
+  .demo-out .en{margin:0 0 4px;color:var(--fg)}
+  .demo-out .zh{margin:0;color:var(--fg)}
+  .demo-out .zh.miss{color:var(--dim);font-size:12px}
   .opts{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin-top:16px}
   .chk{display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer}
   .chk input{width:15px;height:15px;accent-color:var(--accent)}
@@ -720,6 +752,7 @@ PAGE = """<!DOCTYPE html>
   <div class="navwrap">
     <div class="nsec">工作台</div>
     <a class="nav on" data-view="make"><i>⚙</i><span>合成<small>上传 epub · 出书</small></span></a>
+    <a class="nav" data-view="demo"><i>⇄</i><span>试对齐<small>粘贴中英段落 · 实时匹配</small></span></a>
     <div class="nsec">文档</div>
     __NAV__
   </div>
@@ -862,6 +895,32 @@ PAGE = """<!DOCTYPE html>
 
 <div id="docView" class="hide">
   <div class="doc" id="doc"><div class="empty">从左侧目录选择一份文档</div></div>
+</div>
+
+<div id="demoView" class="hide">
+  <h1>试对齐</h1>
+  <div class="sub">左边贴英文、右边贴中文，后端用确定性 DP 实时对齐（不调 LLM、不写盘）</div>
+  <div class="card">
+    <div class="demo-grid">
+      <div class="field">
+        <label>英文（一行一段）</label>
+        <textarea id="demoEn" rows="12" placeholder="The printing press spread rapidly across Europe after 1450.&#10;A second paragraph goes here."></textarea>
+      </div>
+      <div class="field">
+        <label>中文（一行一段）</label>
+        <textarea id="demoZh" rows="12" placeholder="1450年后，印刷术在欧洲迅速传播。&#10;这里是第二段。"></textarea>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px;align-items:center">
+      <button type="button" id="demoRun">立即对齐</button>
+      <label class="opts"><input type="checkbox" id="demoAuto" checked> 输入后自动对齐</label>
+      <span id="demoStat" style="color:var(--dim);font-size:12px"></span>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <label>对齐结果（中英对照排版）</label>
+    <div id="demoOut" class="demo-out"><div class="empty">贴入内容后自动显示</div></div>
+  </div>
 </div>
 
 </div><!-- /wrap -->
@@ -1093,14 +1152,23 @@ async function poll(){
 /* ── 侧边栏：工作台 / 文档切换 ───────────────────────────────── */
 function showMake(){
   $('#docView').classList.add('hide');
+  $('#demoView').classList.add('hide');
   $('#makeView').classList.remove('hide');
   document.querySelectorAll('.nav').forEach(n=>
     n.classList.toggle('on', n.dataset.view==='make'));
+}
+function showDemo(){
+  $('#docView').classList.add('hide');
+  $('#makeView').classList.add('hide');
+  $('#demoView').classList.remove('hide');
+  document.querySelectorAll('.nav').forEach(n=>
+    n.classList.toggle('on', n.dataset.view==='demo'));
 }
 async function showDoc(rel,title){
   document.querySelectorAll('.nav').forEach(n=>
     n.classList.toggle('on', n.dataset.doc===rel));
   $('#makeView').classList.add('hide');
+  $('#demoView').classList.add('hide');
   $('#docView').classList.remove('hide');
   $('#doc').innerHTML='<div class="empty">加载中…</div>';
   try{
@@ -1117,11 +1185,50 @@ document.querySelectorAll('.nav').forEach(n=>{
   n.addEventListener('click',()=>{
     $('#side').classList.remove('open');
     if(n.dataset.view==='make') return showMake();
+    if(n.dataset.view==='demo') return showDemo();
     showDoc(n.dataset.doc, n.dataset.title);
   });
 });
 $('#back').addEventListener('click',()=>$('#side').classList.toggle('open'));
 showMake();
+
+/* ── 试对齐：粘贴中英段落 → 后端确定性 DP 实时匹配 ────────────── */
+const escHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;');
+let demoTimer=null;
+async function runDemo(){
+  const en=$('#demoEn').value, zh=$('#demoZh').value;
+  if(!en.trim()||!zh.trim()){
+    $('#demoStat').textContent='两边都要有内容';
+    $('#demoOut').innerHTML='<div class="empty">左边贴英文、右边贴中文</div>';
+    return;
+  }
+  $('#demoStat').textContent='对齐中…';
+  try{
+    const r=await fetch('/api/align',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({en,zh})});
+    const j=await r.json();
+    if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+    $('#demoStat').textContent='共 '+j.pairs.length+' 对 · 英文 '+j.n_en
+      +' 段 / 中文 '+j.n_zh+' 段 · 未匹配 '+j.miss+' · '+j.ms+' ms';
+    $('#demoOut').innerHTML=j.pairs.length?j.pairs.map(p=>
+      '<div class="pair">'+(p.en?'<p class="en">'+escHtml(p.en)+'</p>':'')
+      +(p.zh?'<p class="zh">'+escHtml(p.zh)+'</p>'
+            :'<p class="zh miss">〔未匹配到中文〕</p>')+'</div>').join('')
+      :'<div class="empty">没有可对齐的内容</div>';
+  }catch(e){
+    $('#demoStat').textContent='出错';
+    $('#demoOut').innerHTML='<div class="empty">✗ '+escHtml(e.message)+'</div>';
+  }
+}
+function scheduleDemo(){
+  if(!$('#demoAuto').checked) return;
+  clearTimeout(demoTimer); demoTimer=setTimeout(runDemo,350);
+}
+$('#demoEn').addEventListener('input',scheduleDemo);
+$('#demoZh').addEventListener('input',scheduleDemo);
+$('#demoRun').addEventListener('click',runDemo);
 </script></body></html>
 """
 
@@ -1270,6 +1377,38 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
     # ── POST ──
+    def _align_demo(self):
+        """POST /api/align：粘贴一段英文 + 一段中文，直接跑确定性对齐。
+
+        不调 LLM、不写盘、不进流水线 —— 纯 DP，用来直观看到对齐效果。
+        """
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) if n else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except Exception:                                          # noqa: BLE001
+            return self._json({"error": "请求体不是合法 JSON"}, 400)
+        t0 = time.time()
+        try:
+            from bil import align as A
+            en_ps = _demo_blocks(body.get("en") or "", "en")
+            zh_ps = _demo_blocks(body.get("zh") or "", "zh")
+            pairs = A.align_section(en_ps, zh_ps) if (en_ps and zh_ps) \
+                else []
+            out, miss = [], 0
+            for p in pairs:
+                e = " ".join(en_ps[i].text for i in p.en)
+                z = " ".join(zh_ps[j].text for j in p.zh)
+                if not z:
+                    miss += 1
+                out.append({"en": e, "zh": z})
+            return self._json({
+                "pairs": out, "n_en": len(en_ps), "n_zh": len(zh_ps),
+                "miss": miss, "ms": int((time.time() - t0) * 1000)})
+        except Exception as exc:                                   # noqa: BLE001
+            traceback.print_exc()
+            return self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
     def do_POST(self):                                            # noqa: N802
         path = self.path.split("?")[0]
         if path == "/api/config":
@@ -1278,6 +1417,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_test()
         if path == "/api/demo":
             return self._post_demo()
+        if path == "/api/align":
+            return self._align_demo()
         if path != "/api/run":
             return self._json({"error": "not found"}, 404)
         if self._busy():

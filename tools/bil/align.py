@@ -24,11 +24,18 @@ NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # ---------------------------------------------------------------- 度量
 
 def han_chars(s: str) -> int:
-    return len(HAN.findall(s))
+    # 用 finditer 计数，避免为每个段落分配 findall 的临时列表
+    return sum(1 for _ in HAN.finditer(s))
+
+
+# 含字母/数字的「词」。⚠ 必须整串一次 findall：早期版本对**每个单词**
+# 跑一次 re.search，而代价函数又被反复调用，实测全书触发 3700 万次正则
+# （profile 里 58/60 秒都耗在这）。计数结果与逐词判断等价。
+_WORDISH_RE = re.compile(r"\S*[A-Za-z0-9]\S*")
 
 
 def en_words(s: str) -> int:
-    return len([w for w in s.split() if re.search(r"[A-Za-z0-9]", w)])
+    return len(_WORDISH_RE.findall(s))
 
 
 def numbers(s: str) -> set:
@@ -202,23 +209,34 @@ def estimate_k(paras_en, paras_zh, default=1.85, k_range=(1.25, 2.25)) -> float:
 
 
 def align_lists(en_ps, zh_ps, k=None) -> tuple[list[Pair], float]:
-    """对齐两个段落序列，返回 (pairs, 总代价)。代价用于上层小节匹配。"""
+    """对齐两个段落序列，返回 (pairs, 总代价)。代价用于上层小节匹配。
+
+    ⚠ 长度数组只在这里算一次再传给代价函数 —— 早期版本每个 pair 都把
+    整章段落重新数一遍（1.8 万次 × 每章上百段），纯属浪费。缓存后
+    输出完全不变，只是不再重复计算。
+    """
     kk = k if k is not None else estimate_k(en_ps, zh_ps)
+    ew, zc, avg = _len_arrays(en_ps, zh_ps, kk)
     pairs = align_section(en_ps, zh_ps, k=kk)
-    return pairs, sum(_pair_raw_cost(p, en_ps, zh_ps, kk) for p in pairs)
+    return pairs, sum(_pair_raw_cost(p, ew, zc, kk, avg) for p in pairs)
 
 
-def _pair_raw_cost(p: Pair, en_ps, zh_ps, k: float) -> float:
+def _len_arrays(en_ps, zh_ps, k: float) -> tuple[list, list, float]:
+    ew = [max(1, en_words(x.text)) for x in en_ps]
+    zc = [han_chars(x.text) for x in zh_ps]
+    avg = max(1.0, sum(w * k for w in ew) / max(1, len(ew)))
+    return ew, zc, avg
+
+
+def _pair_raw_cost(p: Pair, ew, zc, k: float, avg: float) -> float:
     """pair 的原始代价（不含归一化），与 align_section 内部口径一致。
 
+    ew/zc/avg 由调用方预计算传入（见 _len_arrays）。
     k 必须由调用方固定为整章估算值：若按每次比较的段落对各自估算，
     错位配对会把 k 拉低、代价被人为压小，跳节与合并就无法比较。
     """
     if not p.en and not p.zh:
         return 0.0
-    ew = [max(1, en_words(x.text)) for x in en_ps]
-    zc = [han_chars(x.text) for x in zh_ps]
-    avg = max(1.0, sum(w * k for w in ew) / max(1, len(ew)))
     eM = sum(ew[i] * k for i in p.en)
     zM = sum(zc[j] for j in p.zh)
     if not p.zh:
