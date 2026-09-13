@@ -185,12 +185,78 @@ def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     return "para"
 
 
+# 行内「注释标记图」：掌阅/多看系把整条注释塞在图片 alt / zy-footnote 里，
+# 正文中只留一枚小图。它们是**行内标记**、不是内容块，不能进守恒对账
+# （否则报「img 数不守恒」直接中断，2026-09 实测《思考，快与慢》中文版
+# 435 枚这样的标记，41 个文档全对不上）。
+_INLINE_NOTE_IMG_RE = re.compile(
+    r'<img\b[^>]*(?:class\s*=\s*"[^"]*footnote[^"]*"|zy-footnote\s*=)', re.I)
+
+
+def is_inline_note_img(tag_html: str) -> bool:
+    return bool(_INLINE_NOTE_IMG_RE.search(tag_html or ""))
+
+
+# 结构化注释条目：掌阅/多看/微信书的注区写法 —— li/aside 带 footnote 类
+_NOTE_ITEM_RE = re.compile(r"\b(?:duokan-footnote-item|footnote-item|"
+                           r"duokan-footnote|footnote|noteref)\b", re.I)
+
+
+def is_note_item(block) -> bool:
+    """该块是否是**注释条目**（而不是正文段落）。
+
+    精排中文书（如《思考，快与慢》中信版）用结构化注区：434 个
+    `<li class="duokan-footnote-item">`。这类书英文侧常常一个 noteref 都没有，
+    只靠「英文注数」当提示是切不出来的，注释文本会当正文参与对齐。
+    结构信号优先，判定成本为零。
+    """
+    cls = getattr(block, "cls", "") or ""
+    if _NOTE_ITEM_RE.search(cls):
+        return True
+    tag = (getattr(block, "tag", "") or "").lower()
+    if tag == "aside":
+        return True
+    return False
+
+
+_CJK = r"\u4e00-\u9fff"
+# 汉字后接空格：右边是汉字/数字/中日韩标点/全角符号 → 去掉
+_CJK_GAP_RE = re.compile(rf"(?<=[{_CJK}])[ \t\u00a0]+"
+                         rf"(?=[{_CJK}0-9\u3000-\u303f\uff01-\uff65])")
+# 数字或标点后接空格、右边是汉字 → 去掉（覆盖「第 1 章」这种）
+_CJK_GAP2_RE = re.compile(rf"(?<=[0-9\u3000-\u303f\uff01-\uff65])[ \t\u00a0]+"
+                          rf"(?=[{_CJK}])")
+
+
+def norm_cjk_spacing(s: str) -> str:
+    """去掉中文之间的空格（含「第 1 章」「1 0 章」这类单字拆分的标题）。
+
+    精排 epub（calibre/sigil 转换常见）把标题拆成单字 `<b>`，取文本后
+    变成「第 1 章」「常 态 、 意 外」—— 既让章号正则失配，也影响目录观感。
+    只处理中文语境：纯英文标题原样保留。
+    """
+    s = s or ""
+    if not re.search(rf"[{_CJK}]", s):
+        return s
+    s = _CJK_GAP_RE.sub("", s)
+    s = _CJK_GAP2_RE.sub("", s)
+    # 「1 0 章」：数字之间的空格，仅在标题含中文时才敢去（英文标题不动）
+    s = re.sub(r"(?<=[0-9])[ \t\u00a0]+(?=[0-9])", "", s)
+    return s
+
+
 def count_visuals(src: str) -> dict:
-    """清点一份文档里的视觉元素，用于守恒式对账。"""
+    """清点一份文档里的视觉元素，用于守恒式对账。
+
+    ⚠ 行内注释标记图（epub-footnote / zy-footnote）不计入 —— 见上方说明。
+    """
     m = re.search(r"<body[^>]*>(.*)</body>", src, re.S | re.I)
     body = m.group(1) if m else src
+    imgs = re.findall(r"<img\b[^>]*>", body, re.I)
+    n_content_img = sum(1 for t in imgs if not is_inline_note_img(t))
     return {
-        "img": len(re.findall(r"<img\b", body, re.I)),
+        "img": n_content_img,
+        "img_note_mark": len(imgs) - n_content_img,
         "figure": len(re.findall(r"<figure\b", body, re.I)),
         "svg": len(re.findall(r"<svg\b", body, re.I)),
         "table": len(re.findall(r"<table\b", body, re.I)),
@@ -288,6 +354,17 @@ def parse_blocks(src: str, strict: bool = True,
                 except (KeyError, OSError):
                     data = None
                 b.junk = is_junk_image_data(b.src, data)
+
+    # 收尾：
+    # ① 行内注释标记图（epub-footnote / zy-footnote）误成视觉块的，剔除 ——
+    #    它们是行内标记不是插图（《思考，快与慢》中文版有 435 枚，混进来会
+    #    造出几百个假图位、还会把真图挤掉）；
+    # ② 标题单字拆分导致的「第 1 章」空格 → 归一化，章号识别与目录才正常。
+    merged = [b for b in merged
+              if not (b.is_visual and is_inline_note_img(b.html))]
+    for b in merged:
+        if b.type == "heading":
+            b.text = norm_cjk_spacing(b.text)
 
     if strict:
         carried = sum(len(re.findall(r"<img\b", b.html, re.I)) for b in merged)
@@ -438,11 +515,18 @@ def _find_img_div(s: str):
             stack.append((m.start(), m.end()))
 
     # 找「直接含 img」的最内层 div：inner 里含 img，且 inner 里没有更深的含 img 的 div
+    # ⚠ 文字量护栏：calibre 一类转换会把**整章正文**包在一个 div 里，里面顺带
+    # 有几张图 —— 若不加护栏，这个 div 会被当成「图片容器」整块吞掉，
+    # 整章的中文正文变成 0 个段落（2026-09《思考，快与慢》中文版实测：
+    # 一个 11941 字符的 figure 块把 28 段正文全吞了，导致对齐彻底失效）。
+    # 含大段文字的 div 不算图片容器，交给正文解析 + 裸图补漏分别处理。
     best = None
     for start, end, is_, ie in spans:
         inner = s[is_:ie]
         im = re.search(r"<img\b[^>]*/?>", inner, re.I)
         if not im:
+            continue
+        if len(strip_tags(inner)) > 240:      # 文字太多 → 是正文容器，不是图容器
             continue
         # 该 div 内部是否还嵌着另一个含 img 的 div
         nested = any(
@@ -460,12 +544,16 @@ def _find_img_div(s: str):
 
 
 def _salvage_bare_images(body: str, existing: list[Block]) -> list[Block]:
-    """把没有被任何块承载的裸 <img> 补成独立 image 块（保底机制）。"""
+    """把没有被任何块承载的裸 <img> 补成独立 image 块（保底机制）。
+
+    ⚠ 行内注释标记图（epub-footnote / zy-footnote）**不补** —— 它们不是插图，
+    补进来会变成几百个假图位（《思考，快与慢》中文版有 435 枚）。
+    """
     carried_html = " ".join(b.html for b in existing if b.is_visual)
     out = []
     for m in IMG_SRC_RE.finditer(body):
         tag_html = m.group(0)
-        if tag_html in carried_html:
+        if tag_html in carried_html or is_inline_note_img(tag_html):
             continue
         out.append(Block(tag="img", cls="", html=tag_html, text="",
                          type="image", src=m.group(1)))

@@ -65,7 +65,17 @@ def cut_notes(zh_blocks, n_notes):
 
     视觉元素必须豁免：它们不是段落，混进注释检测会污染 note_likeness 的评分
     （图片段没有汉字也没有拉丁字母，会被判成「不像注释」而把切点拉错）。
+
+    ⚠ **结构信号优先**：中文书若用结构化注区（`<li class="duokan-footnote-item">`
+    这类掌阅/多看写法），直接按结构切。否则「英文 noteref 数」这个提示会
+    在英文版没有可点击注释时退化为 0（《思考，快与慢》两版都是如此），
+    434 条注释文本就会被当正文去对齐 —— 实测待补 586 段、告警 903。
     """
+    marked = [b for b in zh_blocks if E.is_note_item(b)]
+    if marked:
+        kept = [b for b in zh_blocks if not E.is_note_item(b)]
+        nl = sum(A.note_likeness(b.text) for b in marked) / max(1, len(marked))
+        return kept, marked, nl
     paras = [b for b in zh_blocks if b.type != "heading" and not _is_visual(b)]
     body, tail, nl = A.split_notes_detected(paras, hint=n_notes)
     if not tail:

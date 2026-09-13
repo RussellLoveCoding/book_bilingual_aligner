@@ -135,8 +135,30 @@ class ChapterPair:
     stats: dict = field(default_factory=dict)
 
 
+def _content_docs(docs: dict, keys: dict) -> list:
+    """挑出「正文档」：跳过后勤页与空文档（正文一致的并行版本才能顺序配对）。
+
+    剔除规则：key 是 skip（contents / copyright / 扉页 / 献词 …）、
+    或者**没有任何段落**（Part 标题页、纯图页 —— 英文 z-lib split 版常把
+    「Part 1」单独放一页，段落数为 0）。
+    """
+    out = []
+    for p, blocks in docs.items():
+        if keys[p].kind == "skip":
+            continue
+        if not any(b.type != "heading" for b in blocks):
+            continue
+        out.append(p)
+    return out
+
+
 def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list]) -> list[ChapterPair]:
-    """en_docs/zh_docs: {path: blocks}。返回按英文 spine 顺序的配对列表。"""
+    """en_docs/zh_docs: {path: blocks}。返回按英文 spine 顺序的配对列表。
+
+    首选**章号键匹配**（Chapter 5 ↔ 第5章）；当两侧都提不出可用的章号
+    （典型：英文 z-lib split 版只给章名、中文版给「第N章」），键匹配会
+    把所有英文文档挤到同一个中文文档上 —— 这时退回**顺序配对**。
+    """
     en_keys = {p: key_of_en(b) for p, b in en_docs.items()}
     zh_keys = {p: key_of_zh(b) for p, b in zh_docs.items()}
     zh_by_key = {}
@@ -151,7 +173,59 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list]) -> list[Cha
         en_title = next((b.text for b in en_docs[p] if b.type == "heading"), "")
         zh_title = next((b.text for b in zh_docs[zp] if b.type == "heading"), "") if zp else ""
         pairs.append(ChapterPair(p, zp, label, en_title, zh_title))
-    return pairs
+
+    # 诊断键匹配是否可用：能配上中文的章里，有多少是「有意义的键」
+    # （chapter/part/prologue/... 而不是全部 other）。
+    usable = [cp for cp in pairs
+              if cp.zh_path and not cp.key.startswith("other")]
+    if len(usable) >= max(3, len(pairs) * 0.5):
+        return pairs
+    seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
+    return seq or pairs
+
+
+def _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, old_pairs):
+    """顺序兜底：把「文档序列」交给文档级 DP 配对（允许跳文档）。
+
+    单纯按位置配对会在「一侧多一个文档」时整体错位 —— 实测《思考，快与慢》
+    英文多一个 Notes 文档，导致 Appendix B ↕ 致谢、Acknowledgments ↕ 目录
+    全错位。这里复用段落级 DP 的同一套机制（长度比 + 跳段代价）做文档级
+    配对：多出来的文档被诚实地判为 1:0 / 0:1，后面的文档重新对上。
+    """
+    from . import align as A
+
+    en_seq = _content_docs(en_docs, en_keys)
+    zh_seq = _content_docs(zh_docs, zh_keys)
+    if not en_seq or not zh_seq:
+        return []
+
+    class _S:                     # align_sections 只用到 .paras / .visuals
+        def __init__(self, blocks):
+            self.paras = [b for b in blocks
+                          if b.type != "heading" and not E.is_note_item(b)]
+            self.visuals = []
+
+    en_s = [_S(en_docs[p]) for p in en_seq]
+    zh_s = [_S(zh_docs[p]) for p in zh_seq]
+    groups = A.align_sections(en_s, zh_s, band=2)
+
+    def _title(blocks):
+        return next((b.text for b in blocks if b.type == "heading"), "")
+
+    out, n = [], 0
+    for ei, zi in groups:
+        ep = [en_seq[i] for i in ei]
+        zp = [zh_seq[j] for j in zi]
+        if not ep and not zp:
+            continue
+        n += 1
+        out.append(ChapterPair(
+            ep[0] if ep else "",
+            zp[0] if zp else "",
+            f"chapter{n}",
+            " / ".join(_title(en_docs[p]) for p in ep),
+            " / ".join(_title(zh_docs[p]) for p in zp)))
+    return out
 
 
 def chapter_stats(en_blocks, zh_blocks) -> dict:
