@@ -107,10 +107,18 @@ def _title_from_filename(filename: str, maxlen: int = 40) -> str:
 
 
 def _cdisp(filename: str) -> str:
-    """Content-Disposition：中文文件名必须走 RFC 5987 的 filename*。"""
+    """Content-Disposition：中文文件名必须走 RFC 5987 的 filename*。
+
+    ⚠ 引号里的回退名必须是纯 ASCII —— http.server 写响应头按 latin-1
+    编码，塞中文会 UnicodeEncodeError，处理线程当场死掉、连接零字节，
+    浏览器表现为 ERR_EMPTY_RESPONSE（2026-09 实测：下载带中文名的成品
+    必现）。真实文件名放 filename* 里，各浏览器都认。
+    """
     q = urllib.parse.quote(filename, safe="")
-    return (f"attachment; filename=\"{filename}\"; "
-            f"filename*=UTF-8''{q}")
+    fb = filename.encode("ascii", "ignore").decode("ascii")
+    fb = "".join(c if c.isalnum() or c in "._- " else "_" for c in fb)
+    fb = fb.strip(" ._") or "download"
+    return f"attachment; filename=\"{fb}\"; filename*=UTF-8''{q}"
 
 
 def _log(msg: str) -> None:
@@ -129,11 +137,11 @@ def _set(**kw) -> None:
 
 
 def _safe_name(name: str) -> str:
-    """把上传文件名清洗成安全的落盘名。"""
+    """把上传文件名清洗成安全的落盘名（epub / txt 都收）。"""
     name = os.path.basename(name or "")
     name = re.sub(r"[^\w\u4e00-\u9fff.\-]+", "_", name)
     name = name.strip("._") or "book.epub"
-    if not name.lower().endswith(".epub"):
+    if not name.lower().endswith((".epub", ".txt")):
         name += ".epub"
     return name[:120]
 
@@ -382,35 +390,49 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
         from bil import build
         from bil import bookmeta as BM
 
-        _set(state="running", pct=2, stage="解析 epub", chapter="", error="")
-        _log(f"[1/6] 打开两本书 …")
-        ze, zz = E.open_epub(str(en_path)), E.open_epub(str(zh_path))
-        # 沿用中文版的元数据与封面（作者/出版社/ISBN/封面不再写死）
-        meta = BM.pick_meta(str(zh_path), str(en_path))
-        if meta.title:
-            _log(f"      源书元数据：{meta.summary()}")
-        en_docs = S.load_docs(ze, E.read_spine(ze))
-        zh_docs = S.load_docs(zz, E.read_spine(zz))
+        _set(state="running", pct=2, stage="解析输入", chapter="", error="")
+        _log(f"[1/6] 打开两份材料 …")
+        is_txt = (en_path.suffix.lower() == ".txt"
+                  and zh_path.suffix.lower() == ".txt")
+        ze = zz = None
+        meta = None
+        if is_txt:
+            from bil import txtimport as TX
+            en_docs = TX.load_docs(en_path, "en")
+            zh_docs = TX.load_docs(zh_path, "zh")
+            _log("      txt 模式：无封面/元数据/注释回填，纯文本对齐")
+        else:
+            ze, zz = E.open_epub(str(en_path)), E.open_epub(str(zh_path))
+            # 沿用中文版的元数据与封面（作者/出版社/ISBN/封面不再写死）
+            meta = BM.pick_meta(str(zh_path), str(en_path))
+            if meta.title:
+                _log(f"      源书元数据：{meta.summary()}")
+            en_docs = S.load_docs(ze, E.read_spine(ze))
+            zh_docs = S.load_docs(zz, E.read_spine(zz))
 
         _set(pct=8, stage="章节映射")
         _log(f"[2/6] 章级映射 …")
-        pairs = S.map_chapters(en_docs, zh_docs)
+        pairs = (TX.build_pairs(en_docs, zh_docs) if is_txt
+                 else S.map_chapters(en_docs, zh_docs))
         _log(f"      英文章节 {len(en_docs)} · 中文章节 {len(zh_docs)}")
 
-        # 英文本注释兜底
-        _set(pct=12, stage="读取英文注释")
+        # 英文本注释兜底（txt 没有注释锚点，直接跳过）
         _en_notes_map = {}
-        try:
-            from bil import notes as NO
-            doc = NO.find_endnote_doc(ze, E.read_spine(ze))
-            if doc:
-                _en_notes_map = NO.extract_endnotes(
-                    ze.read(doc).decode("utf-8", errors="replace"))
-                _log(f"[3/6] 英文尾注 {len(_en_notes_map)} 条（中文缺失时兜底）")
-            else:
-                _log("[3/6] 英文本未找到尾注区")
-        except Exception as exc:                                  # noqa: BLE001
-            _log(f"[warn] 英文注释读取失败，跳过兜底：{exc}")
+        if not is_txt:
+            _set(pct=12, stage="读取英文注释")
+            try:
+                from bil import notes as NO
+                doc = NO.find_endnote_doc(ze, E.read_spine(ze))
+                if doc:
+                    _en_notes_map = NO.extract_endnotes(
+                        ze.read(doc).decode("utf-8", errors="replace"))
+                    _log(f"[3/6] 英文尾注 {len(_en_notes_map)} 条（中文缺失时兜底）")
+                else:
+                    _log("[3/6] 英文本未找到尾注区")
+            except Exception as exc:                              # noqa: BLE001
+                _log(f"[warn] 英文注释读取失败，跳过兜底：{exc}")
+        else:
+            _log("[3/6] txt 模式：跳过英文注释兜底")
 
         # 选章
         jobs = []
@@ -494,8 +516,9 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
         # 书名补「双语」后缀（已有就不重复）；用户没填就用中文版书名
         if (title or "").strip() in ("", "双语版", "中英双语版"):
             title = ""
-        title = BM.bilingual_title((title or "").strip() or meta.title) \
-            or "中英双语版"
+        base_title = (title or "").strip() or (meta.title if meta else "") \
+            or (zh_path.stem or "")
+        title = BM.bilingual_title(base_title) or "中英双语版"
         build.OUT_DIR = BUILD_DIR
         dest = Path(out_dir) if out_dir is not None else BUILD_DIR
         dest.mkdir(parents=True, exist_ok=True)
@@ -716,12 +739,12 @@ PAGE = """<!DOCTYPE html>
   <div class="row">
     <div class="field">
       <label>英文 epub</label>
-      <label class="file"><input type="file" id="en" accept=".epub">
+      <label class="file"><input type="file" id="en" accept=".epub,.txt">
         <b style="color:var(--accent)">选择或拖入文件</b><span id="enN">未选择</span></label>
     </div>
     <div class="field">
       <label>中文 epub</label>
-      <label class="file"><input type="file" id="zh" accept=".epub">
+      <label class="file"><input type="file" id="zh" accept=".epub,.txt">
         <b style="color:var(--accent)">选择或拖入文件</b><span id="zhN">未选择</span></label>
     </div>
   </div>
@@ -864,8 +887,9 @@ function bindFile(id,nameId){
     e.preventDefault(); lab.classList.remove('drag');
     const f=e.dataTransfer&&e.dataTransfer.files[0];
     if(!f) return;
-    if(!f.name.toLowerCase().endsWith('.epub')){
-      name.textContent='仅支持 .epub 文件'; name.style.color='#e06c5a';
+    if(!f.name.toLowerCase().endsWith('.epub')
+       && !f.name.toLowerCase().endsWith('.txt')){
+      name.textContent='仅支持 .epub / .txt 文件'; name.style.color='#e06c5a';
       return;
     }
     try{const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files;}

@@ -51,6 +51,12 @@ _EN_HEAD_KINDS = [
     (r"^epilogue", "epilogue"), (r"^prologue", "prologue"),
 ]
 _EN_PART_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+# 英文章号的单词写法（Chapter One → 1）；txt 导入常见，epub 也偶有
+_EN_NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                 "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+                 "fifteen": 15, "sixteen": 16, "seventeen": 17,
+                 "eighteen": 18, "nineteen": 19, "twenty": 20}
 
 
 def key_of_en(blocks) -> ChapterKey:
@@ -67,11 +73,17 @@ def key_of_en(blocks) -> ChapterKey:
         raw = m.group(1)
         n = _EN_PART_WORDS.get(raw, _roman(raw) if re.fullmatch(r"[ivxlc]+", raw) else 0)
         return ChapterKey("part", n, text[:40])
-    m = re.search(r"chapter\s+(\d+|[ivxlc]+)", text.lower())
+    m = re.search(r"chapter\s+(\d+|[ivxlc]+|\w+)", text.lower())
     if m:
         raw = m.group(1)
-        n = int(raw) if raw.isdigit() else _roman(raw)
-        return ChapterKey("chapter", n, heads[-1][:40] if heads else "")
+        if raw.isdigit():
+            n = int(raw)
+        elif re.fullmatch(r"[ivxlc]+", raw):
+            n = _roman(raw)
+        else:
+            n = _EN_NUM_WORDS.get(raw, -1)
+        if n > 0:
+            return ChapterKey("chapter", n, heads[-1][:40] if heads else "")
     if not heads or sum(len(b.text) for b in blocks) < 400:
         return ChapterKey("skip", 0, h0[:40])
     return ChapterKey("other", 0, h0[:40])
@@ -96,7 +108,7 @@ def key_of_zh(blocks) -> ChapterKey:
     h0 = heads[0].strip() if heads else ""
     if _ZH_SKIP.search(h0) or not heads:
         return ChapterKey("skip", 0, h0[:40])
-    m = re.search(r"第([一二三四五六七八九十百]+)章", text)
+    m = re.search(r"第([0-9一二三四五六七八九十百千]+)章", text)
     if m:
         return ChapterKey("chapter", cn2int(m.group(1)), h0[:40])
     m = re.search(r"第([一二三四五六七八九十]+)部分", text)
