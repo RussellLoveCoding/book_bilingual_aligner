@@ -132,6 +132,34 @@ def _valid_section_map(mapping, n, m) -> bool:
     return sorted(es) == list(range(n)) and sorted(zs) == list(range(m))
 
 
+def _valid_refine_map(mapping, n, m, min_cov: float = 0.70) -> bool:
+    """校验 LLM 窗口细化的段落映射：**允许空侧**（[i,[]] / [[],j]）。
+
+    为什么要与 `_valid_section_map` 分开：技术书（机器学习实战）的中文版
+    整段保留英文代码，代码段没有独立的中文对应，LLM 按提示输出 [null,j]
+    是**正确答案**，但全覆盖校验会把它整份判死 —— 实测 ch1「LLM 细化
+    0 节成功」就是这么来的（2026-09-14）。
+
+    判据：不越界、不重复使用行号、覆盖率 ≥ min_cov。不要求单调
+    （refine 的 prompt 本来就允许中文倒装）。
+    """
+    if not mapping:
+        return False
+    es, zs = [], []
+    for ea, zb in mapping:
+        ea = list(ea or [])
+        zb = list(zb or [])
+        if not ea and not zb:
+            return False
+        es += ea
+        zs += zb
+    if len(set(es)) != len(es) or len(set(zs)) != len(zs):
+        return False
+    if any(not (0 <= i < n) for i in es) or any(not (0 <= j < m) for j in zs):
+        return False
+    return len(es) >= min_cov * n and len(zs) >= min_cov * m
+
+
 def _metrics(p, en_ps, zh_ps):
     w = sum(A.en_words(en_ps[i].text) for i in p.en)
     c = sum(A.han_chars(zh_ps[j].text) for j in p.zh)
@@ -155,7 +183,10 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 continue
             out = llm.refine_window([p.text for p in s.en_paras],
                                     [p.text for p in s.zh_paras])
-            if not out or not _valid_section_map(out, len(s.en_paras), len(s.zh_paras)):
+            # 细化用宽松校验（允许空侧）：技术书代码段没有中文对应，
+            # 全覆盖校验会把正确输出整份判死
+            if not out or not _valid_refine_map(out, len(s.en_paras),
+                                                len(s.zh_paras)):
                 st["failed"] += 1
                 continue
             new = [A.Pair(en=list(a), zh=list(b)) for a, b in out]

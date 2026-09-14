@@ -75,6 +75,9 @@ def main():
                     help="单本书 LLM 硬上限（元）；超过停用 LLM 走确定性")
     ap.add_argument("--concurrency", type=int, default=4,
                     help="并发处理的章节数（LLM 章节级并发，默认 4）")
+    ap.add_argument("--max-section", type=int, default=60,
+                    help="LLM 窗口细化的单节段落上限（技术书代码块多，"
+                         "建议 150~200，否则大节全部跳过细化）")
     args = ap.parse_args()
 
     want = None
@@ -123,6 +126,12 @@ def main():
     for cp in pairs:
         if not cp.zh_path:
             continue
+        if not cp.en_path:
+            # LLM 章级映射可能给出 1:0 章（中文有、英文无，如中文版
+            # 独有的前言/附录）：当前单章流水线要求两侧都有文档，
+            # 先跳过并记录，待「一侧大段缺失」专项处理。
+            print(f"[章映射] 跳过 1:0 章（英文缺）：{cp.key} {cp.zh_title[:30]}")
+            continue
         if cp.key in ("notes", "index", "skip"):
             continue
         if cp.key.startswith("part"):
@@ -146,7 +155,8 @@ def main():
                                 en_notes_map=_en_notes_map)
         res.en_zip, res.zh_zip = _ze, _zz   # 任一为 None 时图位自动降级
         if llm is not None and llm.enabled:
-            st = P.apply_llm(res, llm, title=cp.en_title)
+            st = P.apply_llm(res, llm, title=cp.en_title,
+                             max_section=args.max_section)
             # v4：内容审查勘误（删减/替换 + 边界错位打标 → 忠实补全）
             ec = P.apply_error_repair(res, llm, title=cp.en_title)
             st["censor"] = ec

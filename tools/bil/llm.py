@@ -120,12 +120,12 @@ class LLM:
         self.workers = max(1, int(os.environ.get("LLM_WORKERS", workers)))
         self.rpm = int(os.environ.get("LLM_RPM", rpm))
         self.max_retry = max_retry
-        # 默认对 DeepSeek 系关思考（LLM_NO_THINKING=0 可强制打开）
+        # 思考模式**一律默认关闭**（用户定调：LLM 绝不能开思考）——
+        # 实测开着思考会烧掉 97% 的输出 token（9676 里 9400 是 reasoning），
+        # 且对齐/映射类任务毫无收益。LLM_NO_THINKING=0 可强制打开。
         if no_thinking is None:
             env = os.environ.get("LLM_NO_THINKING", "").strip()
-            no_thinking = (env != "0") and (
-                "deepseek" in self.base_url.lower()
-                or "deepseek" in self.model.lower())
+            no_thinking = env != "0"
         self.no_thinking = bool(no_thinking)
         self.limiter = RateLimiter(self.rpm)
         self.calls = 0
