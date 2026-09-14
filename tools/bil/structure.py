@@ -192,12 +192,14 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
             cp.map_src = "key"
         return pairs
 
-    seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
-    # ② ③：确定性结果留下当保底，先试 LLM 章级（只在给了客户端且可用时）
+    # ② 有 LLM 就先问 LLM（章级标题配对，单次约 2k token，远快于确定性 DP）；
+    #    确定性顺序兜底只在 LLM 不可用/失败时才跑 —— 2026-09-14 起调换了
+    #    顺序：旧实现先跑 130s 的文档级 DP，再问 LLM，纯浪费。
     if llm is not None and getattr(llm, "enabled", False):
         llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm)
         if llm_pairs:
             return llm_pairs
+    seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
     if seq:
         for cp in seq:
             cp.map_src = "seq"
@@ -289,12 +291,19 @@ def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None):
 
 
 def _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, old_pairs):
-    """顺序兜底：把「文档序列」交给文档级 DP 配对（允许跳文档）。
+    """顺序兜底：文档级 DP 配对（允许跳文档）。
 
     单纯按位置配对会在「一侧多一个文档」时整体错位 —— 实测《思考，快与慢》
     英文多一个 Notes 文档，导致 Appendix B ↕ 致谢、Acknowledgments ↕ 目录
-    全错位。这里复用段落级 DP 的同一套机制（长度比 + 跳段代价）做文档级
-    配对：多出来的文档被诚实地判为 1:0 / 0:1，后面的文档重新对上。
+    全错位。这里用**轻量 DP**（只看两篇文档的长度比 + 跳文档代价）做文档级
+    配对：多出来的文档被诚实判为 1:0 / 0:1，后面的文档重新对上。
+
+    ⚠ 2026-09-14 性能重写：旧实现复用 `align.align_sections`，那会对每对
+    候选文档跑一遍完整段落 DP 并重建 L1 词表 —— 《思考，快与慢》整本
+    确定性耗时 130.8s（其中 129.7s 在此，pair_cost 被调 4844 万次），
+    而且 process_chapter 之后还会重复同样的对齐。用户规则：无模型对齐
+    只服务简单文本，**必须 30 秒内跑完**。现在章级配对只比长度比，
+    耗时毫秒级；精细对齐交给后面按章做（或交给 LLM）。
     """
     from . import align as A
 
@@ -303,30 +312,79 @@ def _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, old_pairs):
     if not en_seq or not zh_seq:
         return []
 
-    class _S:                     # align_sections 只用到 .paras / .visuals
-        def __init__(self, blocks):
-            self.paras = [b for b in blocks
-                          if b.type != "heading" and not E.is_note_item(b)]
-            self.visuals = []
+    def _len(blocks, is_en):
+        txt = " ".join(b.text or "" for b in blocks
+                       if b.type != "heading" and not E.is_note_item(b))
+        return max(1.0, float(A.en_words(txt) if is_en else A.han_chars(txt)))
 
-    en_s = [_S(en_docs[p]) for p in en_seq]
-    zh_s = [_S(zh_docs[p]) for p in zh_seq]
-    groups = A.align_sections(en_s, zh_s, band=2)
+    en_len = [_len(en_docs[p], True) for p in en_seq]
+    zh_len = [_len(zh_docs[p], False) for p in zh_seq]
+    total_e = sum(en_len) or 1.0
+    total_z = sum(zh_len) or 1.0
+    k = total_z / total_e                     # 全局「中文字符 / 英文词」比
+
+    import math
+
+    def _cost(i, j):
+        r = (zh_len[j] + 1.0) / (en_len[i] * k + 1.0)
+        return abs(math.log(r))
+
+    SKIP = 0.8                                # 跳一篇文档的代价
+    n, m = len(en_seq), len(zh_seq)
+    INF = float("inf")
+    dp = [[INF] * (m + 1) for _ in range(n + 1)]
+    back = [[None] * (m + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for i in range(n + 1):
+        for j in range(m + 1):
+            cur = dp[i][j]
+            if cur == INF:
+                continue
+            if i < n and j < m:
+                v = cur + _cost(i, j)
+                if v < dp[i + 1][j + 1]:
+                    dp[i + 1][j + 1], back[i + 1][j + 1] = v, (i, j, True)
+            if i < n:
+                v = cur + SKIP
+                if v < dp[i + 1][j]:
+                    dp[i + 1][j], back[i + 1][j] = v, (i, j, False)
+            if j < m:
+                v = cur + SKIP
+                if v < dp[i][j + 1]:
+                    dp[i][j + 1], back[i][j + 1] = v, (i, j, False)
+
+    groups: list[tuple[list, list]] = []
+    i, j = n, m
+    while i or j:
+        step = back[i][j]
+        if step is None:
+            break
+        pi, pj, matched = step
+        if matched:
+            if groups and (i > n or j > m):
+                pass
+            groups.append(([pi], [pj]))
+        elif i > pi:
+            groups.append(([pi], []))
+        else:
+            groups.append(([], [pj]))
+        i, j = pi, pj
+    groups.reverse()
 
     def _title(blocks):
         return next((b.text for b in blocks if b.type == "heading"), "")
 
-    out, n = [], 0
+    out, c = [], 0
     for ei, zi in groups:
-        ep = [en_seq[i] for i in ei]
-        zp = [zh_seq[j] for j in zi]
+        ep = [en_seq[x] for x in ei]
+        zp = [zh_seq[x] for x in zi]
         if not ep and not zp:
             continue
-        n += 1
+        c += 1
         out.append(ChapterPair(
             ep[0] if ep else "",
             zp[0] if zp else "",
-            f"chapter{n}",
+            f"chapter{c}",
             " / ".join(_title(en_docs[p]) for p in ep),
             " / ".join(_title(zh_docs[p]) for p in zp)))
     return out

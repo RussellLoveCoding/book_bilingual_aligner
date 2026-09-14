@@ -623,7 +623,7 @@ def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off):
 
 def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                     r_lo=1.0, r_hi=3.0, fail_rate=0.20, band=2,
-                    chapter_visuals=None, en_notes_map=None):
+                    chapter_visuals=None, en_notes_map=None, llm_gate=0.15):
     refs = E.extract_noterefs(en_blocks)
     n_notes = len(refs)
     zh_kept, notes, nl = cut_notes(zh_blocks, n_notes)
@@ -693,19 +693,42 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     # 分窗对齐（图注号/正文图引用当锚点），再按「英文段的所属小节」
     # 把结果切回小节 —— 小节退化成渲染单位，不再是对齐单位。
     llm_map = None          # {en 全章段序: [zh 全章段序...]}
+    _dp_bad = False         # DP 体检不达标 → DP 不可信，不再拿它当裁判
     if (llm is not None and getattr(llm, "enabled", False)
             and en_secs and zh_secs):
         flat_en = [p for s in en_secs for p in s.paras]
         flat_zh = [p for s in zh_secs for p in s.paras]
         if flat_en and flat_zh:
-            shim = SectionResult(en_paras=flat_en, zh_paras=flat_zh,
-                                 pairs=A.align_section(flat_en, flat_zh, k=K))
-            mm = _refine_windowed(llm, shim)
-            if mm:
-                llm_map = {i: list(zs) for i, zs in mm}
-                src = "LLM·章窗"
+            shim = SectionResult(
+                en_paras=flat_en, zh_paras=flat_zh,
+                pairs=A.align_section(flat_en, flat_zh, k=K))
+            # ── LLM 准入闸门（2026-09-14 用户定策）────────────────────
+            # 免费的长度比体检先给 DP 结果打分：达标就不花 LLM 的钱
+            # （《思考快与慢》DP 命中 97%，全程调 LLM 纯属烧钱）；
+            # 不达标（复杂排版把 DP 冲垮，ML bad 90%）才请 LLM 分窗。
+            _gate = AU.audit_pairs(shim.pairs, flat_en, flat_zh,
+                                   r_lo=r_lo, r_hi=r_hi,
+                                   fail_rate=fail_rate)
+            if _gate.rate <= llm_gate:
+                # ⚠ 检查的必须就是使用的：体检达标时**直接采用这份扁平
+                # DP 结果当映射**，并由它反推小节单元。旧实现体检看扁平
+                # 结果、实际却走「小节映射 + 逐小节 DP」，两者可能分裂
+                # （实测 think2 ch2：体检 5% 达标，成品却 96% bad）。
+                llm_map = {}
+                for _p in shim.pairs:
+                    for _i in (_p.en or []):
+                        llm_map.setdefault(_i, []).extend(_p.zh or [])
                 sec_pairs = _chapter_units(llm_map, en_secs, zh_secs,
                                            _en_off, _zh_off)
+                src = f"DP·体检{_gate.rate:.0%}达标"
+            else:
+                _dp_bad = True
+                mm = _refine_windowed(llm, shim)
+                if mm:
+                    llm_map = {i: list(zs) for i, zs in mm}
+                    src = "LLM·章窗"
+                    sec_pairs = _chapter_units(llm_map, en_secs, zh_secs,
+                                               _en_off, _zh_off)
     # 退回小节级：LLM 不可用/失败时才走标题配对小节映射
     if sec_pairs is None and (llm is not None and getattr(llm, "enabled", False)
                               and len(en_secs) != len(zh_secs)
@@ -787,18 +810,25 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             # （97%），LLM 无条件覆盖会把 153 个告警做成 824 个、还把
             # 现成译文换成机翻；而 ML 那类书 DP 全崩（90% bad），
             # LLM 完胜。让 audit 在**每一小节**上做这个选择。
-            pairs = A.align_section(a_paras, b_paras, k=K)
-            pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
-                                      r_lo=max(1.2, r_lo), r_hi=r_hi)
-            if llm_map is not None:
-                cand = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
-                                       _en_off, _zh_off)
-                ar_dp = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo,
-                                       r_hi=r_hi, fail_rate=fail_rate)
-                ar_llm = AU.audit_pairs(cand, a_paras, b_paras, r_lo=r_lo,
-                                        r_hi=r_hi, fail_rate=fail_rate)
-                if ar_llm.bad < ar_dp.bad:
-                    pairs, n_fix, src = cand, 0, src + "+选LLM"
+            # ⚠ DP 体检不达标（_dp_bad）时不再拿 DP 当裁判：它在复杂排版
+            # 上既不准（ML bad 90%）又慢（逐小节 DP 比对），直接采信 LLM。
+            if llm_map is not None and _dp_bad:
+                pairs = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
+                                        _en_off, _zh_off)
+                n_fix = 0
+            else:
+                pairs = A.align_section(a_paras, b_paras, k=K)
+                pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
+                                          r_lo=max(1.2, r_lo), r_hi=r_hi)
+                if llm_map is not None:
+                    cand = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
+                                           _en_off, _zh_off)
+                    ar_dp = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo,
+                                           r_hi=r_hi, fail_rate=fail_rate)
+                    ar_llm = AU.audit_pairs(cand, a_paras, b_paras, r_lo=r_lo,
+                                            r_hi=r_hi, fail_rate=fail_rate)
+                    if ar_llm.bad < ar_dp.bad:
+                        pairs, n_fix, src = cand, 0, src + "+选LLM"
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)

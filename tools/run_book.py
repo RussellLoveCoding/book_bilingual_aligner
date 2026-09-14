@@ -78,6 +78,9 @@ def main():
     ap.add_argument("--max-section", type=int, default=60,
                     help="LLM 窗口细化的单节段落上限（技术书代码块多，"
                          "建议 150~200，否则大节全部跳过细化）")
+    ap.add_argument("--llm-gate", type=float, default=0.15,
+                    help="LLM 准入闸门：DP 体检 bad 率低于此值就不调 LLM"
+                         "（免费的长度比体检当裁判；简单排版书全程零花费）")
     args = ap.parse_args()
 
     want = None
@@ -152,7 +155,8 @@ def main():
     def _run_one(cp):
         res = P.process_chapter(en_docs[cp.en_path], zh_docs[cp.zh_path],
                                 key=cp.key, llm=llm,
-                                en_notes_map=_en_notes_map)
+                                en_notes_map=_en_notes_map,
+                                llm_gate=args.llm_gate)
         res.en_zip, res.zh_zip = _ze, _zz   # 任一为 None 时图位自动降级
         if llm is not None and llm.enabled:
             st = P.apply_llm(res, llm, title=cp.en_title,
