@@ -411,7 +411,10 @@ def render_chapter(res, prefix=""):
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
                 parts.append(f'<p class="zh censorship_fix">'
                              f'{censor_note()}{_esc(p.zh_fix)}</p>')
-            elif p.zh:
+            elif p.zh and not E.no_translate_reason(
+                    " ".join(sec.en_paras[x].text for x in p.en)):
+                # 禁止翻译类（参考文献/纯符号/极短标记）不出中文行：
+                # 中文版即使有对应也是重复噪音
                 _j = p.zh[0]
                 while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
