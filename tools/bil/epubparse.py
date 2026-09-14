@@ -58,6 +58,13 @@ _PIRACY_NAME_RE = re.compile(
     r"(sharebooks|sharebook|telegram|t\.me|wechat|wx_|扫码|关注公众号|加群|"
     r"ebookfree|free-?book|kindlefree|libgen)", re.I)
 
+# 出版方标记/装饰图：z-lib 版实测有 PCHI_1.gif（5KB，正文图都是 13~58KB
+# 的 PNG）。这类图没有图注、尺寸远小于正文插图，混进配对会抢走中文图的
+# 图位并打乱顺序（think2 ch30 实测：中文图 [61,62] 被渲染成 [62,61]）。
+_LOGO_NAME_RE = re.compile(r"(pchi|logo|icon|watermark|spacer|ornament)",
+                           re.I)
+_TINY_IMG_BYTES = 8 * 1024          # 8KB 以下且是 GIF → 装饰图
+
 # 广告图签名：本项目实测 4 张（实际同一张）均为 337x386 PNG / 约 108KB
 _JUNK_SIZE_SIG = {(337, 386)}
 
@@ -99,7 +106,11 @@ def image_size(data: bytes) -> tuple[int, int] | None:
 def is_junk_image(src: str) -> bool:
     """按文件名判断盗版/广告图（第一层，无需读文件）。"""
     name = (src or "").replace("\\", "/").rsplit("/", 1)[-1]
-    return bool(name and _PIRACY_NAME_RE.search(name))
+    if not name:
+        return False
+    if _LOGO_NAME_RE.search(name):
+        return True
+    return bool(_PIRACY_NAME_RE.search(name))
 
 
 def is_junk_image_data(src: str, data: bytes | None) -> bool:
@@ -114,6 +125,9 @@ def is_junk_image_data(src: str, data: bytes | None) -> bool:
     name = (src or "").replace("\\", "/").rsplit("/", 1)[-1]
     if not name or data is None:
         return False
+    # 极小 GIF：正文插图不会这么小（实测 PCHI_1.gif 5KB vs 正文 13~58KB）
+    if name.lower().endswith(".gif") and len(data) < _TINY_IMG_BYTES:
+        return True
     if _PLACEHOLDER_HINT_RE.search(name):
         sz = image_size(data)
         if sz and sz in _JUNK_SIZE_SIG:

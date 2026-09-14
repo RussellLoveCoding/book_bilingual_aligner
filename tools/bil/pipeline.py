@@ -815,6 +815,13 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             if llm_map is not None and _dp_bad:
                 pairs = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
                                         _en_off, _zh_off)
+                # ⚠ LLM 路径生成的配对必须补算长度比指标：audit_pairs 只读
+                # p.r，没算过就恒为 0.0 → 每一对都被判 "ratio 0.0" bad →
+                # 整章 100% FAIL（实测 think2 附录 A/B：抽样配对全对，指标
+                # 却报 135/135 bad）。DP 路径由 align_section 内部填 r，
+                # LLM 路径没有，必须在这里补。
+                for p in pairs:
+                    _metrics(p, a_paras, b_paras)
                 n_fix = 0
             else:
                 pairs = A.align_section(a_paras, b_paras, k=K)
@@ -823,6 +830,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                 if llm_map is not None:
                     cand = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
                                            _en_off, _zh_off)
+                    for p in cand:                  # 同上：先补指标再比
+                        _metrics(p, a_paras, b_paras)
                     ar_dp = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo,
                                            r_hi=r_hi, fail_rate=fail_rate)
                     ar_llm = AU.audit_pairs(cand, a_paras, b_paras, r_lo=r_lo,
@@ -999,21 +1008,38 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
             claims[used] = True
             matched[i] = (zh_vs_all[used], used, "", None)
             used += 1
-    # 按英文图原顺序落 FigureRef
+    # 落 FigureRef：**按中文源文档里的图位顺序**排（不是英文顺序）。
+    # 实测《思考，快与慢》新版：同一章两张图在英文版与中文版里先后不同，
+    # 按英文序渲染会出现「配对没错、顺序反转」的 5 处错（check_figs 15/20）。
+    # 成品渲染的是中文图，所以顺序必须跟中文源。
+    _pending = []
     for i, v in enumerate(en_figs):
         m = matched[i]
         zh_v = m[0] if m else None
         zh_cap_txt = m[2] if m else ""
         anchor = m[3] if m else None
-        sr.figures.append(FigureRef(
-            en_src=v.block.src,
-            zh_src=zh_v.block.src if zh_v else "",
-            caption_en=v.block.caption,
-            caption_zh=(zh_cap_txt or (zh_v.block.caption if zh_v else ""))
-            if zh_v else "",
-            after=anchor if anchor is not None
-            else _anchor_pair(v.after, sr),
-            zh_missing=zh_v is None))
+        # ⚠ 锚点优先按**中文**段落位置算：成品渲染的是中文图，图位自然
+        # 要落在中文正文里的原位。用英文位置会在两版图序不同时把锚点
+        # 弄反（实测 think2 ch9：中文序 [21,10]，英文锚点给出 21→6 / 10→0）。
+        if m is not None:
+            _gpos = zh_pos[m[1]][1] if m[1] < len(zh_pos) else None
+            if _gpos is not None:
+                _za = l2p.get(g2l.get(_gpos, -1))
+                if _za is not None:
+                    anchor = _za
+        _pending.append((
+            m[1] if m else 10 ** 6 + i,          # 中文图位序号；缺中文的排最后
+            FigureRef(
+                en_src=v.block.src,
+                zh_src=zh_v.block.src if zh_v else "",
+                caption_en=v.block.caption,
+                caption_zh=(zh_cap_txt or (zh_v.block.caption if zh_v else ""))
+                if zh_v else "",
+                after=anchor if anchor is not None
+                else _anchor_pair(v.after, sr),
+                zh_missing=zh_v is None)))
+    _pending.sort(key=lambda t: t[0])
+    sr.figures = [f for _k, f in _pending]
     sr.en_visuals = en_figs
     return used, claims
 
