@@ -782,17 +782,23 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         elif not a_paras and not b_paras:
             sr = SectionResult(a_t, b_t, [], AU.AuditResult(), [], [])
         else:
+            # 体检当裁判：DP 与整章 LLM 映射各出一套配对，逐小节取
+            # bad 更少的那个。理由：《思考快与慢》这类书 DP 本来就准
+            # （97%），LLM 无条件覆盖会把 153 个告警做成 824 个、还把
+            # 现成译文换成机翻；而 ML 那类书 DP 全崩（90% bad），
+            # LLM 完胜。让 audit 在**每一小节**上做这个选择。
+            pairs = A.align_section(a_paras, b_paras, k=K)
+            pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
+                                      r_lo=max(1.2, r_lo), r_hi=r_hi)
             if llm_map is not None:
-                pairs = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
-                                        _en_off, _zh_off)
-                n_fix = 0
-            else:
-                pairs = A.align_section(a_paras, b_paras, k=K)
-                # E4 倾斜修正：单调 DP 在「译文并段/拆段」处会把边界摊到相邻 pair，
-                # 表现为「英文某段下面挂着隔壁段的中文」。先做一次局部重对齐，
-                # 把窗口内的段落边界重新切开；修不好的留给 LLM 细化。
-                pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
-                                          r_lo=max(1.2, r_lo), r_hi=r_hi)
+                cand = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
+                                       _en_off, _zh_off)
+                ar_dp = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo,
+                                       r_hi=r_hi, fail_rate=fail_rate)
+                ar_llm = AU.audit_pairs(cand, a_paras, b_paras, r_lo=r_lo,
+                                        r_hi=r_hi, fail_rate=fail_rate)
+                if ar_llm.bad < ar_dp.bad:
+                    pairs, n_fix, src = cand, 0, src + "+选LLM"
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)
