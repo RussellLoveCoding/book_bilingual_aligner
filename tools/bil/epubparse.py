@@ -214,6 +214,9 @@ class Block:
     src: str = ""        # 图片资源相对路径（原样，供打包时解析）
     caption: str = ""    # 图注（figcaption 的纯文本）
     junk: bool = False   # 盗版/广告图标记（读到字节后由上层复核）
+    # v5：该块已被相邻图表的 caption 吸收（纯标号段，如「表29-1」「Figure 1.2」）。
+    # 渲染时不再重复输出（标号已经作为 figcaption 跟着图/表出现）。
+    cap_consumed: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -422,6 +425,49 @@ def _promote_split_headings(results: list[Block]) -> int:
     return n
 
 
+# 纯标号段：「表29-1」「图1-2」「Figure 1.2」「Table 4」（尾部允许一个分隔符）
+_CAP_ONLY_RE = re.compile(
+    r"^(?:[图表]\s*\d+\s*[-–—]\s*\d+"
+    r"|(?:Figure|Table|Fig\.?|Equation|Eq\.?)\s*\d+(?:[.\-–—]\d+)?)"
+    r"\s*[.．:：·、,，\-–—]?\s*$", re.I)
+
+
+def _fill_adjacent_captions(blocks: list[Block]) -> int:
+    """把**紧邻图/表的纯标号段**回填成该图表的 caption。
+
+    为什么需要（用户报「表格和图片没有了标号」）：中文精排 epub 的图表标号
+    常常**独立成段**（表注在图上方、图注在图下方），有 `<figcaption>` 的
+    极少 → `visual.caption` 为空 → 渲染出来的图/表一个标号都没有；
+    标号段自己又可能被配对到很远的地方（实测《思考快与慢》第17章：
+    源里「表17-1」与表格图紧邻，成品里两者隔了 1.5 万字符）。
+
+    处理：在图上/下 ≤2 块内找**纯标号**段（不掺正文），把整段文本回填进
+    caption（渲染成 figcaption），并给那段标记 `cap_consumed`，渲染时
+    不再重复输出。**不动对齐**：块仍在原位、仍参与配对，只是渲染时
+    不再单独出现一次。
+    """
+    n = 0
+    for i, b in enumerate(blocks):
+        if not getattr(b, "is_visual", False) or getattr(b, "junk", False):
+            continue
+        if (b.caption or "").strip():        # 源里已有 figcaption，不动
+            continue
+        for j in (i + 1, i - 1, i + 2, i - 2):
+            if not (0 <= j < len(blocks)):
+                continue
+            nb = blocks[j]
+            if getattr(nb, "is_visual", False) or nb.type == "heading":
+                continue
+            t = (nb.text or "").strip()
+            if not t or len(t) > 60 or not _CAP_ONLY_RE.match(t):
+                continue
+            b.caption = t
+            nb.cap_consumed = True
+            n += 1
+            break
+    return n
+
+
 def parse_blocks(src: str, strict: bool = True,
                  doc_path: str = "", zf: zipfile.ZipFile | None = None) -> list[Block]:
     """扫描 src，返回顶层块序列（容器块被展开）。
@@ -603,6 +649,9 @@ def parse_blocks(src: str, strict: bool = True,
     for b in merged:
         if b.type == "heading":
             b.text = norm_cjk_spacing(b.text)
+
+    # 紧邻标号回填成图表 caption（见 _fill_adjacent_captions 说明）
+    _fill_adjacent_captions(merged)
 
     if strict:
         carried = sum(len(re.findall(r"<img\b", b.html, re.I)) for b in merged)

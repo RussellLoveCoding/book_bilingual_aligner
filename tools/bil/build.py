@@ -99,7 +99,16 @@ img.censor-note { margin-right: .3em; }
 figure.fig { margin: 1.3em 0 1.5em; text-align: center; page-break-inside: avoid; }
 figure.fig img { max-width: 100%; height: auto; }
 figure.fig figcaption { font-size: .82em; opacity: .72; margin-top: .5em;
-      line-height: 1.6; text-align: center; }
+                        text-align: center; }
+/* 数据表/公式表（非图片可视块）：整块搬原文 HTML，给最小可读样式 */
+figure.fig.tbl { text-align: left; }
+figure.fig.tbl table { margin: 0 auto; border-collapse: collapse;
+                       font-size: .86em; max-width: 100%; }
+figure.fig.tbl td, figure.fig.tbl th { border: 1px solid rgba(128,128,128,.35);
+                       padding: .34em .55em; vertical-align: top;
+                       text-align: left; line-height: 1.5; }
+figure.fig.tbl caption { font-size: .9em; opacity: .85; text-align: center;
+                       margin: 0 0 .5em; }
 /* 内容审查修复：与正常段落同样式（保证阅读流畅），段首一个图标提示 */
 img.censor-note { display: inline-block; }
 .zh.censorship_fix { }
@@ -390,7 +399,25 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
 
     side="zh"（默认）：中文侧图位，用中文图；没有中文图就不渲染。
     side="en"：英文侧图位，用英文原图（用户要求：英文图保持原位、不删）。
+
+    ⚠ 2026-09-14：**非图片可视块**（`<table>`/`<svg>`：数据表、公式表）
+    没有 src —— 旧实现只看 `src`，`src` 为空就 `return ""`，整张表被
+    **静默丢弃**（实测《思考快与慢》12 张表全没了，读者只看到孤立的
+    「Table 1」标号）。这类块直接把原始 HTML 渲染出来。
     """
+    # 标号跟侧走：英文图优先英文标号（Figure 28），中文图优先中文标号
+    # （图28-1）；本侧没有就用另一侧兜底（旧实现恒取中文，英文图上挂中文标号）
+    cap = ((fig.caption_en or fig.caption_zh) if side == "en"
+           else (fig.caption_zh or fig.caption_en)) or fig.caption_mt or ""
+    # ① 非图片可视块：渲染块自身 HTML（表格/SVG）
+    _blk = ((fig.zh_html if side == "zh" else fig.en_html) or "").strip()
+    if _blk:
+        out = ['<figure class="fig tbl">', _blk]
+        if cap:
+            out.append(f"<figcaption>{_esc(cap)}</figcaption>")
+        out.append("</figure>")
+        return "\n".join(out)
+    # ② 图片：走原来的图片链路
     src = (fig.zh_src if side == "zh" else fig.en_src) or (
         fig.en_src if side == "zh" and not fig.zh_src else "")
     if side == "en":
@@ -399,7 +426,6 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
         src = ""
     if not src:
         return ""
-    cap = fig.caption_zh or fig.caption_en or fig.caption_mt or ""
     name = src.replace("\\", "/").rsplit("/", 1)[-1]
     if _INLINE:
         uri = IMG_CACHE.get(src) or IMG_CACHE.get(fig.en_src or "")
@@ -441,6 +467,18 @@ def _looks_like_zh_title(z: str) -> bool:
     return cjk / len(core) >= 0.75
 
 
+def _cap_consumed(sec, p) -> bool:
+    """该 pair 的中文侧是否整体是「已被图表 caption 吸收的纯标号段」。
+
+    解析层把紧邻图/表的标号段（「表29-1」「Figure 1.2」）回填进了图表的
+    caption，标号会作为 figcaption 跟着图出现 → 这里不再重复输出一遍
+    （标号段与图可能被配对到相隔很远的两个 pair，重复会更显眼）。
+    """
+    if not p.zh:
+        return False
+    return all(getattr(sec.zh_paras[x], "cap_consumed", False) for x in p.zh)
+
+
 def _iter_figures(sec):
     """按 anchor 把图位插回正文：返回 {pair下标: [FigureRef]}（-1 表示段首）。"""
     by_anchor: dict[int, list] = {}
@@ -457,7 +495,9 @@ def _iter_figures_en(sec):
     """
     by_anchor: dict[int, list] = {}
     for f in getattr(sec, "figures", None) or []:
-        if not f.en_src:
+        # ⚠ 判据是「有东西可渲染」：图片看 en_src，**表格/SVG 看 en_html**
+        # （只看 en_src 会把没有 src 的数据表整块漏掉，实测 12 张表全没）
+        if not (f.en_src or f.en_html):
             continue
         by_anchor.setdefault(getattr(f, "en_after", -1), []).append(f)
     return by_anchor
@@ -522,7 +562,8 @@ def render_chapter(res, prefix=""):
                 # 这是逐章图序 19/20 的唯一缺口。
                 # 决策中性：纯渲染层修正，不改变喂给闸门/裁判的任何输入。
                 # 退化小节（DEGRADE_ON_FAIL）末尾会整块重排中文，跳过以免重复。
-                if p.zh and not (sec.degrade and DEGRADE_ON_FAIL):
+                if p.zh and not _cap_consumed(sec, p) \
+                        and not (sec.degrade and DEGRADE_ON_FAIL):
                     _j0 = p.zh[0]
                     while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j0:
                         parts.append(_head_block("h4", "st", "",
@@ -546,15 +587,22 @@ def render_chapter(res, prefix=""):
                     if h:
                         parts.append(h)
                 continue
+            _en_skip = all(getattr(sec.en_paras[x], "cap_consumed", False)
+                           for x in p.en)
             _k = p.en[0]
             while _hip < len(_en_hp) and _en_hp[_hip][0] <= _k:
                 parts.append(_head_block("h4", "st", _en_hp[_hip][1], ""))
                 _hip += 1
-            en_html = " ".join(_rewrite(sec.en_paras[x].html, n_notes, prefix,
-                                        note_texts)
-                               for x in p.en)
             tag = "blockquote" if sec.en_paras[p.en[0]].type == "quote" else "p"
-            parts.append(f'<div class="pair"><{tag} class="en en_original">'
+            if _en_skip:
+                # 英文侧也是「已被图表 caption 吸收的纯标号段」（Table 1 /
+                # Figure 1.2）：标号已经跟着表/图出现，这里不再重复输出。
+                parts.append('<div class="pair">')
+            else:
+                en_html = " ".join(_rewrite(sec.en_paras[x].html, n_notes,
+                                            prefix, note_texts)
+                                   for x in p.en)
+                parts.append(f'<div class="pair"><{tag} class="en en_original">'
                              f'{en_html}</{tag}>')
             # 英文图：落在英文原文的位置（不动、不删）
             for f in figs_en.get(pi, []):
@@ -565,8 +613,9 @@ def render_chapter(res, prefix=""):
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
                 parts.append(f'<p class="zh censorship_fix">'
                              f'{censor_note()}{_esc(p.zh_fix)}</p>')
-            elif p.zh and not E.no_translate_reason(
-                    " ".join(sec.en_paras[x].text for x in p.en)):
+            elif p.zh and not _cap_consumed(sec, p) \
+                    and not E.no_translate_reason(
+                        " ".join(sec.en_paras[x].text for x in p.en)):
                 _j = p.zh[0]
                 while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))

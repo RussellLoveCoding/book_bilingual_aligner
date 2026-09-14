@@ -600,7 +600,10 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
             eM = sum(emass[i] for i in p.en)
             zM = sum(zmass[j] for j in p.zh)
             p.r = zM / max(1.0, sum(ew[i] for i in p.en))
-            dev = abs(math.log(zM / max(1.0, eM)))
+            # ⚠ 两侧都可能是 0（纯符号/纯数字段，如公式碎片 "17 × 24"）：
+            # 直接 log(zM/eM) 会 math domain error 把整本书打断（实测
+            # 2026-09-14 确定性路径）。夹到 ≥1 后，两侧皆空 → dev=0。
+            dev = abs(math.log(max(1.0, zM) / max(1.0, eM)))
             p.c = max(0.05, min(1.0, 1.0 - dev / 0.9))
         else:
             p.r = 0.0

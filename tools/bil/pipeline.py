@@ -42,6 +42,11 @@ class FigureRef:
 
     zh_src 为空表示中文版没有对应插图（降级用英文原图），
     caption_zh 为空表示中文版没给图注（需 LLM 补译或用英文图注）。
+
+    ⚠ 2026-09-14：**非图片类可视块**（`<table>` / `<svg>`，如数据表、公式表）
+    没有 src，只有 HTML —— 必须靠 en_html/zh_html 带过去，否则渲染层
+    只认 src 会**静默丢掉整张表**（实测《思考快与慢》12 张表全没，
+    只剩孤立的「Table 1」标号）。
     """
     en_src: str = ""
     zh_src: str = ""
@@ -51,6 +56,8 @@ class FigureRef:
     en_after: int = -1     # 英文图位（英文原文里的位置，保持不变）
     zh_missing: bool = False
     caption_mt: str = ""   # LLM 补译的图注
+    en_html: str = ""      # 非图片可视块的原始 HTML（表格/SVG）
+    zh_html: str = ""
 
 
 @dataclass
@@ -1069,6 +1076,11 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
             FigureRef(
                 en_src=v.block.src,
                 zh_src=zh_v.block.src if zh_v else "",
+                # 非图片可视块（<table>/<svg>：数据表、公式表）没有 src，
+                # 只有 HTML —— 不带过去渲染层就会整块丢掉（实测 12 张表全没）
+                en_html=(v.block.html or "") if not v.block.src else "",
+                zh_html=((zh_v.block.html or "")
+                         if (zh_v is not None and not zh_v.block.src) else ""),
                 caption_en=v.block.caption,
                 caption_zh=(zh_cap_txt or (zh_v.block.caption if zh_v else ""))
                 if zh_v else "",
