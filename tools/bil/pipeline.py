@@ -47,7 +47,8 @@ class FigureRef:
     zh_src: str = ""
     caption_en: str = ""
     caption_zh: str = ""
-    after: int = -1        # 位于该小节的第 after 个 pair 之后
+    after: int = -1        # 中文图位：位于该小节的第 after 个 pair 之后
+    en_after: int = -1     # 英文图位（英文原文里的位置，保持不变）
     zh_missing: bool = False
     caption_mt: str = ""   # LLM 补译的图注
 
@@ -857,6 +858,35 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             zh_caps=zh_caps, zh_chap=_zh_chap, para_anchor=(_g2l, _l2p))
         _attach_notes(sr, a_paras)
         res.sections.append(sr)
+        # ── 原位标题：把本单元各侧的小节标题记成 (段前位置, 文本) ──────
+        # 渲染时插回原文位置（用户要求：别把合并的小节名拼成一个元素扔到
+        # 章首）。位置 = 该标题在本单元拼接后段落序列中的下标；章标题
+        # （每篇文档的第一个 heading）跳过，它已经作为章名渲染。
+        _en_heads_at, _zh_heads_at = [], []
+        _off = 0
+        for _i in ei:
+            _n = 0
+            for _b in en_secs[_i].blocks:
+                if _b.type == "heading":
+                    if not (_i == ei[0] and _n == 0 and _off == 0):
+                        _en_heads_at.append((_off + _n, _b.text))
+                    continue
+                if not _is_visual(_b):
+                    _n += 1
+            _off += _n
+        _off = 0
+        for _j in zi:
+            _n = 0
+            for _b in zh_secs[_j].blocks:
+                if _b.type == "heading":
+                    if not (_j == zi[0] and _n == 0 and _off == 0):
+                        _zh_heads_at.append((_off + _n, _b.text))
+                    continue
+                if not _is_visual(_b):
+                    _n += 1
+            _off += _n
+        sr.en_heads_at = _en_heads_at
+        sr.zh_heads_at = _zh_heads_at
 
     # 中文多出来的图（通常是被漏掉位置的插图）：追加到最后一个有正文的小节
     leftover_zh = [v for _idx, (v, _p) in enumerate(zh_pos)
@@ -1037,6 +1067,7 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
                 if zh_v else "",
                 after=anchor if anchor is not None
                 else _anchor_pair(v.after, sr),
+                en_after=_anchor_pair(v.after, sr),
                 zh_missing=zh_v is None)))
     _pending.sort(key=lambda t: t[0])
     sr.figures = [f for _k, f in _pending]

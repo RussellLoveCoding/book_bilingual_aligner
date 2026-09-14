@@ -158,7 +158,8 @@ def _content_docs(docs: dict, keys: dict) -> list:
 
 
 def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
-                 llm=None) -> list[ChapterPair]:
+                 llm=None, en_toc: dict | None = None,
+                 zh_toc: dict | None = None) -> list[ChapterPair]:
     """en_docs/zh_docs: {path: blocks}。返回按英文 spine 顺序的配对列表。
 
     三级映射，逐级兜底：
@@ -167,7 +168,10 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
       ③ **LLM 标题配对**：① ② 都不可信时，只把「目录标题 + 段数」给 LLM
          （输出仅 mapping，单次约 2k token）；校验不通过就退回确定性结果，
          LLM **永远不是唯一来源**。
-    """
+
+    en_toc/zh_toc：epub 目录（{文件名: 目录标题}）。正文里的章标题可能只有
+    「第2章」甚至不是 heading（真实章名排在开篇插图之后）——目录是零成本的
+    完整章名来源，优先用它。"""
     en_keys = {p: key_of_en(b) for p, b in en_docs.items()}
     zh_keys = {p: key_of_zh(b) for p, b in zh_docs.items()}
     zh_by_key = {}
@@ -190,7 +194,7 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     if len(usable) >= max(3, len(pairs) * 0.5):
         for cp in pairs:
             cp.map_src = "key"
-        return pairs
+        return _apply_toc(pairs, en_toc, zh_toc)
 
     # ② 有 LLM 就先问 LLM（章级标题配对，单次约 2k token，远快于确定性 DP）；
     #    确定性顺序兜底只在 LLM 不可用/失败时才跑 —— 2026-09-14 起调换了
@@ -198,14 +202,39 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     if llm is not None and getattr(llm, "enabled", False):
         llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm)
         if llm_pairs:
-            return llm_pairs
+            return _apply_toc(llm_pairs, en_toc, zh_toc)
     seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
     if seq:
         for cp in seq:
             cp.map_src = "seq"
-        return seq
+        return _apply_toc(seq, en_toc, zh_toc)
     for cp in pairs:
         cp.map_src = "key"
+    return _apply_toc(pairs, en_toc, zh_toc)
+
+
+def _toc_title(toc: dict | None, path: str) -> str:
+    """按文件名匹配目录标题（toc 的键可能不带目录前缀）。"""
+    if not toc or not path:
+        return ""
+    base = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if base in toc:
+        return toc[base]
+    for k, v in toc.items():
+        if k.replace("\\", "/").rsplit("/", 1)[-1] == base:
+            return v
+    return ""
+
+
+def _apply_toc(pairs: list, en_toc, zh_toc) -> list:
+    """目录标题覆盖正文标题：正文常只有「第2章」，完整章名在目录里。"""
+    for cp in pairs:
+        t = _toc_title(zh_toc, cp.zh_path)
+        if t:
+            cp.zh_title = t
+        t = _toc_title(en_toc, cp.en_path)
+        if t:
+            cp.en_title = t
     return pairs
 
 

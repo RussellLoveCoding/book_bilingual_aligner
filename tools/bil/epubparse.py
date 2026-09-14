@@ -379,6 +379,12 @@ def parse_blocks(src: str, strict: bool = True,
                 _in_non_section(frames, attrs)
                 or _LABEL_HEAD_RE.match(text.strip() or "")):
             btype, level = "para", 0
+        # <blockquote> 里的段落 = 引用（用户要求：中文侧跟随英文的引用格式）。
+        # 英文原书把格言/诗歌放在 blockquote 里（如《思考，快与慢》ch5 的
+        # 「Woes unite foes.」四句），但内层是普通 <p class="EB20...">，
+        # 只看自身 class 认不出来，必须看祖先链。
+        if btype == "para" and any(f["tag"] == "blockquote" for f in frames):
+            btype = "quote"
         blk = Block(tag=tag, cls=cls, html=inner.strip(), text=text,
                     type=btype, level=level)
         blk._src_a = fr["start"]          # 块在 body_text 里的源偏移
@@ -785,3 +791,43 @@ def rewrite_noterefs(html_str: str, prefix: str = "n") -> str:
     return NOTEREF_RE.sub(
         lambda m: f'<a class="noteref" href="#{prefix}{m.group(1)}">'
                   f'<sup>{m.group(1)}</sup></a>', html_str)
+
+
+def load_toc(z: zipfile.ZipFile | None) -> dict[str, str]:
+    """读 epub 目录（toc.ncx / nav.xhtml）→ {文档路径: 目录标题}。
+
+    用途：《思考，快与慢》中文版正文里章标题只有「第2章」，真正的章名
+    （「注意力与努力」）排在开篇插图之后、且不是 heading —— 全靠解析拿不到。
+    目录（toc.ncx）里写的是完整章名，是零成本的权威来源。
+    """
+    out: dict[str, str] = {}
+    if z is None:
+        return out
+    names = z.namelist()
+    ncx = next((n for n in names if n.lower().endswith(".ncx")), None)
+    if ncx:
+        try:
+            t = z.read(ncx).decode("utf-8", "replace")
+        except Exception:                                          # noqa: BLE001
+            t = ""
+        for m in re.finditer(
+                r"<navPoint[^>]*>(.*?)</navPoint>", t, re.S | re.I):
+            body = m.group(1)
+            sm = re.search(r'<content[^>]*src\s*=\s*"([^"#]+)', body, re.I)
+            tm = re.search(r"<text[^>]*>(.*?)</text>", body, re.S | re.I)
+            if not sm or not tm:
+                continue
+            label = strip_tags(tm.group(1)).strip()
+            if label:
+                out.setdefault(sm.group(1).lstrip("./"), label)
+    # nav.xhtml（EPUB3）兜底
+    nav = next((n for n in names
+                if n.lower().endswith(("nav.xhtml", "nav.html"))), None)
+    if nav and not out:
+        t = z.read(nav).decode("utf-8", "replace")
+        for m in re.finditer(r'<a[^>]*href\s*=\s*"([^"#]+)[^"]*"[^>]*>(.*?)</a>',
+                             t, re.S | re.I):
+            href, label = m.group(1).lstrip("./"), strip_tags(m.group(2)).strip()
+            if label:
+                out.setdefault(href, label)
+    return out

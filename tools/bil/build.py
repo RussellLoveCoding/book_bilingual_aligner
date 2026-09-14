@@ -30,6 +30,10 @@ body { margin: 0 5%; line-height: 1.6; }
       font-size: .95em; margin: 0 0 .85em; text-align: justify;
       line-height: 1.75; text-indent: 0; }
 h2.ct { font-size: 1.5em; line-height: 1.35; }
+/* 引用块（英文原书用 blockquote 排格言/诗歌，中文侧跟随同格式） */
+blockquote { margin: .9em 0 .9em 1.2em; padding-left: .9em;
+  border-left: 3px solid rgba(128,128,128,.45); font-style: italic; }
+blockquote.zh { font-style: normal; }
 h3.st { font-size: 1.14em; line-height: 1.4; }
 h2.ct, h3.st { font-weight: 600; margin: 1.6em 0 .8em; }
 /* 章/节标题：英文、中文是两个独立标题元素（不是 span 套在一个里），
@@ -281,9 +285,18 @@ def _rewrite(html_str: str, n_notes: int, prefix: str = "",
     return E.NOTEREF_RE.sub(sub, html_str)
 
 
-def _figure_html(fig, prefix: str) -> str:
-    """渲染一个图位：优先中文图，缺失则降级英文原图；图注优先中文。"""
-    src = fig.zh_src or fig.en_src
+def _figure_html(fig, prefix: str, side: str = "zh") -> str:
+    """渲染一个图位。
+
+    side="zh"（默认）：中文侧图位，用中文图；没有中文图就不渲染。
+    side="en"：英文侧图位，用英文原图（用户要求：英文图保持原位、不删）。
+    """
+    src = (fig.zh_src if side == "zh" else fig.en_src) or (
+        fig.en_src if side == "zh" and not fig.zh_src else "")
+    if side == "en":
+        src = fig.en_src
+    elif not fig.zh_src:
+        src = ""
     if not src:
         return ""
     cap = fig.caption_zh or fig.caption_en or fig.caption_mt or ""
@@ -312,6 +325,20 @@ def _iter_figures(sec):
     return by_anchor
 
 
+def _iter_figures_en(sec):
+    """英文侧图位：按 en_after（英文原文里的位置）分组。
+
+    用户要求：英文图保持在英文原文的位置不动、不删；中文图跟着对应中文
+    段落的相对位置。所以同一张图会在两条流里各出现一次（英文原图 + 中文图）。
+    """
+    by_anchor: dict[int, list] = {}
+    for f in getattr(sec, "figures", None) or []:
+        if not f.en_src:
+            continue
+        by_anchor.setdefault(getattr(f, "en_after", -1), []).append(f)
+    return by_anchor
+
+
 def render_chapter(res, prefix=""):
     """res: pipeline.ChapterResult → xhtml 片段。"""
     parts = []
@@ -337,51 +364,86 @@ def render_chapter(res, prefix=""):
         if _t:
             note_texts[_k + 1] = _t[:800]
     for sec in res.sections:
-        if sec.en_title or sec.zh_title:
+        # 小节标题优先**回到原文位置**（en_heads_at/zh_heads_at，见 pipeline）：
+        # 合并单元把几个英文小节名拼成「A / B」扔在章首是错的（用户实测
+        # 《思考，快与慢》第2章）。只有拿不到原位信息时才退回章首渲染。
+        if (sec.en_title or sec.zh_title) and not (
+                getattr(sec, "en_heads_at", None)
+                or getattr(sec, "zh_heads_at", None)):
             parts.append(_head_block("h3", "st",
                                      sec.en_title, sec.zh_title))
+        _en_hp = list(getattr(sec, "en_heads_at", None) or [])
+        _zh_hp = list(getattr(sec, "zh_heads_at", None) or [])
+        _hip = _hiz = 0
         if sec.degrade and DEGRADE_ON_FAIL:
             parts.append('<p class="zh"><span class="miss">〔本小节自动对齐未通过体检，'
                          '中文整段附于末尾〕</span></p>')
         figs = _iter_figures(sec)
-        # 段首图（anchor = -1）
+        figs_en = _iter_figures_en(sec)
+        # 段首图（anchor = -1）：英文图先出，再中文图
+        for f in figs_en.get(-1, []):
+            h = _figure_html(f, prefix, side="en")
+            if h:
+                parts.append(h)
         for f in figs.get(-1, []):
-            h = _figure_html(f, prefix)
+            h = _figure_html(f, prefix, side="zh")
             if h:
                 parts.append(h)
         for pi, p in enumerate(sec.pairs):
             if not p.en:
                 continue
+            _k = p.en[0]
+            while _hip < len(_en_hp) and _en_hp[_hip][0] <= _k:
+                parts.append(_head_block("h4", "st", _en_hp[_hip][1], ""))
+                _hip += 1
             en_html = " ".join(_rewrite(sec.en_paras[x].html, n_notes, prefix,
                                         note_texts)
                                for x in p.en)
             tag = "blockquote" if sec.en_paras[p.en[0]].type == "quote" else "p"
             parts.append(f'<div class="pair"><{tag} class="en">{en_html}</{tag}>')
+            # 英文图：落在英文原文的位置（不动、不删）
+            for f in figs_en.get(pi, []):
+                h = _figure_html(f, prefix, side="en")
+                if h:
+                    parts.append(h)
             if getattr(p, "censored", False) and p.zh_fix:
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
                 parts.append(f'<p class="zh censorship_fix">'
                              f'{censor_note()}{_esc(p.zh_fix)}</p>')
             elif p.zh:
+                _j = p.zh[0]
+                while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
+                    parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
+                    _hiz += 1
                 zh_html = " ".join(sec.zh_paras[x].html for x in p.zh)
                 zh_html = _put_notes(zh_html, p, prefix, note_texts)
-                parts.append(f'<p class="zh">{zh_html}</p>')
+                # 引用格式跟随英文原文（用户要求：英文是引用，中文也按引用排，
+                # 不再输出 AI 翻译图标 —— 图标只留给审查修复）
+                parts.append(f'<{tag} class="zh">{zh_html}</{tag}>')
             elif p.mt:
                 zh_html = _put_notes(_esc(p.mt), p, prefix, note_texts)
-                parts.append(f'<p class="zh">{mt_flag()}{zh_html}</p>')
+                parts.append(f'<p class="zh">{zh_html}</p>')
             else:
-                parts.append('<p class="zh"><span class="miss">'
-                             '〔中文版未收录，待补译〕</span></p>')
-            parts.append("</div>")
-            # 紧跟该 pair 的图位
+                # 中文缺失时**什么都不输出**（用户要求：不要「〔中文版未收录，
+                # 待补译〕」占位符）。缺就是缺，英文段照样单独成对。
+                pass
+            # 中文图：跟着对应中文段落的相对位置
             for f in figs.get(pi, []):
-                h = _figure_html(f, prefix)
+                h = _figure_html(f, prefix, side="zh")
                 if h:
                     parts.append(h)
+            parts.append("</div>")
         # anchor 超出范围（挂在小节末尾）
         for k in sorted(figs):
             if k >= len(sec.pairs) or k < -1:
                 for f in figs[k]:
-                    h = _figure_html(f, prefix)
+                    h = _figure_html(f, prefix, side="zh")
+                    if h:
+                        parts.append(h)
+        for k in sorted(figs_en):
+            if k >= len(sec.pairs) or k < -1:
+                for f in figs_en[k]:
+                    h = _figure_html(f, prefix, side="en")
                     if h:
                         parts.append(h)
         if sec.degrade and DEGRADE_ON_FAIL and sec.zh_paras:
@@ -1326,7 +1388,8 @@ def _badge_cover_meta(meta):
 
 
 def build_book(results, title="Nexus 中英双语版", singles=True,
-               out_dir: Path | None = None, meta=None):
+               out_dir: Path | None = None, meta=None,
+               emit_en: bool = False, emit_zh: bool = False):
     """出全书成品。
 
     默认三种都出，方便直接分发（<书名> = 标题去掉「双语版」后缀后的主干）：
@@ -1338,7 +1401,10 @@ def build_book(results, title="Nexus 中英双语版", singles=True,
       <书名>_English.epub             仅英文
 
     书名提取不出来（比如标题就叫「双语版」）时退回不带前缀的旧名。
-    singles=False 时只出双语版。
+
+    ⚠ 默认**只出双语版**（emit_en/emit_zh 均 False）：英文原版读者本来就有，
+    我们再产一份没有意义；中文单语版同理（用户 2026-09-14 定）。
+    需要时用 --emit-en / --emit-zh 单独打开。
 
     out_dir 可指定输出目录 —— 试跑/样本必须另开目录，否则会盖掉正式成品
     （出过一次：跑第 5 章样本把全书 bilingual.epub 覆盖了）。
@@ -1353,14 +1419,17 @@ def build_book(results, title="Nexus 中英双语版", singles=True,
     epub = build_epub(results, d / f"{pre}双语.epub", title,
                       lang="bi", meta=meta)
     made = [html, epub]
-    if singles:
+    if singles and (emit_en or emit_zh):
         if meta is not None and orig_cover is not None:
             meta.cover_data = orig_cover   # 单语版用原封面：角标只属于双语版
-        zh = build_epub(results, d / f"{pre}中文.epub",
-                        _lang_title(title, "zh"), lang="zh", meta=meta)
-        en = build_epub(results, d / f"{pre}English.epub",
-                        _lang_title(title, "en"), lang="en", meta=meta)
-        made += [zh, en]
+        if emit_zh:
+            made.append(build_epub(results, d / f"{pre}中文.epub",
+                                   _lang_title(title, "zh"), lang="zh",
+                                   meta=meta))
+        if emit_en:
+            made.append(build_epub(results, d / f"{pre}English.epub",
+                                   _lang_title(title, "en"), lang="en",
+                                   meta=meta))
     tot, matched, mt, miss, bad = _stats_of(results)
     print("\n已生成：")
     for f in made:

@@ -50,7 +50,10 @@ def load_all(en_path=EN_EPUB, zh_path=ZH_EPUB, llm=None):
         en_docs = S.load_docs(ze, E.read_spine(ze))
         zh_docs = S.load_docs(zz, E.read_spine(zz))
     # llm 只用于「章号对不上时的标题配对」（输出仅 mapping，极便宜）
-    pairs = S.map_chapters(en_docs, zh_docs, llm=llm)
+    en_toc = E.load_toc(ze) if not en_txt else {}
+    zh_toc = E.load_toc(zz) if not zh_txt else {}
+    pairs = S.map_chapters(en_docs, zh_docs, llm=llm,
+                           en_toc=en_toc, zh_toc=zh_toc)
     return en_docs, zh_docs, pairs
 
 
@@ -78,6 +81,16 @@ def main():
     ap.add_argument("--max-section", type=int, default=60,
                     help="LLM 窗口细化的单节段落上限（技术书代码块多，"
                          "建议 150~200，否则大节全部跳过细化）")
+    ap.add_argument("--emit-en", action="store_true",
+                    help="额外产出英文单语版（默认不产：英文原版本来就有）")
+    ap.add_argument("--emit-zh", action="store_true",
+                    help="额外产出中文单语版（默认不产）")
+    ap.add_argument("--ai-fill-missing", action="store_true",
+                    help="用 AI 补译「英文有、中文没有」的段落（默认关："
+                         "技术书/科普书其实没有真缺失，转了纯浪费 token）")
+    ap.add_argument("--ai-repair-censor", action="store_true",
+                    help="用 AI 检测并修复「政治/历史/伦理敏感内容审查导致的"
+                         "译文改动」（默认关：只有涉华的国外史政社科书才需要）")
     ap.add_argument("--llm-gate", type=float, default=0.15,
                     help="LLM 准入闸门：DP 体检 bad 率低于此值就不调 LLM"
                          "（免费的长度比体检当裁判；简单排版书全程零花费）")
@@ -157,13 +170,24 @@ def main():
                                 key=cp.key, llm=llm,
                                 en_notes_map=_en_notes_map,
                                 llm_gate=args.llm_gate)
+        # 章名以章级映射（含 epub 目录）为准：正文里的章标题常只有
+        # 「第2章」，完整章名在目录里（用户实测《思考，快与慢》第2章）。
+        if cp.en_title:
+            res.en_title = cp.en_title
+        if cp.zh_title:
+            res.zh_title = cp.zh_title
         res.en_zip, res.zh_zip = _ze, _zz   # 任一为 None 时图位自动降级
         if llm is not None and llm.enabled:
+            # 补译（AI 补缺失翻译）**默认关**：技术书/科普书其实没有真缺失，
+            # 转了纯浪费 token（用户 2026-09-14 定）。
             st = P.apply_llm(res, llm, title=cp.en_title,
+                             translate=args.ai_fill_missing,
                              max_section=args.max_section)
-            # v4：内容审查勘误（删减/替换 + 边界错位打标 → 忠实补全）
-            ec = P.apply_error_repair(res, llm, title=cp.en_title)
-            st["censor"] = ec
+            # 内容审查勘误（政治/历史/伦理敏感内容）**默认关**：只有涉华的
+            # 国外史政社科书才需要，由人显式开启。
+            if args.ai_repair_censor:
+                ec = P.apply_error_repair(res, llm, title=cp.en_title)
+                st["censor"] = ec
             res.stats["llm"] = st
         return res
 
@@ -202,7 +226,8 @@ def main():
         title = BM.bilingual_title(title or meta.title) or "中英双语版"
         if meta.title:
             print(f"[元数据] {meta.summary()}")
-        build.build_book(results, title=title, meta=meta)
+        build.build_book(results, title=title, meta=meta,
+                         emit_en=args.emit_en, emit_zh=args.emit_zh)
 
 
 def _run_parallel(fn, jobs, workers):

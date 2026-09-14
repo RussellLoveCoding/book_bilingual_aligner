@@ -617,13 +617,14 @@ class LLM:
         out: dict[int, tuple] = {}
         system = (
             "你是双语书籍的段落级勘误审校助手。给你同一段落的英文原文与中文译文，"
-            "逐条判断译文是否存在以下两类问题。\n"
-            "A. censor（内容删减/更换）：中文漏译了英文中的句子或词语，"
-            "或把敏感内容改写、软化、替换成了别的说法。注意：正常的意译、"
-            "语序调整、语体差异不算问题；只有「信息量确实少了或变了」才算。\n"
-            "B. skew（边界错位）：中文与英文的段落切分对不上，表现为这段中文"
-            "明显是上一段英文/下一段英文的内容，即段界发生了整体偏移。\n"
-            "两类都无问题记 ok。" + CENSORSHIP_NOTICE
+            "逐条判断是否存在**且仅存在**下面这一类问题：\n"
+            "censor（政治/历史/伦理敏感内容审查导致的译文改动）：中文为了规避"
+            "审查而删掉了英文里的句子或词语，或把涉政、涉史、涉伦理的表述"
+            "改写、软化、替换成了别的说法。\n"
+            "⚠ 只有「信息量因审查而确实少了或变了」才算 censor。下列情况"
+            "**一律记 ok**，不要报：意译、语序调整、语体/文体差异、繁简取舍、"
+            "成语替换、把长句拆短、术语不同译法、标题层级差异 —— 这些都是"
+            "正常的语言取舍，不是错误，不要管。" + CENSORSHIP_NOTICE
         )
         # 先切批，再并发发送（每批一次请求，32 线程可同时压满 RPM）
         chunks = [items[s:s + batch] for s in range(0, len(items), batch)]
@@ -636,7 +637,7 @@ class LLM:
             reqs.append((system,
                          f"书名/章节：{title}\n\n" + "\n\n".join(lines) +
                          "\n\n只输出 JSON 对象，键为条号，值为二元素数组 "
-                         "[类型, 简短理由]，类型取 censor / skew / ok。"
+                         "[类型, 简短理由]，类型只能取 censor 或 ok。"
                          '例如 {"12":["censor","漏译了最后一句"],'
                          '"13":["ok",""]}。'))
         for got in self.json_many(reqs):
@@ -651,7 +652,7 @@ class LLM:
                     continue
                 kind = str(v[0]).strip().lower()
                 why = str(v[1]).strip() if len(v) > 1 else ""
-                if kind in ("censor", "skew"):
+                if kind == "censor":        # skew 不再是错误类型（语言取舍）
                     out[key] = (kind, why)
         return out
 
