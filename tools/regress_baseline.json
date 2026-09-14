@@ -1,0 +1,11 @@
+{
+  "think2": {
+    "pairs": 1967,
+    "matched": 1908,
+    "ai_mt": 0,
+    "missing": 59,
+    "warn": 146,
+    "sec": 2.1,
+    "figs": "19/20 一致"
+  }
+}
