@@ -320,15 +320,43 @@ class LLM:
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            first = raw.find("[")
-            last = max(raw.rfind("]"), raw.rfind("}"))
-            if first >= 0 and last > first:
-                try:
-                    return json.loads(raw[first:last + 1])
-                except json.JSONDecodeError:
-                    pass
+            pass
+        first = raw.find("[")
+        if first < 0:
             print(f"    [llm] JSON 解析失败：{raw[:200]}")
             return None
+        # ① 截到最后一个括号：处理「有效数组 + 尾巴杂字」
+        last = max(raw.rfind("]"), raw.rfind("}"))
+        if last > first:
+            try:
+                return json.loads(raw[first:last + 1])
+            except json.JSONDecodeError:
+                pass
+        # ② 深度归零截断：处理「有效前缀 + 多余 "]," 尾巴」
+        #    实测 deepseek 偶发输出 [[1,[1]],[2,[2,3]],[],[4]]],[]]
+        #    这类多余括号，前两层都救不回，深度法能切出合法前缀
+        depth, end = 0, None
+        in_str = False
+        for idx, ch in enumerate(raw[first:], start=first):
+            if ch == '"' and raw[idx - 1:idx] != "\\":
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in "[{":
+                depth += 1
+            elif ch in "]}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + 1
+                    break
+        if end:
+            try:
+                return json.loads(raw[first:end])
+            except json.JSONDecodeError:
+                pass
+        print(f"    [llm] JSON 解析失败：{raw[:200]}")
+        return None
 
     def json_many(self, requests: list[tuple[str, str]]) -> list:
         """并发版 json()，返回与输入等长的解析结果列表。"""
