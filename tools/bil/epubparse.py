@@ -365,8 +365,10 @@ def parse_blocks(src: str, strict: bool = True,
                 _in_non_section(frames, attrs)
                 or _LABEL_HEAD_RE.match(text.strip() or "")):
             btype, level = "para", 0
-        results.append(Block(tag=tag, cls=cls, html=inner.strip(), text=text,
-                             type=btype, level=level))
+        blk = Block(tag=tag, cls=cls, html=inner.strip(), text=text,
+                    type=btype, level=level)
+        blk._src_a = fr["start"]          # 块在 body_text 里的源偏移
+        results.append(blk)
 
     # 无标题标签的精排 epub（实测 Jaynes《概率论沉思录》整本没有 h1-h6，
     # 39 个文档全部被章级映射判成 skip → 0 段对）：把「看起来像标题的首段」
@@ -380,23 +382,36 @@ def parse_blocks(src: str, strict: bool = True,
             _first.tag = "h2"
             _first.level = 1
 
-    # 视觉单位插回：用占位符确定它原来在正文中的位置
+    # 视觉单位插回：按占位符在 body_text 里的**源偏移**插到正确位置。
+    # 旧实现靠「占位符出现在某个成块元素的 inner 里」来定位，但中文书
+    # 常见 <div class=容器><p>…</p></div><div class=图><img/></div><p>图N-M</p>
+    # ——占位符落在**不成块的容器**里，图块全被踢到文档尾部按序追加，
+    # 图与图注从此分离（2026-09-14 实测《思考，快与慢》：Image00011 的
+    # 图注「图1-1」在第 3 块，图本体却被排到第 83 块 → 插图整体错位）。
+    # 按偏移排序插回后，图永远落在它源 HTML 里的真实位置（图注紧随其图）。
+    _events = [(mm.start(), int(mm.group(1)))
+               for mm in _VIS_PLACEHOLDER_RE.finditer(body_text)]
+    _ei = 0
     merged: list[Block] = []
     for b in results:
-        vis = _VIS_PLACEHOLDER_RE.findall(b.html)
-        for key in vis:
-            blk = visuals.get(key)
-            if blk is not None and key not in consumed:
+        a = getattr(b, "_src_a", None)
+        while _ei < len(_events) and (a is None or _events[_ei][0] < a):
+            _key = str(_events[_ei][1])
+            blk = visuals.get(_key)
+            if blk is not None:
                 merged.append(blk)
-                consumed.append(key)
-        if b.text and not _VIS_PLACEHOLDER_RE.fullmatch(b.html.strip()):
+                consumed.append(_key)
+            _ei += 1
+        # html 只剩占位符的块：图已按偏移插回，空壳块丢弃
+        if b.text and not _VIS_PLACEHOLDER_RE.fullmatch((b.html or "").strip()):
             merged.append(b)
-        elif vis:
-            continue
-        else:
-            merged.append(b)
-
-    # 收尾：没被插回去的视觉单位按原顺序追加
+    for _off, _k in _events[_ei:]:        # 尾部余下的占位符按序补齐
+        _key = str(_k)
+        blk = visuals.get(_key)
+        if blk is not None:
+            merged.append(blk)
+            consumed.append(_key)
+    # 兜底：不在正文流里的视觉单位按原顺序追加
     for key, blk in visuals.items():
         if key not in consumed:
             merged.append(blk)

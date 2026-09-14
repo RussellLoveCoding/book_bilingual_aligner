@@ -73,9 +73,11 @@ def main():
     mt_pairs = [(s.en_title, p) for s in res.sections for p in s.pairs if p.mt]
     assert mt_pairs, "补译未生效"
     html = B.render_chapter(res)
-    assert "AI译" in html, "渲染缺少 AI译 标记"
+    # 2026-09 起 AI译标记改为 aria-hidden 小图标（TTS 不读出），alt 为空，
+    # 所以断言的是图标 class 而不是「AI译」文本
+    assert 'class="mt-flag"' in html, "渲染缺少 AI译 标记图标"
     assert "待补译" not in html, "仍有未补译段落漏出（应为 0）"
-    print(f"\n渲染检查：AI译标记 {html.count('AI译')} 处；"
+    print(f"\n渲染检查：AI译标记图标 {html.count('mt-flag')} 处；"
           f"待补译占位 {html.count('待补译')} 处")
     print("OK：LLM 链路（映射 → 细化 → 补译 → 标记）跑通。")
 

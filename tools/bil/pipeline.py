@@ -12,6 +12,13 @@ from . import align as A
 from . import audit as AU
 from . import notes as NO
 
+# 图注编号：中文「图1-1 看到这个女人的面孔…」（章号-图号）、
+# 英文「Figure 1 Your experience as you look at the woman's face」。
+# 两侧编号体系不同（英文只有章内图号），按「图号相同（+章号一致）」配对，
+# 是比位置邻接强得多的插图锚点（2026-09-14 小样实测推翻纯邻接方案）。
+_ZH_CAP_RE = re.compile(r"^图\s*(\d+)\s*[-–—]\s*(\d+)")
+_EN_FIG_RE = re.compile(r"\bFigure\s+(\d+)\b", re.I)
+
 
 @dataclass
 class SectionResult:
@@ -296,13 +303,40 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                 zh_pos.append((_v, _zh_off[_i] + getattr(_v, "after", 0)))
     _en_off = _sec_offsets(en_secs)
 
+    # ── 图注编号索引（优先于位置邻接的插图锚点）────────────────────────
+    # 图注段本身是正文段（参与段落对齐），所以要扫描小节全部段落找
+    # 「图N-M」模式，而不是只看 visual.caption。图注段通常紧随其图
+    # （全章段序 = 图的 gpos + 1），据此把图注关联回中文图。
+    zh_caps: dict[int, list] = {}         # 图号 -> [(gidx, 图注全文, 章号)]
+    _zh_gpos_idx: dict[int, list[int]] = {}
+    for _i, (_v, _g) in enumerate(zh_pos):
+        _zh_gpos_idx.setdefault(_g, []).append(_i)
+    for _i, _s in enumerate(zh_secs):
+        _base = _zh_off[_i]
+        for _k, _p in enumerate(_s.paras):
+            _m = _ZH_CAP_RE.match((_p.text or "").strip())
+            if not _m:
+                continue
+            _gidx = _base + _k
+            if _zh_gpos_idx.get(_gidx - 1):
+                zh_caps.setdefault(int(_m.group(2)), []).append(
+                    (_gidx, (_p.text or "").strip(), int(_m.group(1))))
+    # 本章图注的「主流章号」：过滤掉正文里引用其它章图号的段落（如「图2-5是…」）
+    _chap_n: dict[int, int] = {}
+    for _entries in zh_caps.values():
+        for _g, _t, _c in _entries:
+            _chap_n[_c] = _chap_n.get(_c, 0) + 1
+    _zh_chap = max(_chap_n, key=_chap_n.get) if _chap_n else None
+
     mismatch = len(en_secs) != len(zh_secs)
     K = A.estimate_k([b for b in en_blocks
                       if b.type != "heading" and not _is_visual(b)],
                      [b for b in zh_kept
                       if b.type != "heading" and not _is_visual(b)])
     sec_pairs, src = None, "DP"
-    if llm is not None and getattr(llm, "enabled", False) and len(en_secs) != len(zh_secs):
+    # 空侧不进 LLM（en_secs/zh_secs 为空时调用必然失败，纯浪费）
+    if (llm is not None and getattr(llm, "enabled", False)
+            and len(en_secs) != len(zh_secs) and en_secs and zh_secs):
         m = llm.map_sections([s.title for s in en_secs], [s.title for s in zh_secs],
                              [len(s.paras) for s in en_secs],
                              [len(s.paras) for s in zh_secs])
@@ -330,6 +364,9 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         ei, zi = list(ei or []), list(zi or [])
         a_paras = [p for i in ei for p in en_secs[i].paras]
         b_paras = [p for j in zi for p in zh_secs[j].paras]
+        # b_paras 每段对应的全章段序（供图注编号匹配锚定 pair）
+        b_gidx = [g for j in zi
+                  for g in (_zh_off[j] + _k for _k in range(len(zh_secs[j].paras)))]
         a_t = " / ".join(en_secs[i].title for i in ei if en_secs[i].title)
         b_t = " / ".join(zh_secs[j].title for j in zi if zh_secs[j].title)
 
@@ -340,6 +377,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             for _v in A.visual_of_sec(en_secs[_i]):
                 if not getattr(_v.block, "junk", False):
                     _v.gpos = _en_off[_i] + getattr(_v, "after", 0)
+                    if getattr(_v, "fig_num", None) is None:
+                        _v.fig_num = _en_fig_num(en_secs[_i], _v)
 
         if not a_paras and not b_paras and not en_figs:
             continue
@@ -370,8 +409,15 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             sr.degrade = ar.verdict == "FAIL"
             if sr.degrade:
                 sr.note = (sr.note + "；" if sr.note else "") + "体检未通过"
-        zh_fig_i, zh_claims = _attach_figures(sr, en_figs, zh_vs_all,
-                                              zh_fig_i, zh_pos, zh_claims)
+        # 本小节「全章段序 -> pair 序号」映射（图注编号匹配锚定图位用）
+        _g2l = {g: l for l, g in enumerate(b_gidx)}
+        _l2p: dict[int, int] = {}
+        for _m, _p in enumerate(sr.pairs):
+            for _j in (_p.zh or []):
+                _l2p[_j] = _m
+        zh_fig_i, zh_claims = _attach_figures(
+            sr, en_figs, zh_vs_all, zh_fig_i, zh_pos, zh_claims,
+            zh_caps=zh_caps, zh_chap=_zh_chap, para_anchor=(_g2l, _l2p))
         _attach_notes(sr, a_paras)
         res.sections.append(sr)
 
@@ -428,51 +474,129 @@ def _attach_notes(sr: SectionResult, a_paras) -> None:
             p.note_len_en = max(1, total)
 
 
+def _en_fig_num(sec, v):
+    """英文图的章内图号：优先 figcaption，退化看图后第一段。"""
+    m = _EN_FIG_RE.search(getattr(v.block, "caption", "") or "")
+    if m:
+        return int(m.group(1))
+    k = getattr(v, "after", -1) + 1
+    if sec is not None and 0 <= k < len(sec.paras):
+        m = _EN_FIG_RE.search(getattr(sec.paras[k], "text", "") or "")
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
-                    zh_pos=None, zh_claims=None):
+                    zh_pos=None, zh_claims=None,
+                    zh_caps=None, zh_chap=None, para_anchor=None):
     """把英文图位挂到小节上，并认领对应的中文图。
 
-    ⚠ 认领策略 = **邻接匹配优先**（2026-09 修）：每个英文图挑「章节内段序
-    位置最接近」的未认领中文图（窗口 ≤8 段）。原因：中英插图的顺序与归属
-    并不一致（英文插图可能比中文多几张、位置也不同），纯顺序消费会把图
-    摊派到隔壁段落 —— 实测《思考，快与慢》**20/20 章整体错位一章**，
-    用户看到的「图1-1 下面不是愤怒的女人」就是这么来的。
-    邻接匹配失败时退回顺序认领。
+    ⚠ 认领策略 = **图注编号匹配优先 → 邻接匹配 → 顺序认领**（2026-09-14）：
 
-    图注：中文版有就取中文，没有就用英文（后续可 LLM 补译）。
+    1. **图注编号**：英文图注 `Figure M` ↔ 中文图注段 `图N-M`（图号相同、
+       章号取本章主流章号）。这是语义锚点，最可靠 —— 小样实测两版插图的
+       顺序与位置分布都对不上，纯位置方案注定失败；图注编号匹配上的图
+       直接绑到「图注段所在的那个 pair」。
+    2. **邻接匹配**：没有图注号的图，挑「章节内段序位置最接近」的未认领
+       中文图（窗口 ≤8 段）。中英插图顺序与归属并不一致，纯顺序消费会把
+       图摊派到隔壁段落 —— 实测《思考，快与慢》20/20 章整体错位一章。
+    3. **顺序认领**：前两步都失败时退回按序顺延。
+
+    ⚠ 1、2 两遍**先整体跑完再顺序认领**（2026-09-14 修）：若逐图边失败
+    边顺序认领，英文侧成排的重复装饰图（实测 ch30 里 00005.jpg×6）会
+    在邻接失败后立刻把中文真图的配额抢走，后面的真图全部错位。先让
+    全部图走完强信号匹配，剩余的才按序顺延。
+
+    图注：中文版有就取中文（图注编号匹配时直接用图注段全文），没有就用
+    英文（后续可 LLM 补译）。
     """
     used = zh_i
     claims = zh_claims if zh_claims is not None else [False] * len(zh_vs_all)
-    for v in en_figs:
-        zh_v = None
+    g2l, l2p = para_anchor if para_anchor else ({}, {})
+
+    # matched[i] = (zh_visual, zh_pos 下标, 图注全文, pair 锚) ｜ None
+    matched: list = [None] * len(en_figs)
+
+    def _claim_cap(v, i):
+        fn = getattr(v, "fig_num", None)
+        if fn is None or not zh_caps:
+            return
+        best = None                    # (|位置差|, zh_pos 下标, gidx, 图注)
+        for (gidx, cap_txt, chap) in zh_caps.get(fn, []):
+            if zh_chap is not None and chap != zh_chap:
+                continue               # 引用其它章的图号，跳过
+            cands = [c for c in _zh_cap_owners(zh_pos, gidx)
+                     if not claims[c]]
+            if not cands:
+                continue
+            gp = getattr(v, "gpos", None)
+            d = abs(gidx - gp) if gp is not None else 0
+            if best is None or d < best[0]:
+                best = (d, cands[0], gidx, cap_txt)
+        if best is not None:
+            _d, ci, gidx, zh_cap_txt = best
+            claims[ci] = True
+            # 锚到图注段所在的 pair（找不到就退回英文侧比例换算）
+            anchor = l2p.get(g2l.get(gidx, -1))
+            matched[i] = (zh_pos[ci][0], ci, zh_cap_txt, anchor)
+
+    def _claim_adj(v, i):
         gp = getattr(v, "gpos", None)
-        if zh_pos and gp is not None:
-            best_i, best_d = None, None
-            for idx, (_zv, zp) in enumerate(zh_pos):
-                if claims[idx]:
-                    continue
-                d = abs(zp - gp)
-                if best_d is None or d < best_d:
-                    best_i, best_d = idx, d
-            if best_i is not None and best_d is not None and best_d <= 8:
-                zh_v = zh_pos[best_i][0]
-                claims[best_i] = True
-        if zh_v is None:                  # 退回顺序认领
-            while used < len(zh_vs_all) and claims[used]:
-                used += 1
-            if used < len(zh_vs_all):
-                zh_v = zh_vs_all[used]
-                claims[used] = True
-                used += 1
+        if not zh_pos or gp is None:
+            return
+        best_i, best_d = None, None
+        for idx, (_zv, zp) in enumerate(zh_pos):
+            if claims[idx]:
+                continue
+            d = abs(zp - gp)
+            if best_d is None or d < best_d:
+                best_i, best_d = idx, d
+        if best_i is not None and best_d is not None and best_d <= 8:
+            claims[best_i] = True
+            matched[i] = (zh_pos[best_i][0], best_i, "", None)
+
+    # 第一遍：图注编号 + 邻接（强信号），全部跑完再轮到顺序认领
+    for i, v in enumerate(en_figs):
+        _claim_cap(v, i)
+        if matched[i] is None:
+            _claim_adj(v, i)
+    # 第二遍：仍无主的图按序顺延（老行为兜底）
+    for i, v in enumerate(en_figs):
+        if matched[i] is not None:
+            continue
+        while used < len(zh_vs_all) and claims[used]:
+            used += 1
+        if used < len(zh_vs_all):
+            claims[used] = True
+            matched[i] = (zh_vs_all[used], used, "", None)
+            used += 1
+    # 按英文图原顺序落 FigureRef
+    for i, v in enumerate(en_figs):
+        m = matched[i]
+        zh_v = m[0] if m else None
+        zh_cap_txt = m[2] if m else ""
+        anchor = m[3] if m else None
         sr.figures.append(FigureRef(
             en_src=v.block.src,
             zh_src=zh_v.block.src if zh_v else "",
             caption_en=v.block.caption,
-            caption_zh=zh_v.block.caption if zh_v else "",
-            after=_anchor_pair(v.after, sr),
+            caption_zh=(zh_cap_txt or (zh_v.block.caption if zh_v else ""))
+            if zh_v else "",
+            after=anchor if anchor is not None
+            else _anchor_pair(v.after, sr),
             zh_missing=zh_v is None))
     sr.en_visuals = en_figs
     return used, claims
+
+
+def _zh_cap_owners(zh_pos, gidx: int) -> list[int]:
+    """图注段的全章段序 gidx → 它前面那张图在 zh_pos 里的下标列表。
+
+    中文排版是「图在上、图注紧随其下」，所以图注段的全章段序 - 1
+    就是图的位置；同一位置可能叠多张图（两张连排共用一个图位）。
+    """
+    return [i for i, (_v, g) in enumerate(zh_pos) if g == gidx - 1]
 
 
 def _last_used(sr: SectionResult, zh_vs_all, fallback: int) -> int:
