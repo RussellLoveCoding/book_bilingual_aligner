@@ -132,7 +132,18 @@ def _valid_section_map(mapping, n, m) -> bool:
     return sorted(es) == list(range(n)) and sorted(zs) == list(range(m))
 
 
-def _valid_refine_map(mapping, n, m, min_cov: float = 0.70) -> bool:
+def _is_codeish(t: str) -> bool:
+    """代码/符号为主（汉字占比 <15%）：技术书的中文版整段保留英文代码，
+    这类段没有独立中文对应，被 LLM 判无对应是正常的。"""
+    t = t or ""
+    if not t:
+        return True
+    han = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
+    return han / len(t) < 0.15
+
+
+def _valid_refine_map(mapping, n, m, min_cov: float = 0.70,
+                      zh_min_cov: float = 0.0) -> bool:
     """校验 LLM 窗口细化的段落映射：**允许空侧**（[i,[]] / [[],j]）。
 
     为什么要与 `_valid_section_map` 分开：技术书（机器学习实战）的中文版
@@ -140,8 +151,11 @@ def _valid_refine_map(mapping, n, m, min_cov: float = 0.70) -> bool:
     是**正确答案**，但全覆盖校验会把它整份判死 —— 实测 ch1「LLM 细化
     0 节成功」就是这么来的（2026-09-14）。
 
-    判据：不越界、不重复使用行号、覆盖率 ≥ min_cov。不要求单调
-    （refine 的 prompt 本来就允许中文倒装）。
+    判据：不越界、不重复使用行号、**英文侧**覆盖率 ≥ min_cov。
+    ⚠ 中文侧只要求 zh_min_cov（分窗模式下 zh 窗口是「邻域」不是「分块」，
+    锚点邻域可能 120 段而 LLM 只需用其中 40 段，要求 70% 覆盖必然全灭
+    —— 2026-09-14 实测分窗细化 0 节成功即此原因）。
+    不要求单调（refine 的 prompt 本来就允许中文倒装）。
     """
     if not mapping:
         return False
@@ -157,7 +171,98 @@ def _valid_refine_map(mapping, n, m, min_cov: float = 0.70) -> bool:
         return False
     if any(not (0 <= i < n) for i in es) or any(not (0 <= j < m) for j in zs):
         return False
-    return len(es) >= min_cov * n and len(zs) >= min_cov * m
+    return (len(es) >= min_cov * n
+            and len(zs) >= zh_min_cov * m) if n else len(es) >= min_cov
+
+
+def _valid_section_map_nm(mapping, n, m, min_cov: float = 0.8) -> bool:
+    """LLM 小节映射的**多对一宽容校验**：允许一个中文节被连续多个
+    英文节共用（技术书常见：中文把英文几个小节合并成一节，如 ML
+    「1.4 机器学习系统的类型」= EN 的 Training Supervision + Batch
+    vs Online + Instance vs Model 三节 —— 2026-09-14 实测）。
+
+    判据：映射序单调不减（两侧）、不越界、覆盖率 ≥ min_cov（个别
+    小节漏映射允许，随后按 0:1/1:0 补进映射）。重复的节由
+    `_coalesce_section_map` 去重并把共用同一中文节的连续英文节合并。
+    """
+    if not mapping:
+        return False
+    es, zs = [], []
+    for ea, zb in mapping:
+        ea = list(ea or [])
+        zb = list(zb or [])
+        if not ea and not zb:
+            return False
+        es += ea
+        zs += zb
+    if any(i < es[i2 - 1] for i2, i in enumerate(es) if i2) or \
+       any(j < zs[j2 - 1] for j2, j in enumerate(zs) if j2):
+        return False
+    if any(not (0 <= i < n) for i in es) or any(not (0 <= j < m) for j in zs):
+        return False
+    return (len(set(es)) >= min_cov * n and len(set(zs)) >= min_cov * m) \
+        if n and m else bool(es or zs)
+
+
+def _coalesce_section_map(mapping, n: int = 0, m: int = 0):
+    """归一化 LLM 小节映射：去重 + 合并 + 补漏。
+
+    1. 组内 zh/en 索引去重（同一中文节被连续英文节共用时只保留一份段落）；
+    2. 共用同一中文节的连续英文节合并成一组
+       [[1,[1,2,3,4]], [2,[4]], [3,[4]]] → [[1,2,3],[1,2,3,4]]（去重后）；
+    3. 未覆盖的小节按序补成 0:1 / 1:0 组（渲染时走「中文多出/缺失小节」
+       的既有分支，不静默丢内容）。
+    """
+    out: list[tuple[list, list]] = []
+    for ea, zb in mapping:
+        ea, zb = list(ea or []), list(zb or [])
+        if out and set(zb) & set(out[-1][1]):
+            merged_z = out[-1][1] + [j for j in zb if j not in out[-1][1]]
+            out[-1] = (out[-1][0] + [i for i in ea if i not in out[-1][0]],
+                       merged_z)
+        else:
+            out.append((ea, [j for j in zb if j not in zb[:zb.index(j)]]))
+    # 补漏：未覆盖的 zh 节按序插入（放最后覆盖它的位置之后）
+    covered_z = {j for _, zb in out for j in zb}
+    for j in range(m):
+        if j in covered_z:
+            continue
+        pos = len(out)
+        for gi, (_ea, zb) in enumerate(out):
+            if zb and max(zb) < j:
+                pos = gi + 1
+        out.insert(pos, ([], [j]))
+    covered_e = {i for ea, _ in out for i in ea}
+    for i in range(n):
+        if i in covered_e:
+            continue
+        pos = len(out)
+        for gi, (ea, _zb) in enumerate(out):
+            if ea and max(ea) < i:
+                pos = gi + 1
+        out.insert(pos, ([i], []))
+    return out
+
+
+def _sane_section_map(mapping, en_secs, zh_secs, max_ratio: float = 8.0,
+                      floor: int = 10) -> bool:
+    """垃圾映射检测：单个映射对的两侧段数比不得超过 max_ratio。
+
+    实测 ML ch1：LLM 曾把 7 个中文节（262 段）全塞给 1 个 27 段的
+    英文节、其余全判 1:0 —— 形式合法（单调+全覆盖）但语义是懒政。
+    两侧段数都 > floor 时比值失衡即判废（小节允许失衡，比如英文
+    代码节对中文极短节；floor 之下不检查）。
+    """
+    for ea, zb in mapping:
+        n_en = sum(len(en_secs[i].paras) for i in (ea or [])
+                   if 0 <= i < len(en_secs))
+        n_zh = sum(len(zh_secs[j].paras) for j in (zb or [])
+                   if 0 <= j < len(zh_secs))
+        if n_en > floor and n_zh > floor:
+            r = n_zh / n_en if n_en else float("inf")
+            if r > max_ratio or r < 1 / max_ratio:
+                return False
+    return True
 
 
 def _metrics(p, en_ps, zh_ps):
@@ -167,6 +272,132 @@ def _metrics(p, en_ps, zh_ps):
     p.c = 0.9 if 1.0 <= p.r <= 3.0 else 0.4
 
 
+_FIG_HYPHEN_RE = re.compile(r"图\s*(\d+)\s*[-–—]\s*(\d+)")
+_FIG_EN_HYPHEN_RE = re.compile(r"\bFigure\s+(\d+)\s*[-–]\s*(\d+)", re.I)
+_FIG_EN_BARE_RE = re.compile(r"\bFigure\s+(\d+)", re.I)
+
+
+def _fig_refs(text: str) -> set[int]:
+    """抽正文里的图表引用号（中文「图1-8」→8；英文「Figure 1-8」→8）。
+
+    裸式「Figure 8」也收；但「Figure 1-8」里的「Figure 1」不算（会被
+    连字形式覆盖，先抽连字式并屏蔽其覆盖范围）。这类引用是翻译后
+    依然保真的内容锚点，比任何位置/长度信号都硬。
+    """
+    nums: set[int] = set()
+    spans = []
+    for m in _FIG_HYPHEN_RE.finditer(text):
+        nums.add(int(m.group(2)))
+        spans.append(m.span())
+    for m in _FIG_EN_HYPHEN_RE.finditer(text):
+        nums.add(int(m.group(2)))
+        spans.append(m.span())
+    for m in _FIG_EN_BARE_RE.finditer(text):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        nums.add(int(m.group(1)))
+    return nums
+
+
+def _refine_windowed(llm, s, win: int = 40, overlap: int = 10,
+                     slack: int = 6):
+    """分窗细化：整节几百段一次性发给 LLM，输出映射必然又长又脆
+    （实测 ML ch1 细化 0 节成功的主因）。改为滑动窗口：
+    1. 用确定性 DP 的临时配对做锚点，给每个英文窗口定位对应的中文邻域；
+    2. 每窗口只让 LLM 重排 ~40 段（输入小、输出短、可校验）；
+    3. 重叠区以先到的窗口为准；LLM 没接管的段回退 DP 临时配对。
+
+    v2：**图表引用锚点**（2026-09-14，用户提议）。正文里「见图1-8」/
+    「Figure 1-8」在两版中都保真，引用同号图表的中英段必是对应段——
+    据此把小节切成锚点间的小段，逐段细化；锚点对强制锁定，LLM 只在
+    段内自由对齐。DP 临时配对只在无锚区域当定位脚手架。
+
+    返回 [(en_idx, [zh_idx...])]（全局下标）或 None。
+    """
+    en_t = [p.text for p in s.en_paras]
+    zh_t = [p.text for p in s.zh_paras]
+    n, m = len(en_t), len(zh_t)
+    if n == 0 or m == 0:
+        return None
+    # DP 临时配对：en 段 i 对应的 zh 段集合
+    prov: dict[int, list[int]] = {}
+    for p in s.pairs:
+        for i in (p.en or []):
+            prov[i] = list(p.zh or [])
+    avg = max(1, round(m / max(1, n)))
+
+    # ── 图表引用锚点：引用同号图表的中英段强制配对 ─────────────────────
+    # 中文侧同号常出现两次：正文引用段 + 图注段（「图1-8 …」本身是
+    # 正文段），图注段要排除；多候选时取第一个非图注段（引用随文序）。
+    def _caption_like(t: str) -> bool:
+        t = t.strip()
+        return bool(re.match(r"^(?:图\s*\d+\s*[-–—]\s*\d+|"
+                             r"Figure\s+\d+\s*[-–]\s*\d+)", t, re.I)) \
+            and len(t) < 60
+
+    en_refs = [_fig_refs(t) for t in en_t]
+    zh_refs = [_fig_refs(t) for t in zh_t]
+    anchors: list[tuple[int, int]] = []
+    _all_en = set().union(*en_refs) if en_refs else set()
+    _all_zh = set().union(*zh_refs) if zh_refs else set()
+    for num in _all_en & _all_zh:
+        ei = [i for i in range(n) if num in en_refs[i]]
+        zj = [j for j in range(m) if num in zh_refs[j]]
+        zj = [j for j in zj if not _caption_like(zh_t[j])] or zj
+        if len(ei) == 1 and zj:
+            anchors.append((ei[0], zj[0]))
+    anchors.sort()
+    # 丢弃非单调锚点（引用错乱或巧合撞号）
+    mono: list[tuple[int, int]] = []
+    for a, b in anchors:
+        if not mono or (a > mono[-1][0] and b > mono[-1][1]):
+            mono.append((a, b))
+    anchors = mono
+
+    out_pairs: dict[int, list[int]] = {}
+    for i, j in anchors:
+        out_pairs[i] = [j]          # 锚点强制锁定（LLM 结果可在此之上补）
+
+    def _cell(a: int, b: int, lo: int, hi: int):
+        """细化一个 [a,b)×[lo,hi) 单元；重叠区先到先得。"""
+        out = llm.refine_window(en_t[a:b], zh_t[lo:hi])
+        if out and _valid_refine_map(out, b - a, hi - lo):
+            for ea, zb in out:
+                for i in ea:
+                    g = a + i
+                    if g not in out_pairs:
+                        out_pairs[g] = [lo + j for j in zb]
+
+    # ── 按锚点切段，逐段细化 ─────────────────────────────────────────
+    bounds = [(0, 0)] + anchors + [(n, m)]
+    for (ai, aj), (bi, bj) in zip(bounds, bounds[1:]):
+        if bi <= ai and bj <= aj:
+            continue
+        if bi - ai <= win:          # 小段一次搞定
+            _cell(ai, bi, aj, bj)
+        else:                       # 大段退回滑动窗（DP 锚点定位邻域）
+            a = ai
+            while a < bi:
+                b = min(bi, a + win)
+                zlo = [j for i in range(a, b) for j in prov.get(i, [])
+                       if aj <= j < bj]
+                if zlo:
+                    lo, hi = (max(aj, min(zlo) - slack),
+                              min(bj, max(zlo) + slack + 1))
+                else:
+                    lo = min(bj, max(aj, aj + (a - ai) * avg - slack))
+                    hi = min(bj, max(lo + 1, aj + (b - ai) * avg + slack))
+                _cell(a, b, lo, hi)
+                a = b - overlap if b - overlap > a else b
+    if not out_pairs:
+        return None
+    # LLM 没接管的段回退 DP 临时配对
+    res = []
+    for i in range(n):
+        res.append((i, out_pairs.get(i, prov.get(i, []))))
+    return res
+
+
 def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
               refine_threshold=0.10, max_section=60, batch=8) -> dict:
     """LLM 细化：小节映射已在 process_chapter 做过，这里做窗口细化 + 补译。"""
@@ -174,29 +405,37 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
     if llm is None or not getattr(llm, "enabled", False):
         return st
 
-    # 1) 窗口细化：体检不达标的小节整节重对（小节通常几十段，成本可接受）
+    # 1) 窗口细化：体检不达标的小节整节重对（分窗，见 _refine_windowed）
     if refine:
         for s in res.sections:
             if not s.pairs or s.audit.rate <= refine_threshold:
                 continue
             if not s.zh_paras or len(s.en_paras) > max_section:
                 continue
-            out = llm.refine_window([p.text for p in s.en_paras],
-                                    [p.text for p in s.zh_paras])
-            # 细化用宽松校验（允许空侧）：技术书代码段没有中文对应，
-            # 全覆盖校验会把正确输出整份判死
-            if not out or not _valid_refine_map(out, len(s.en_paras),
-                                                len(s.zh_paras)):
+            out = _refine_windowed(llm, s)
+            if not out:
                 st["failed"] += 1
                 continue
-            new = [A.Pair(en=list(a), zh=list(b)) for a, b in out]
+            new = [A.Pair(en=[i], zh=list(zs)) for i, zs in out]
             for p in new:
                 _metrics(p, s.en_paras, s.zh_paras)
             na = AU.audit_pairs(new, s.en_paras, s.zh_paras)
-            if na.bad < s.audit.bad:
+            # 覆盖率守卫：bad 变少不算数，还得保住内容 —— 英文侧一段
+            # 不能丢；中文侧**散文段**一段不能丢（代码段/图注段允许被
+            # LLM 判为无对应，它们在英文侧已渲染或本就是图注）
+            def _prose_zh(pairs):
+                return sum(1 for p in pairs for j in p.zh
+                           if not _is_codeish(s.zh_paras[j].text))
+            old_en_cov = sum(len(p.en) for p in s.pairs)
+            new_en_cov = sum(len(p.en) for p in new)
+            old_zh_prose = _prose_zh(s.pairs)
+            new_zh_prose = _prose_zh(new)
+            cov_ok = (new_en_cov >= old_en_cov
+                      and new_zh_prose >= 0.9 * old_zh_prose)
+            if na.bad < s.audit.bad and cov_ok:
                 s.pairs, s.audit = new, na
                 s.degrade = na.verdict == "FAIL"
-                s.note = "LLM 窗口细化" if not s.degrade else "细化后仍未通过"
+                s.note = "LLM 分窗细化" if not s.degrade else "细化后仍未通过"
                 st["refined"] += 1
             else:
                 st["failed"] += 1
@@ -299,6 +538,89 @@ def apply_error_repair(res: ChapterResult, llm, title="",
             st["cap_mt"] = len(caps)
     return st
 
+def _sec_offsets_of(secs):
+    offs, acc = [], 0
+    for sec in secs:
+        offs.append(acc)
+        acc += len(sec.paras)
+    return offs
+
+
+def _chapter_units(llm_map, en_secs, zh_secs, en_off, zh_off):
+    """由整章映射反推小节单元 [(en_sec_idx], [zh_sec_idx])。
+
+    英文小节的段在映射里「用到」哪些中文小节的段，就归到同一单元；
+    连续英文小节共用同一中文小节时合并（中文一个大节对英文几个小节的
+    情形）；无人引用的中文小节按序补成 0:1 单元（内容不丢）。
+    """
+    zh_of_g = [j for j, s in enumerate(zh_secs) for _ in s.paras]
+    units: list[tuple[list, list]] = []
+    for i, s in enumerate(en_secs):
+        zs: list[int] = []
+        for gi in range(en_off[i], en_off[i] + len(s.paras)):
+            for gj in llm_map.get(gi, []):
+                if 0 <= gj < len(zh_of_g):
+                    j = zh_of_g[gj]
+                    if j not in zs:
+                        zs.append(j)
+        zs.sort()
+        if units and zs and set(zs) & set(units[-1][1]):
+            units[-1] = (units[-1][0] + [i], sorted(set(units[-1][1]) | set(zs)))
+        else:
+            units.append(([i], zs))
+    covered_zh = {j for _e, z in units for j in z}
+    for j in range(len(zh_secs)):
+        if j in covered_zh:
+            continue
+        pos = len(units)
+        for ui, (_e, z) in enumerate(units):
+            if z and max(z) < j:
+                pos = ui + 1
+        units.insert(pos, ([], [j]))
+    return units
+
+
+def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off):
+    """把整章映射切成本单元的 pair 列表（局部下标），单调有序。
+
+    英文段按序逐个认领映射到的中文段；中文段没被任何英文段认领的，
+    按位置插成 0:1 pair（不丢内容）。
+    """
+    g2la = {}
+    for li, i in enumerate(ei):
+        base = en_off[i]
+        local0 = sum(len(en_secs[x].paras) for x in ei[:li])
+        for k in range(len(en_secs[i].paras)):
+            g2la[base + k] = local0 + k
+    g2lb, b_base = {}, 0
+    for j in zi:
+        base = zh_off[j]
+        for k in range(len(zh_secs[j].paras)):
+            g2lb[base + k] = b_base + k
+        b_base += len(zh_secs[j].paras)
+    n_b = b_base
+    pairs: list = []
+    claimed: set[int] = set()
+    zmax = -1
+    for la, ga in sorted(((la, ga) for ga, la in g2la.items())):
+        zs = sorted({g2lb[gj] for gj in llm_map.get(ga, []) if gj in g2lb}
+                    - claimed)
+        if zs:
+            for z in range(zmax + 1, zs[0]):        # 先补落单的中文段
+                if z not in claimed:
+                    pairs.append(A.Pair(en=[], zh=[z]))
+                    claimed.add(z)
+            pairs.append(A.Pair(en=[la], zh=zs))
+            claimed.update(zs)
+            zmax = max(zmax, zs[-1])
+        else:
+            pairs.append(A.Pair(en=[la], zh=[]))
+    for z in range(n_b):                            # 尾部落单中文
+        if z not in claimed:
+            pairs.append(A.Pair(en=[], zh=[z]))
+    return pairs
+
+
 def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                     r_lo=1.0, r_hi=3.0, fail_rate=0.20, band=2,
                     chapter_visuals=None, en_notes_map=None):
@@ -365,14 +687,48 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                      [b for b in zh_kept
                       if b.type != "heading" and not _is_visual(b)])
     sec_pairs, src = None, "DP"
-    # 空侧不进 LLM（en_secs/zh_secs 为空时调用必然失败，纯浪费）
+    # ── 整章分窗 LLM 对齐（2026-09-14 架构翻转）────────────────────────
+    # 不再让「小节映射」定义对齐单元：两版小节粒度差异大（ML ch1 实测
+    # EN 13 节 vs ZH 8 节），映射错误会直接传导到段落层。改为整章一次
+    # 分窗对齐（图注号/正文图引用当锚点），再按「英文段的所属小节」
+    # 把结果切回小节 —— 小节退化成渲染单位，不再是对齐单位。
+    llm_map = None          # {en 全章段序: [zh 全章段序...]}
     if (llm is not None and getattr(llm, "enabled", False)
-            and len(en_secs) != len(zh_secs) and en_secs and zh_secs):
-        m = llm.map_sections([s.title for s in en_secs], [s.title for s in zh_secs],
+            and en_secs and zh_secs):
+        flat_en = [p for s in en_secs for p in s.paras]
+        flat_zh = [p for s in zh_secs for p in s.paras]
+        if flat_en and flat_zh:
+            shim = SectionResult(en_paras=flat_en, zh_paras=flat_zh,
+                                 pairs=A.align_section(flat_en, flat_zh, k=K))
+            mm = _refine_windowed(llm, shim)
+            if mm:
+                llm_map = {i: list(zs) for i, zs in mm}
+                src = "LLM·章窗"
+                sec_pairs = _chapter_units(llm_map, en_secs, zh_secs,
+                                           _en_off, _zh_off)
+    # 退回小节级：LLM 不可用/失败时才走标题配对小节映射
+    if sec_pairs is None and (llm is not None and getattr(llm, "enabled", False)
+                              and len(en_secs) != len(zh_secs)
+                              and en_secs and zh_secs):
+        # 首段预览：两版小节切分粒度差异大时，标题+段数不够 LLM 判断，
+        # 首段内容是真正的锚点（实测 ML ch1 曾把 7 个中文节全塞给 1 个英文节）
+        _firsts = lambda secs: [next((p.text.strip() for p in s.paras
+                                      if (p.text or "").strip()), "")
+                                for s in secs]
+        m = llm.map_sections([s.title for s in en_secs],
+                             [s.title for s in zh_secs],
                              [len(s.paras) for s in en_secs],
-                             [len(s.paras) for s in zh_secs])
-        if m and _valid_section_map(m, len(en_secs), len(zh_secs)):
+                             [len(s.paras) for s in zh_secs],
+                             en_firsts=_firsts(en_secs),
+                             zh_firsts=_firsts(zh_secs))
+        if m and _valid_section_map(m, len(en_secs), len(zh_secs)) \
+                and _sane_section_map(m, en_secs, zh_secs):
             sec_pairs, src = m, "LLM"
+        elif m and _valid_section_map_nm(m, len(en_secs), len(zh_secs)) \
+                and _sane_section_map(m, en_secs, zh_secs):
+            # 多对一（中文节被连续英文节共用）：去重合并 + 补漏后交给段落 DP
+            sec_pairs, src = _coalesce_section_map(m, len(en_secs),
+                                                   len(zh_secs)), "LLM·NM"
     if sec_pairs is None:
         sec_pairs = A.align_sections(en_secs, zh_secs, band=band, k=K)
 
@@ -426,12 +782,17 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         elif not a_paras and not b_paras:
             sr = SectionResult(a_t, b_t, [], AU.AuditResult(), [], [])
         else:
-            pairs = A.align_section(a_paras, b_paras, k=K)
-            # E4 倾斜修正：单调 DP 在「译文并段/拆段」处会把边界摊到相邻 pair，
-            # 表现为「英文某段下面挂着隔壁段的中文」。先做一次局部重对齐，
-            # 把窗口内的段落边界重新切开；修不好的留给 LLM 细化。
-            pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
-                                      r_lo=max(1.2, r_lo), r_hi=r_hi)
+            if llm_map is not None:
+                pairs = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
+                                        _en_off, _zh_off)
+                n_fix = 0
+            else:
+                pairs = A.align_section(a_paras, b_paras, k=K)
+                # E4 倾斜修正：单调 DP 在「译文并段/拆段」处会把边界摊到相邻 pair，
+                # 表现为「英文某段下面挂着隔壁段的中文」。先做一次局部重对齐，
+                # 把窗口内的段落边界重新切开；修不好的留给 LLM 细化。
+                pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
+                                          r_lo=max(1.2, r_lo), r_hi=r_hi)
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)

@@ -340,22 +340,36 @@ class LLM:
     def _map_lists(self, en_titles: list[str], zh_titles: list[str],
                    en_counts: list[int] | None = None,
                    zh_counts: list[int] | None = None,
-                   level: str = "section"):
+                   level: str = "section",
+                   en_firsts: list[str] | None = None,
+                   zh_firsts: list[str] | None = None):
         """标题配对内核：只传标题与段数，输出极短（纯 mapping metadata）。
 
         level="section" → 章内小节配对（两版章节已确认对应）
         level="chapter" → **章级配对**（两版切分方式可能不同：英文可能是
         z-lib split 版没有 Chapter 标记，中文用「第N章」；或章序/合并不同）
 
+        en_firsts/zh_firsts：每节首段文本预览（≤60 字）。两版小节切分
+        粒度差异大时（实测机器学习实战 EN 13 节 vs ZH 8 节），光看标题
+        LLM 会把多节懒政地塞给同一节；首段内容是真正的对齐锚点。
+        ⚠ 不提供首段时行格式逐字不变，旧磁盘缓存照常命中。
+
         返回 [(en_idx[], zh_idx[])]，或 None（不可用/失败/不合规）。
         """
         if not self.enabled:
             return None
-        en_lines = [f"{i}|{(t or '(无标题)')[:60]}"
-                    f"{'|' + str(en_counts[i]) if en_counts else ''}"
+
+        def _line(idx, t, counts, firsts):
+            s = f"{idx}|{(t or '(无标题)')[:60]}"
+            if counts:
+                s += f"|{counts[idx]}"
+            if firsts and firsts[idx]:
+                s += f"|首段:{firsts[idx][:60]}"
+            return s
+
+        en_lines = [_line(i, t, en_counts, en_firsts)
                     for i, t in enumerate(en_titles)]
-        zh_lines = [f"{j}|{(t or '(无标题)')[:60]}"
-                    f"{'|' + str(zh_counts[j]) if zh_counts else ''}"
+        zh_lines = [_line(j, t, zh_counts, zh_firsts)
                     for j, t in enumerate(zh_titles)]
         unit = "章" if level == "chapter" else "小节"
         if level == "chapter":
@@ -416,10 +430,13 @@ class LLM:
 
     def map_sections(self, en_titles: list[str], zh_titles: list[str],
                      en_counts: list[int] | None = None,
-                     zh_counts: list[int] | None = None):
+                     zh_counts: list[int] | None = None,
+                     en_firsts: list[str] | None = None,
+                     zh_firsts: list[str] | None = None):
         """章**内**小节配对（两版章节已确认对应）。返回 [(en_idx[], zh_idx[])] 或 None。"""
         return self._map_lists(en_titles, zh_titles, en_counts, zh_counts,
-                               level="section")
+                               level="section",
+                               en_firsts=en_firsts, zh_firsts=zh_firsts)
 
     def map_titles(self, en_titles: list[str], zh_titles: list[str],
                    en_counts: list[int] | None = None,
