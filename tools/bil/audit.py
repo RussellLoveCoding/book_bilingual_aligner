@@ -34,17 +34,6 @@ def audit_pairs(pairs, en_paras, zh_paras,
         bad = None
         if not p.en or not p.zh:
             if p.en:
-                # 禁止翻译类（参考文献/纯符号/极短标记）不计 bad：它们本就
-                # 不该有中文，报了反而是噪音（用户 2026-09-14 定）
-                _txt = " ".join(en_paras[i].text for i in p.en
-                                if isinstance(i, int) and 0 <= i < len(en_paras))
-                try:
-                    from . import epubparse as _E
-                    if _E.no_translate_reason(_txt):
-                        res.total_nt = getattr(res, "total_nt", 0) + 1
-                        continue
-                except Exception:                                  # noqa: BLE001
-                    pass
                 res.only_en += 1
                 bad = ("only_en", p.r)
             else:
