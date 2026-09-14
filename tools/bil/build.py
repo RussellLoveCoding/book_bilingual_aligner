@@ -108,6 +108,18 @@ img.censor-note { display: inline-block; }
   .note b { color: #d7dbe2; }
   .notes { border-color: #3a3f48; }
 }
+/* ── 对照样式：顺序 + 弱化侧（用户 2026-09-14 定策）────────────────────
+   顺序 = flex 的 order（DOM 里恒为「英文在前、中文在后」，只改排布）；
+   弱化 = **只改颜色、不改字号**（用户明确要求：字号一致，用颜色区分）。
+   阅读器若不支持 flex，退化成英文在前 —— 内容一字不丢，只是顺序不同。 */
+.pair { display: flex; flex-direction: column; }
+.pair > .en, .pair > .zh, .pair > blockquote, .pair > figure { order: 3; }
+.ord-zh .pair > .zh { order: 1; }
+.ord-zh .pair > .en { order: 2; }
+.ord-en .pair > .en { order: 1; }
+.ord-en .pair > .zh { order: 2; }
+.dim-en .en { color: #8b9099; }
+.dim-zh .zh { color: #8b9099; }
 """
 
 PREVIEW_EXTRA = """
@@ -128,7 +140,8 @@ body { max-width: 760px; margin: 0 auto; padding: 24px 20px 80px; }
 .modebar label { cursor: pointer; user-select: none; border: 1px solid #c9d0da;
         border-radius: 999px; padding: 4px 14px; transition: .15s; }
 .modebar label:hover { border-color: #8b97a8; }
-#mode-bi:checked  ~ .book .zh, #mode-bi:checked  ~ .book .en { display: block; }
+/* 对照样式切换（顺序 / 弱化）：与阅读模式同一套 pill 观感 */
+.modebar label.sty.on { background: #5b6472; border-color: #5b6472; color: #fff; }#mode-bi:checked  ~ .book .zh, #mode-bi:checked  ~ .book .en { display: block; }
 #mode-zh:checked  ~ .book .en { display: none; }
 #mode-en:checked  ~ .book .zh { display: none; }
 #mode-zh:checked  ~ .modebar label[for=mode-zh],
@@ -148,7 +161,64 @@ body { max-width: 760px; margin: 0 auto; padding: 24px 20px 80px; }
 }
 """
 
+# ── 对照样式（用户 2026-09-14 定策）──────────────────────────────────
+# order: zh = 中文在前（中文读者的主语言，默认）；en = 英文在前
+# dim:   en = 弱化英文（默认）；zh = 弱化中文；none = 两侧同等
+DEFAULT_PAIR_STYLE = {"order": "zh", "dim": "en"}
+
+PAIR_STYLES = {
+    "order": {"zh": "中文在前", "en": "英文在前"},
+    "dim": {"en": "弱化英文", "zh": "弱化中文", "none": "两侧同等"},
+}
+
+
+def norm_pair_style(style: dict | None = None, **kw) -> dict:
+    """校验/补全样式配置（未知值一律回默认，不抛异常）。
+
+    两种调用都收：norm_pair_style({"order": "zh"}) / norm_pair_style(order="zh")。
+    """
+    src = dict(style or {})
+    src.update({k: v for k, v in kw.items() if v is not None})
+    s = dict(DEFAULT_PAIR_STYLE)
+    for k, allowed in PAIR_STYLES.items():
+        v = src.get(k)
+        if v in allowed:
+            s[k] = v
+    return s
+
+
+def pair_style_class(style: dict | None = None, **kw) -> str:
+    """→ 挂在 <html class="..."> 上的两个类（CSS 靠它们切换排布与弱化）。
+
+    两种调用都收：pair_style_class({"order": "zh"}) /
+    pair_style_class(order="zh", dim="en")。
+    """
+    s = norm_pair_style(style, **kw)
+    return f"ord-{s['order']} dim-{s['dim']}"
+
+
 DEGRADE_ON_FAIL = True
+
+# 预览页的对照样式切换脚本。⚠ 必须放在**普通字符串**里：直接写进下面的
+# f-string 会被当成占位符，JS 的 `{` 会触发 SyntaxError（踩过）。
+PREVIEW_STY_JS = """
+document.querySelectorAll('.sty').forEach(el=>{
+  el.addEventListener('click',()=>{
+    const k=el.dataset.sty, v=el.dataset.v, r=document.documentElement;
+    const pre=(k==='order'?'ord-':'dim-');
+    Array.from(r.classList).forEach(c=>{
+      if(c.indexOf(pre)===0) r.classList.remove(c);
+    });
+    r.classList.add(pre+v);
+    document.querySelectorAll('.sty[data-sty="'+k+'"]')
+      .forEach(x=>x.classList.toggle('on', x===el));
+  });
+});
+document.querySelectorAll('.sty').forEach(el=>{
+  const k=el.dataset.sty, v=el.dataset.v, r=document.documentElement;
+  el.classList.toggle('on', r.classList.contains((k==='order'?'ord-':'dim-')+v));
+});
+"""
 # 行内标记用无文字的图标（<img alt="" aria-hidden="true">）：微信读书听书的
 # TTS 会把「AI译」「【内容审查修复提示】」这类文本读出来，图片直接跳过。
 # class 仍留在 img 上，单语版的 _drop() 靠它整元素删除。
@@ -658,7 +728,8 @@ def _stats_of(results):
     return tot, matched, mt, miss, bad
 
 
-def build_html(results, out: Path, title="Nexus 中英双语版", meta=None):
+def build_html(results, out: Path, title="Nexus 中英双语版", meta=None,
+               style: dict | None = None):
     tot, matched, mt, miss, bad = _stats_of(results)
     # 预览页是单文件 HTML：图片以 data URI 内联，否则脱离 epub 打不开
     global _INLINE
@@ -696,7 +767,7 @@ def build_html(results, out: Path, title="Nexus 中英双语版", meta=None):
     _m = re.search(r"<body>\s*(.*?)\s*</body>", _tp, re.S)
     tp_html = _m.group(1) if _m else ""
     doc = f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"/>
+<html lang="zh-CN" class="{pair_style_class(style)}"><head><meta charset="utf-8"/>
 <title>{title}</title>
 <style>{CSS}{PREVIEW_EXTRA}</style></head>
 <body>
@@ -710,11 +781,21 @@ def build_html(results, out: Path, title="Nexus 中英双语版", meta=None):
   <label for="mode-zh">仅中文</label>
   <label for="mode-en">仅英文</label>
 </div>
+<div class="modebar">
+  <span class="mlabel">顺序</span>
+  <label class="sty" data-sty="order" data-v="zh">中文在前</label>
+  <label class="sty" data-sty="order" data-v="en">英文在前</label>
+  <span class="mlabel" style="margin-left:12px">弱化</span>
+  <label class="sty" data-sty="dim" data-v="en">英文淡显</label>
+  <label class="sty" data-sty="dim" data-v="zh">中文淡显</label>
+  <label class="sty" data-sty="dim" data-v="none">同 等</label>
+</div>
 <div class="book">
 {cover_html}
 {tp_html}
 {body}
 </div>
+<script>{PREVIEW_STY_JS}</script>
 </body></html>"""
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(doc, encoding="utf-8")
@@ -1182,18 +1263,18 @@ def _split_chapter_body(body: str, lang: str = "bi",
 
 
 def build_epub(results, out: Path, title="Nexus 中英双语版", lang="bi",
-               meta=None):
+               meta=None, style: dict | None = None):
     """epub 出口：图标切到真实文件模式（微信读书不渲染 data URI）。"""
     global _FILE_ICONS
     _FILE_ICONS = True
     try:
-        return _build_epub_impl(results, out, title, lang, meta)
+        return _build_epub_impl(results, out, title, lang, meta, style=style)
     finally:
         _FILE_ICONS = False
 
 
 def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi",
-                     meta=None):
+                     meta=None, style: dict | None = None):
     """生成 epub。
 
     lang="bi"  双语对照（默认）
@@ -1226,7 +1307,7 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
             mid = "" if k == 0 else f"_{k}"
             docs.append((pname, f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang if lang != 'bi' else 'zh'}-CN" lang="{lang if lang != 'bi' else 'zh'}-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang if lang != 'bi' else 'zh'}-CN" lang="{lang if lang != 'bi' else 'zh'}-CN" class="{pair_style_class(style)}">
 <head><meta charset="utf-8"/><title>{_esc(r.en_title or name)}</title>
 <link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body>
@@ -1487,7 +1568,8 @@ def _badge_cover_meta(meta):
 
 def build_book(results, title="Nexus 中英双语版", singles=True,
                out_dir: Path | None = None, meta=None,
-               emit_en: bool = False, emit_zh: bool = False):
+               emit_en: bool = False, emit_zh: bool = False,
+               style: dict | None = None):
     """出全书成品。
 
     默认三种都出，方便直接分发（<书名> = 标题去掉「双语版」后缀后的主干）：
@@ -1513,9 +1595,10 @@ def build_book(results, title="Nexus 中英双语版", singles=True,
     meta = _badge_cover_meta(meta)     # 双语版封面带「双语」角标
     stem = slugify(title)
     pre = f"{stem}_" if stem else ""
-    html = build_html(results, d / f"{pre}双语.html", title, meta=meta)
+    html = build_html(results, d / f"{pre}双语.html", title, meta=meta,
+                      style=style)
     epub = build_epub(results, d / f"{pre}双语.epub", title,
-                      lang="bi", meta=meta)
+                      lang="bi", meta=meta, style=style)
     made = [html, epub]
     if singles and (emit_en or emit_zh):
         if meta is not None and orig_cover is not None:

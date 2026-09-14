@@ -56,6 +56,9 @@ _JOB: dict = {
     "cost": "",
     "estimate": "",
     "out_dir": "",        # 本次任务的输出目录（试跑会另开目录，不盖正式成品）
+    "kind": "epub",       # epub | text（成品格式随输入）
+    "ext": ".epub",       # 成品后缀
+    "mono": False,        # 是否额外产出了中文/English 单语版
 }
 
 
@@ -137,11 +140,11 @@ def _set(**kw) -> None:
 
 
 def _safe_name(name: str) -> str:
-    """把上传文件名清洗成安全的落盘名（epub / txt 都收）。"""
+    """把上传文件名清洗成安全的落盘名（epub / txt / md 都收）。"""
     name = os.path.basename(name or "")
     name = re.sub(r"[^\w\u4e00-\u9fff.\-]+", "_", name)
     name = name.strip("._") or "book.epub"
-    if not name.lower().endswith((".epub", ".txt")):
+    if not name.lower().endswith((".epub", ".txt", ".md", ".markdown")):
         name += ".epub"
     return name[:120]
 
@@ -381,7 +384,8 @@ def md_to_html(text: str) -> str:
 # ── 流水线（复用 tools/run_book.py 的同一套内核） ─────────────────────
 def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
              chapters: list[str] | None,
-             out_dir: Path | None = None) -> None:
+             out_dir: Path | None = None, opts: dict | None = None) -> None:
+    opts = opts or {}
     t0 = time.time()
     try:
         from bil import epubparse as E
@@ -392,33 +396,41 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
 
         _set(state="running", pct=2, stage="解析输入", chapter="", error="")
         _log(f"[1/6] 打开两份材料 …")
-        is_txt = (en_path.suffix.lower() == ".txt"
-                  and zh_path.suffix.lower() == ".txt")
+        # 格式随输入：任一侧是 txt/md 就走文本链路，成品也出文本（不出 epub）。
+        # 混搭（英文 epub + 中文 md）按**每一侧各自**解析，与命令行一致。
+        _TEXT_EXT = (".txt", ".md", ".markdown")
+        en_txt = en_path.suffix.lower() in _TEXT_EXT
+        zh_txt = zh_path.suffix.lower() in _TEXT_EXT
+        text_mode = en_txt or zh_txt
+        from bil import txtimport as TX
         ze = zz = None
         meta = None
-        if is_txt:
-            from bil import txtimport as TX
-            en_docs = TX.load_docs(en_path, "en")
-            zh_docs = TX.load_docs(zh_path, "zh")
-            _log("      txt 模式：无封面/元数据/注释回填，纯文本对齐")
+        if not en_txt:
+            ze = E.open_epub(str(en_path))
+        if not zh_txt:
+            zz = E.open_epub(str(zh_path))
+        if text_mode:
+            _log(f"      文本模式（{en_path.suffix} + {zh_path.suffix}）："
+                 f"纯文本对齐，成品出中英对照文本（不出 epub）")
         else:
-            ze, zz = E.open_epub(str(en_path)), E.open_epub(str(zh_path))
             # 沿用中文版的元数据与封面（作者/出版社/ISBN/封面不再写死）
             meta = BM.pick_meta(str(zh_path), str(en_path))
             if meta.title:
                 _log(f"      源书元数据：{meta.summary()}")
-            en_docs = S.load_docs(ze, E.read_spine(ze))
-            zh_docs = S.load_docs(zz, E.read_spine(zz))
+        en_docs = (TX.load_docs(en_path, "en") if en_txt
+                   else S.load_docs(ze, E.read_spine(ze)))
+        zh_docs = (TX.load_docs(zh_path, "zh") if zh_txt
+                   else S.load_docs(zz, E.read_spine(zz)))
 
         _set(pct=8, stage="章节映射")
         _log(f"[2/6] 章级映射 …")
-        pairs = (TX.build_pairs(en_docs, zh_docs) if is_txt
+        pairs = (TX.build_pairs(en_docs, zh_docs) if text_mode
                  else S.map_chapters(en_docs, zh_docs))
         _log(f"      英文章节 {len(en_docs)} · 中文章节 {len(zh_docs)}")
 
-        # 英文本注释兜底（txt 没有注释锚点，直接跳过）
+        # 英文本注释兜底（英文侧是 epub 才可能读到尾注）
         _en_notes_map = {}
-        if not is_txt:
+        if ze is not None:
             _set(pct=12, stage="读取英文注释")
             try:
                 from bil import notes as NO
@@ -432,7 +444,7 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
             except Exception as exc:                              # noqa: BLE001
                 _log(f"[warn] 英文注释读取失败，跳过兜底：{exc}")
         else:
-            _log("[3/6] txt 模式：跳过英文注释兜底")
+            _log("[3/6] 文本模式：跳过英文注释兜底")
 
         # 选章
         jobs = []
@@ -479,8 +491,11 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
                                     en_notes_map=_en_notes_map)
             res.en_zip, res.zh_zip = ze, zz
             if llm is not None:
-                st = P.apply_llm(res, llm, title=cp.en_title)
-                ec = P.apply_error_repair(res, llm, title=cp.en_title)
+                st = P.apply_llm(res, llm, title=cp.en_title,
+                                 translate=bool(opts.get("fill", True)))
+                ec = P.apply_error_repair(
+                    res, llm, title=cp.en_title,
+                    check_censor=bool(opts.get("censor", False)))
                 st["censor"] = ec
                 res.stats["llm"] = st
             P.print_report(res)
@@ -511,7 +526,7 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
             llm.close()
 
         # 出成品
-        _set(pct=92, stage="渲染 epub")
+        _set(pct=92, stage=("渲染文本" if text_mode else "渲染 epub"))
         _log("[5/6] 渲染 / 打包 …")
         # 书名补「双语」后缀（已有就不重复）；用户没填就用中文版书名
         if (title or "").strip() in ("", "双语版", "中英双语版"):
@@ -522,12 +537,34 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
         build.OUT_DIR = BUILD_DIR
         dest = Path(out_dir) if out_dir is not None else BUILD_DIR
         dest.mkdir(parents=True, exist_ok=True)
-        made = build.build_book(results, title=title, out_dir=dest, meta=meta)
+        if text_mode:
+            # 输入 txt/md → 成品也出文本（用户 2026-09-14 定：不强制 epub）
+            from bil import textout as TO
+            ext = ".md" if (en_path.suffix.lower() in (".md", ".markdown")
+                            or zh_path.suffix.lower() in (".md", ".markdown")) \
+                else ".txt"
+            stem = build.slugify(title)
+            made = [TO.write_text(results, dest / f"{stem}_双语{ext}"
+                                  if stem else dest / f"双语{ext}",
+                                  title=title)]
+        else:
+            made = build.build_book(results, title=title, out_dir=dest,
+                                    meta=meta,
+                                    emit_en=bool(opts.get("mono", False)),
+                                    emit_zh=bool(opts.get("mono", False)),
+                                    style=opts.get("style"))
+            _sty = build.norm_pair_style(opts.get("style"))
+            _log(f"      对照样式：{build.PAIR_STYLES['order'][_sty['order']]}"
+                 f" · {build.PAIR_STYLES['dim'][_sty['dim']]}")
         _set(title=title)                 # 下载接口靠它拼文件名
         _log(f"[6/6] 完成 → {dest}")
         for f in made:
             _log(f"      {Path(f).name}")
-        _set(out_dir=str(dest))
+        _set(out_dir=str(dest),
+             kind=("text" if text_mode else "epub"),
+             ext=(".md" if text_mode and ext == ".md"
+                  else (".txt" if text_mode else ".epub")),
+             mono=bool(opts.get("mono", False)) and not text_mode)
 
         _set(state="done", pct=100, stage="完成", chapter="",
              elapsed=time.time() - t0)
@@ -682,6 +719,26 @@ PAGE = """<!DOCTYPE html>
   .opts{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin-top:16px}
   .chk{display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer}
   .chk input{width:15px;height:15px;accent-color:var(--accent)}
+  /* ── 开关（toggle）：细项选项用，比 checkbox 更容易看出开/关 ── */
+  .tgs{display:flex;flex-direction:column;gap:11px;margin-top:14px;
+       padding:14px;border:1px solid var(--line);border-radius:10px;
+       background:var(--panel2)}
+  .tg{display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+      font-size:13px;line-height:1.45}
+  .tg input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+  .tg i{flex:none;width:34px;height:19px;margin-top:1px;border-radius:19px;
+        background:var(--bg);border:1px solid var(--line);position:relative;
+        transition:background .15s,border-color .15s}
+  .tg i::after{content:"";position:absolute;top:2px;left:2px;width:13px;
+        height:13px;border-radius:50%;background:var(--dim);
+        transition:transform .15s,background .15s}
+  .tg input:checked+i{background:var(--accent);border-color:var(--accent)}
+  .tg input:checked+i::after{transform:translateX(15px);background:#fff}
+  .tg input:focus-visible+i{outline:2px solid var(--accent);outline-offset:2px}
+  .tg b{font-weight:500;display:block}
+  .tg em{font-style:normal;color:var(--dim);font-size:12px}
+  .tg.off{opacity:.45}
+  .tg.off i{cursor:not-allowed}
   select{width:100%;padding:10px 12px;background:var(--panel2);
         border:1px solid var(--line);border-radius:8px;color:var(--fg);
         font-size:13px;font-family:inherit}
@@ -709,6 +766,9 @@ PAGE = """<!DOCTYPE html>
   .dot.test{background:var(--accent);animation:pulse 1s infinite}
   @keyframes pulse{50%{opacity:.3}}
   .hint{font-size:11px;color:var(--dim);line-height:1.5;margin-top:6px}
+  .hint.fmt{margin-top:14px;font-size:12px;background:var(--panel2);
+       border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .hint.fmt b{color:var(--fg);font-weight:500}
   .msg{font-size:12px;margin-top:10px;padding:9px 11px;border-radius:7px;
        white-space:pre-wrap;word-break:break-all;line-height:1.5}
   .msg.ok{background:rgba(62,207,142,.12);color:var(--ok);
@@ -766,20 +826,24 @@ PAGE = """<!DOCTYPE html>
 <b class="back" id="back">☰ 目录</b>
 <div id="makeView">
 <h1>双语电子书合成</h1>
-<div class="sub">英文 epub（结构骨架）+ 中文 epub（译本血肉）→ 段段对照的双语 epub</div>
+<div class="sub">英文原书（结构骨架）+ 中文译本（译文血肉）→ 段段对照的成品：epub 进 epub 出，txt/md 进文本出</div>
 
 <div class="card" id="setup">
   <div class="row">
     <div class="field">
-      <label>英文 epub</label>
-      <label class="file"><input type="file" id="en" accept=".epub,.txt">
+      <label>英文原书（结构骨架）</label>
+      <label class="file"><input type="file" id="en" accept=".epub,.txt,.md,.markdown">
         <b style="color:var(--accent)">选择或拖入文件</b><span id="enN">未选择</span></label>
     </div>
     <div class="field">
-      <label>中文 epub</label>
-      <label class="file"><input type="file" id="zh" accept=".epub,.txt">
+      <label>中文译本（译文血肉）</label>
+      <label class="file"><input type="file" id="zh" accept=".epub,.txt,.md,.markdown">
         <b style="color:var(--accent)">选择或拖入文件</b><span id="zhN">未选择</span></label>
     </div>
+  </div>
+  <div class="hint fmt" id="fmtHint">
+    支持 epub / txt / md。<b>成品格式随输入</b>：两侧都是 epub → 出双语
+    epub；任一侧是 txt/md → 出<b>中英对照文本</b>（.md 随 md、.txt 随 txt）。
   </div>
   <div class="row" style="margin-top:16px">
     <div class="field">
@@ -791,10 +855,50 @@ PAGE = """<!DOCTYPE html>
       <input type="text" id="chs" placeholder="chapter1,chapter5">
     </div>
   </div>
+  <div class="row" style="margin-top:16px">
+    <div class="field">
+      <label>对照顺序</label>
+      <select id="ord">
+        <option value="zh" selected>中文在前，英文在后（推荐）</option>
+        <option value="en">英文在前，中文在后</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>弱化显示（字号一致，只用颜色区分）</label>
+      <select id="dim">
+        <option value="en" selected>弱化英文，突出中文</option>
+        <option value="zh">弱化中文，突出英文</option>
+        <option value="none">两侧同等显示</option>
+      </select>
+    </div>
+  </div>
+  <div class="hint">只影响 epub 与 HTML 预览的排版；文本成品（txt/md）不受影响。
+    生成后可在 HTML 预览页顶部即时切换（epub 需重新合成）。</div>
+
   <div class="opts">
     <label class="chk"><input type="checkbox" id="llm">
       启用 LLM（细化解码 + 内容审查勘误 + 缺失段补译）</label>
     <span class="pill">不勾选＝纯确定性对齐，耗时约 1 分钟、零成本</span>
+  </div>
+
+  <div class="tgs">
+    <label class="tg" id="tgCensor">
+      <input type="checkbox" id="censor"><i></i>
+      <span><b>内容审查修复</b>
+        <em>按英文原版把因审查删改的段落补回中文，成品标「审修」。
+        需勾选 LLM；科普/技术书没有审查删改，开了只会误判，默认关。</em></span>
+    </label>
+    <label class="tg" id="tgFill">
+      <input type="checkbox" id="fill" checked><i></i>
+      <span><b>缺失段 AI 补译</b>
+        <em>中文版未收录的段落（多为前后附页）用 AI 译出并标「AI译」。
+        需勾选 LLM。</em></span>
+    </label>
+    <label class="tg">
+      <input type="checkbox" id="mono"><i></i>
+      <span><b>额外产出中文 / English 单语版</b>
+        <em>默认只出双语版；打开后多两份单语 epub（不需要 LLM）。</em></span>
+    </label>
   </div>
 
   <details class="acc" id="acc">
@@ -877,12 +981,12 @@ PAGE = """<!DOCTYPE html>
     <div id="outdir" style="font-size:12px;font-family:ui-monospace,Consolas,monospace;
          color:var(--fg);word-break:break-all;margin-bottom:10px"></div>
     <div style="font-size:12px;color:var(--dim);margin-bottom:8px">下载</div>
-    <a class="dl" href="/api/download?f=bi">中英对照 epub</a>
-    <a class="dl" href="/api/download?f=zh"
+    <a class="dl" id="dlBi" href="/api/download?f=bi">中英对照 epub</a>
+    <a class="dl hide" id="dlZh" href="/api/download?f=zh"
        style="background:#2f6fd0;color:#fff;margin-left:8px">仅中文 epub</a>
-    <a class="dl" href="/api/download?f=en"
+    <a class="dl hide" id="dlEn" href="/api/download?f=en"
        style="background:#5a6472;color:#fff;margin-left:8px">仅英文 epub</a>
-    <a class="dl" href="/api/html" target="_blank"
+    <a class="dl" id="dlHtml" href="/api/html" target="_blank"
        style="background:var(--panel2);color:var(--fg);margin-left:8px">
        在线预览 HTML</a>
   </div>
@@ -935,6 +1039,7 @@ function bindFile(id,nameId){
   const set=f=>{
     name.textContent=f?f.name+' · '+(f.size/1048576).toFixed(1)+'MB':'未选择';
     name.style.color=f?'var(--fg)':'var(--dim)';
+    updateFmt();
   };
   inp.addEventListener('change',e=>set(e.target.files[0]));
   /* 拖拽上传：拖到虚线框上松手即可，等价于点开文件选择器 */
@@ -946,9 +1051,8 @@ function bindFile(id,nameId){
     e.preventDefault(); lab.classList.remove('drag');
     const f=e.dataTransfer&&e.dataTransfer.files[0];
     if(!f) return;
-    if(!f.name.toLowerCase().endsWith('.epub')
-       && !f.name.toLowerCase().endsWith('.txt')){
-      name.textContent='仅支持 .epub / .txt 文件'; name.style.color='#e06c5a';
+    if(!TEXT_EXT.some(x=>f.name.toLowerCase().endsWith(x))){
+      name.textContent='仅支持 .epub / .txt / .md 文件'; name.style.color='#e06c5a';
       return;
     }
     try{const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files;}
@@ -956,7 +1060,42 @@ function bindFile(id,nameId){
     set(f);
   });
 }
+const TEXT_EXT=['.txt','.md','.markdown'];
 bindFile('#en','#enN'); bindFile('#zh','#zhN');
+
+/* ── 格式随输入：epub→epub，txt/md→中英对照文本 ───────────────── */
+function isTextFile(f){
+  return !!f && TEXT_EXT.some(x=>f.name.toLowerCase().endsWith(x));
+}
+function outFormat(){                 // 'epub' | 'md' | 'txt'
+  const en=$('#en').files[0], zh=$('#zh').files[0];
+  if(!isTextFile(en)&&!isTextFile(zh)) return 'epub';
+  return [en,zh].some(f=>/\\.(md|markdown)$/i.test(f?f.name:''))?'md':'txt';
+}
+function updateFmt(){
+  const t=outFormat(), el=$('#fmtHint');
+  if(t==='epub'){
+    el.innerHTML='支持 epub / txt / md。<b>成品格式随输入</b>：两侧都是 epub'
+      +' → 出双语 epub；任一侧是 txt/md → 出中英对照<b>文本</b>。';
+  }else{
+    el.innerHTML='已切到<b>文本模式</b>：成品是中英对照 <b>.'+t+'</b>'
+      +'（不再出 epub）。段段对照、图注保留为「> 【图】…」行。';
+  }
+}
+
+/* ── LLM 细项开关：未启用 LLM 时置灰 ─────────────────────────── */
+function syncTg(){
+  const on=$('#llm').checked;
+  let k=0;
+  ['#censor','#fill'].forEach(sel=>{
+    const inp=$(sel), lab=inp.closest('.tg');
+    inp.disabled=!on;
+    if(lab) lab.classList.toggle('off',!on);
+    k++;
+  });
+}
+$('#llm').addEventListener('change',syncTg);
+syncTg(); updateFmt();
 
 function show(id){$(id).classList.remove('hide')}
 
@@ -1091,7 +1230,7 @@ loadCfg();
 
 $('#go').addEventListener('click',async()=>{
   const en=$('#en').files[0], zh=$('#zh').files[0];
-  if(!en||!zh){$('#setupErr').textContent='请先选择英文和中文两个 epub 文件。';return}
+  if(!en||!zh){$('#setupErr').textContent='请先选择英文原书和中文译本两个文件。';return}
   $('#setupErr').textContent='';
   $('#go').disabled=true; $('#go').textContent='运行中…';
   lastLen=0;
@@ -1104,6 +1243,11 @@ $('#go').addEventListener('click',async()=>{
   fd.append('title',$('#title').value.trim());   // 留空→服务端按文件名取书名
   fd.append('chapters',$('#chs').value.trim());
   fd.append('llm',$('#llm').checked?'1':'0');
+  fd.append('censor',$('#censor').checked?'1':'0');
+  fd.append('fill',$('#fill').checked?'1':'0');
+  fd.append('mono',$('#mono').checked?'1':'0');
+  fd.append('order',$('#ord').value);
+  fd.append('dim',$('#dim').value);
   const r=await fetch('/api/run',{method:'POST',body:fd});
   if(!r.ok){$('#setupErr').textContent='启动失败：'+(await r.text());$('#go').disabled=false;$('#go').textContent='开始合成';return}
   poll();
@@ -1136,6 +1280,11 @@ async function poll(){
 
   if(s.state==='done'){
     $('#go').disabled=false;$('#go').textContent='重新合成';
+    const txt=(s.kind==='text');
+    $('#dlBi').textContent=txt?('中英对照 '+(s.ext||'.txt')):'中英对照 epub';
+    $('#dlZh').classList.toggle('hide',txt||!s.mono);
+    $('#dlEn').classList.toggle('hide',txt||!s.mono);
+    $('#dlHtml').classList.toggle('hide',txt);
     $('#dls').classList.remove('hide');
     $('#stage').textContent='✓ 完成';
     return;
@@ -1356,6 +1505,25 @@ class Handler(BaseHTTPRequestHandler):
             for kv in q.split("&"):
                 if kv.startswith("f="):
                     pick = kv[2:] or "bi"
+            with _LOCK:
+                kind = _JOB.get("kind") or "epub"
+                ext = _JOB.get("ext") or ""
+            if kind == "text":
+                # 文本模式（输入是 txt/md）：只有中英对照文本，没有 epub
+                if pick != "bi":
+                    return self._json(
+                        {"error": "文本模式只产出中英对照文本"}, 404)
+                ext = ext or ".txt"
+                f = _product(f"双语{ext}", f"bilingual{ext}")
+                if not f.exists():
+                    return self._json(
+                        {"error": f"成品 {f.name} 尚未生成（目录 "
+                                  f"{f.parent}）"}, 404)
+                ctype = ("text/markdown; charset=utf-8"
+                         if ext == ".md" else "text/plain; charset=utf-8")
+                self._send(200, f.read_bytes(), ctype,
+                           {"Content-Disposition": _cdisp(f.name)})
+                return
             # 文件名带书名：<书名>_双语.epub（后缀用中文，微信读书书架显示名
             # 取文件名）；老产物退回旧名
             names = {"bi": ("双语.epub", "bilingual.epub"),
@@ -1454,26 +1622,33 @@ class Handler(BaseHTTPRequestHandler):
         chs_raw = (fields.get("chapters") or "").strip()
         chapters = [c.strip() for c in chs_raw.split(",") if c.strip()] or None
         use_llm = fields.get("llm") == "1"
+        opts = {"censor": fields.get("censor") == "1",
+                "fill": fields.get("fill", "1") == "1",
+                "mono": fields.get("mono") == "1",
+                "style": {"order": fields.get("order") or "zh",
+                          "dim": fields.get("dim") or "en"}}
 
         return self._start_job(paths["en"], paths["zh"], title, use_llm,
-                               chapters)
+                               chapters, opts=opts)
 
     def _start_job(self, en_path, zh_path, title, use_llm, chapters,
-                   out_dir=None):
+                   out_dir=None, opts=None):
         """启动后台任务（/api/run 与 /api/demo 共用）。
 
         out_dir 不传＝正式产物目录 build/；试跑/样本必须传别的目录，
         否则会把用户跑出来的成品盖掉。
+        opts: {censor, fill, mono} —— 界面上三个开关。
         """
         dest = Path(out_dir) if out_dir is not None else BUILD_DIR
         with _LOCK:
             _JOB.update(state="running", pct=0, stage="启动中", chapter="",
                         logs=[], results=[], error="", title=title,
                         started=time.time(), elapsed=0.0, cost="",
-                        estimate="", out_dir=str(dest))
+                        estimate="", out_dir=str(dest),
+                        kind="epub", ext=".epub", mono=False)
         threading.Thread(target=_run_job,
                          args=(en_path, zh_path, title, use_llm, chapters,
-                               dest),
+                               dest, opts or {}),
                          daemon=True).start()
         return self._json({"ok": True})
 

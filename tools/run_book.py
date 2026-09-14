@@ -94,6 +94,11 @@ def main():
     ap.add_argument("--llm-gate", type=float, default=0.15,
                     help="LLM 准入闸门：DP 体检 bad 率低于此值就不调 LLM"
                          "（免费的长度比体检当裁判；简单排版书全程零花费）")
+    ap.add_argument("--order", choices=("zh", "en"), default="zh",
+                    help="对照顺序：zh=中文在前（默认，中文读者）/ en=英文在前")
+    ap.add_argument("--dim", choices=("en", "zh", "none"), default="en",
+                    help="弱化哪一侧（只改颜色、不改字号）：en=弱化英文（默认）"
+                         "/ zh=弱化中文 / none=两侧同等")
     args = ap.parse_args()
 
     want = None
@@ -229,7 +234,8 @@ def main():
         if meta.title:
             print(f"[元数据] {meta.summary()}")
         build.build_book(results, title=title, meta=meta,
-                         emit_en=args.emit_en, emit_zh=args.emit_zh)
+                         emit_en=args.emit_en, emit_zh=args.emit_zh,
+                         style={"order": args.order, "dim": args.dim})
 
 
 def _run_parallel(fn, jobs, workers):
