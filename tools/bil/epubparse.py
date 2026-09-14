@@ -380,6 +380,48 @@ def count_visuals(src: str) -> dict:
     }
 
 
+def is_perchar_bold(html: str, min_b: int = 2) -> bool:
+    """整段「单字 `<b>` 拆分」签名（精排 epub 的标题形态）。
+
+    实测（calibre / sigil / 掌阅转换）标题的每个字各包一个 `<b class=calibreN>`，
+    取文本后是「源 起」「谈 谈 四 重 模 式」。真段落用单个 `<span>`，
+    不会有逐字标签。判据：可见文本**全部**落在 `<b>` 里，且 `<b>` ≥ min_b 个。
+    """
+    h = html or ""
+    if len(re.findall(r"<b\b", h, re.I)) < min_b:
+        return False
+    stripped = re.sub(r"<b\b[^>]*>.*?</b>", "", h, flags=re.S | re.I)
+    rest = _html.unescape(re.sub(r"<[^>]+>", "", stripped)).strip()
+    return not rest
+
+
+def _promote_split_headings(results: list[Block]) -> int:
+    """把「被标成普通段的小标题」提升为标题块。
+
+    中文精排 epub 里真标题是 heading，但书内小标题常被写成普通段
+    （实测《思考，快与慢》中文版 165 处：源起 / 决策权重 / 谈谈四重模式…）。
+    它们混在正文里有两个后果：
+      1. 撑多中文段数（序言 EN 46 段 vs ZH 49 段 → 段数 Δ+3 全是小标题）；
+      2. 被并进上一段的译文里（用户实测：「源起」跑到上段 = skew 漂移）。
+    提升后 ZH 的小节结构与 EN 对齐，小标题也不再参与段落 DP。
+
+    护栏：短（≤24 字）且无句读 —— 整句加粗的正文段（实测
+    「阿道夫·希特勒出生于1892年。」也是逐字 `<b>`）会被句末标点排除。
+    """
+    n = 0
+    for b in results:
+        if b.type == "heading" or not is_perchar_bold(b.html):
+            continue
+        t = (b.text or "").strip()
+        if not (0 < len(t) <= 24) or re.search(r"[。！？；：，、.!?;:,]", t):
+            continue
+        b.type = "heading"
+        b.tag = "h3"
+        b.level = 2
+        n += 1
+    return n
+
+
 def parse_blocks(src: str, strict: bool = True,
                  doc_path: str = "", zf: zipfile.ZipFile | None = None) -> list[Block]:
     """扫描 src，返回顶层块序列（容器块被展开）。
@@ -468,6 +510,9 @@ def parse_blocks(src: str, strict: bool = True,
             _first.type = "heading"
             _first.tag = "h2"
             _first.level = 1
+
+    # 逐字 `<b>` 的小标题提升（见 _promote_split_headings 说明）
+    _promote_split_headings(results)
 
     # 视觉单位插回：按占位符在 body_text 里的**源偏移**插到正确位置。
     # 旧实现靠「占位符出现在某个成块元素的 inner 里」来定位，但中文书
