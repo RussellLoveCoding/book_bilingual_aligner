@@ -34,6 +34,9 @@ h2.ct { font-size: 1.5em; line-height: 1.35; }
 blockquote { margin: .9em 0 .9em 1.2em; padding-left: .9em;
   border-left: 3px solid rgba(128,128,128,.45); font-style: italic; }
 blockquote.zh { font-style: normal; }
+/* 图表题注：居中、小字、跟随其图表 */
+p.caption, blockquote.caption { text-align: center; font-size: .92em;
+  opacity: .85; margin: .3em 0 1em; }
 h3.st { font-size: 1.14em; line-height: 1.4; }
 h2.ct, h3.st { font-weight: 600; margin: 1.6em 0 .8em; }
 /* 章/节标题：英文、中文是两个独立标题元素（不是 span 套在一个里），
@@ -285,6 +288,33 @@ def _rewrite(html_str: str, n_notes: int, prefix: str = "",
     return E.NOTEREF_RE.sub(sub, html_str)
 
 
+_CAP_TEXT_RE = re.compile(r"^\s*(?:表|图|Table|Figure)\s*\d+(?:\s*[-–—]\s*\d+)?\s*$|"
+                            r"^\s*(?:表|Table)\s*\d+[-–—]\d+")
+
+
+def _is_caption_text(t: str) -> bool:
+    """图表题注（表29-1 / 图1-2 / Table 29-1 …）：居中、小字排版。"""
+    return bool(_CAP_TEXT_RE.match((t or "").strip()))
+
+
+def _looks_like_title(zh: str, en: str) -> bool:
+    """中文短段 + 无句末标点，且英文侧也是标题样式 → 当小标题渲染。
+
+    中文版的小标题常常不是 heading（是普通段），位置与英文小标题对应；
+    英文侧标题多为全大写（INTELLIGENCE, CONTROL, RATIONALITY）。
+    """
+    z = (zh or "").strip()
+    if not (0 < len(z) <= 24) or re.search(r"[。！？；.!?;]", z):
+        return False
+    if _is_caption_text(z):
+        return False
+    e = (en or "").strip()
+    if not e or len(e) > 60:
+        return False
+    letters = [c for c in e if c.isalpha()]
+    return bool(letters) and sum(1 for c in letters if c.isupper()) / len(letters) > 0.7
+
+
 def _figure_html(fig, prefix: str, side: str = "zh") -> str:
     """渲染一个图位。
 
@@ -411,17 +441,25 @@ def render_chapter(res, prefix=""):
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
                 parts.append(f'<p class="zh censorship_fix">'
                              f'{censor_note()}{_esc(p.zh_fix)}</p>')
-            elif p.zh:
+            elif p.zh and not E.no_translate_reason(
+                    " ".join(sec.en_paras[x].text for x in p.en)):
                 _j = p.zh[0]
                 while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
                     _hiz += 1
                 zh_html = " ".join(sec.zh_paras[x].html for x in p.zh)
                 zh_html = _put_notes(zh_html, p, prefix, note_texts)
-                # 引用格式跟随英文原文（用户要求：英文是引用，中文也按引用排，
-                # 不再输出 AI 翻译图标 —— 图标只留给审查修复）
-                parts.append(f'<{tag} class="zh zh_transed">'
-                             f'{zh_html}</{tag}>')
+                _zplain = " ".join(sec.zh_paras[x].text for x in p.zh).strip()
+                _eplain = " ".join(sec.en_paras[x].text for x in p.en).strip()
+                # 渲染时提升（决策中性）：中文小标题在源文件里常是普通段
+                # （不是 heading），位置与英文小标题对应 → 渲染成标题
+                if _looks_like_title(_zplain, _eplain):
+                    parts.append(_head_block("h4", "st", "", _zplain))
+                else:
+                    # 图表题注：居中、小字（用户要求：题注放图表下面居中）
+                    _cls = ("caption" if _is_caption_text(_zplain) else
+                            "zh zh_transed")
+                    parts.append(f'<{tag} class="{_cls}">{zh_html}</{tag}>')
             elif p.mt:
                 zh_html = _put_notes(_esc(p.mt), p, prefix, note_texts)
                 parts.append(f'<p class="zh">{zh_html}</p>')

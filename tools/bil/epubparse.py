@@ -112,6 +112,29 @@ def normalize_noterefs(html: str) -> str:
     return _NOTE_A_RE.sub(_sub, html)
 
 
+# ── 禁止翻译列表（用户定，2026-09-14）── 仅用于**渲染**，不参与对齐决策 ──
+# ① 参考文献条目 ② 纯符号/公式（如 1×2×3×4×5×6×7×8）③ 有意义英文词 ≤3 的短标记
+# 这类英文段中英两版本来就一样，再配一遍中文纯属重复噪音。
+_WORD3_RE = re.compile(r"[A-Za-z]{3,}")
+_REF_LIKE_RE = re.compile(
+    r"\(\d{4}[a-z]?\)|\b(?:pp?\.|Vol\.|No\.|doi:|https?://|Retrieved from|"
+    r"eds?\.|In [A-Z][a-z]+,)\b|^\s*[A-Z][A-Za-z'\-]+,\s+[A-Z]\.")
+
+
+def no_translate_reason(text: str) -> str:
+    """返回「不需要中文」的原因（""=需要翻译）。只影响渲染，不影响对齐。"""
+    t = (text or "").strip()
+    if not t:
+        return "empty"
+    words = _WORD3_RE.findall(t)
+    letters = len(re.sub(r"[^A-Za-z]", "", t))
+    if len(words) <= 3 and letters <= 16:
+        return "symbolic"
+    if _REF_LIKE_RE.search(t) and len(words) <= 60:
+        return "reference"
+    return ""
+
+
 def image_size(data: bytes) -> tuple[int, int] | None:
     """从字节流读图片尺寸（PNG / JPEG），供广告图识别用。"""
     if data[:8] == PNG_SIG:
