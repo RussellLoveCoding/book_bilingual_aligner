@@ -347,6 +347,30 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
     return "\n".join(out)
 
 
+def _looks_like_zh_title(z: str) -> bool:
+    """**英文侧为空**时判断中文段是不是小标题。
+
+    中文版的小标题常常不是 heading 而是普通段（多为单字 `<b>` 拆分，
+    取文本后形如「谈 谈 回 归 均 值」），既配不上英文标题、又落进
+    「英文为空的 pair」，旧渲染直接把它整对跳过 → 中文小标题丢失。
+    判据保守：短、无句读/冒号、无等号运算符、汉字占比高。
+    """
+    s = (z or "").strip()
+    if not (0 < len(s) <= 20):
+        return False
+    if re.search(r"[。！？；：，、.!?;:,]", s):
+        return False
+    if re.search(r"[=+×÷<>%/]", s):
+        return False
+    if _is_caption_text(s):
+        return False
+    core = re.sub(r"\s+", "", s)
+    if not core:
+        return False
+    cjk = sum(1 for c in core if "\u4e00" <= c <= "\u9fff")
+    return cjk / len(core) >= 0.75
+
+
 def _iter_figures(sec):
     """按 anchor 把图位插回正文：返回 {pair下标: [FigureRef]}（-1 表示段首）。"""
     by_anchor: dict[int, list] = {}
@@ -421,6 +445,36 @@ def render_chapter(res, prefix=""):
                 parts.append(h)
         for pi, p in enumerate(sec.pairs):
             if not p.en:
+                # ── 英文为空的 pair = **中文独有段**（中文小标题 / 表格图题注 /
+                # 列表项 / 参考文献条目）。旧实现直接 continue 整对跳过 →
+                # 中文内容静默丢失（实测 think2 全书 57 段），其中 ch29
+                # 「表29-1」题注连同它上面的表格图 Image00061 一起消失，
+                # 这是逐章图序 19/20 的唯一缺口。
+                # 决策中性：纯渲染层修正，不改变喂给闸门/裁判的任何输入。
+                # 退化小节（DEGRADE_ON_FAIL）末尾会整块重排中文，跳过以免重复。
+                if p.zh and not (sec.degrade and DEGRADE_ON_FAIL):
+                    _j0 = p.zh[0]
+                    while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j0:
+                        parts.append(_head_block("h4", "st", "",
+                                                 _zh_hp[_hiz][1]))
+                        _hiz += 1
+                    _zplain = " ".join(sec.zh_paras[x].text
+                                       for x in p.zh).strip()
+                    zh_html = _put_notes(
+                        " ".join(sec.zh_paras[x].html for x in p.zh),
+                        p, prefix, note_texts)
+                    if _looks_like_zh_title(_zplain):
+                        parts.append(_head_block(
+                            "h4", "st", "", E.norm_cjk_spacing(_zplain)))
+                    else:
+                        _cls = ("caption" if _is_caption_text(_zplain)
+                                else "zh zh_transed")
+                        parts.append(f'<p class="{_cls}">{zh_html}</p>')
+                # 挂在中文独有段上的中文图必须照常渲染（否则整张图丢失）
+                for f in figs.get(pi, []):
+                    h = _figure_html(f, prefix, side="zh")
+                    if h:
+                        parts.append(h)
                 continue
             _k = p.en[0]
             while _hip < len(_en_hp) and _en_hp[_hip][0] <= _k:
@@ -462,7 +516,11 @@ def render_chapter(res, prefix=""):
                     parts.append(f'<{tag} class="{_cls}">{zh_html}</{tag}>')
             elif p.mt:
                 zh_html = _put_notes(_esc(p.mt), p, prefix, note_texts)
-                parts.append(f'<p class="zh">{zh_html}</p>')
+                # ⚠ 0395b1f 误删了这里的 mt_flag()（那条「不再输出 AI 翻译图标」
+                # 的注释本是讲 p.zh 分支的引用格式）—— 但 mt 段就是要靠它区分
+                # 「AI 补译」与「纸书原译文」，docs/使用说明.md:457/480 与
+                # test_mock_llm.py 都按它断言，图例与单语版 _drop 也依赖它。
+                parts.append(f'<p class="zh">{mt_flag()}{zh_html}</p>')
             else:
                 # 中文缺失时**什么都不输出**（用户要求：不要「〔中文版未收录，
                 # 待补译〕」占位符）。缺就是缺，英文段照样单独成对。
