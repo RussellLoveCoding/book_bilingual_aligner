@@ -45,7 +45,23 @@ CENSORSHIP_NOTICE = (
 
 
 def load_dotenv(path: str = ".env"):
-    """极简 .env 加载（不引入 python-dotenv）。"""
+    """极简 .env 加载（不引入 python-dotenv）。
+
+    cwd 找不到时向上层目录找（最多 3 层）：从 tools/ 子目录启动时
+    .env 在仓库根 —— 2026-09-14 实测从 tools/ 起 run_book.py 会静默
+    降级成 dry-run（enabled=False），键全在却一个请求都不发。
+    """
+    candidates = [Path(path)]
+    p = Path.cwd()
+    for _ in range(3):
+        p = p.parent
+        candidates.append(p / path)
+    for p in candidates:
+        if p.exists():
+            path = str(p)
+            break
+    else:
+        return
     p = Path(path)
     if not p.exists():
         return
