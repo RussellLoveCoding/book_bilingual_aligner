@@ -468,7 +468,8 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
 
 
 def apply_error_repair(res: ChapterResult, llm, title="",
-                       batch=20, repair_batch=20) -> dict:
+                       batch=20, repair_batch=20,
+                       check_censor: bool = False) -> dict:
     """v4：内容审查勘误（新增两类）。
 
     1) 逐 pair 发给 LLM 打标（censor / skew / ok）；
@@ -477,7 +478,11 @@ def apply_error_repair(res: ChapterResult, llm, title="",
     3) 判为 skew 的只记录下来（边界错位在 E4 已做确定性重对齐，
        LLM 这轮只做提示，不重写文本，避免引入新的不对齐）。
     """
-    st = {"flagged": 0, "censor": 0, "skew": 0, "repaired": 0, "failed": 0}
+    # skew/missing/offset 是**对齐质量的诊断信号**（默认开）：漂移=边界错位、
+    # 漏译=中文缺内容、offset=注释编号错位。censor 仅 check_censor=True 时才查
+    # （技术书/科普书不存在审查删改，查了只会误判）。
+    st = {"flagged": 0, "censor": 0, "skew": 0, "missing": 0, "offset": 0,
+          "repaired": 0, "failed": 0}
     if llm is None or not getattr(llm, "enabled", False):
         return st
 
@@ -498,7 +503,7 @@ def apply_error_repair(res: ChapterResult, llm, title="",
         return st
 
     flags = llm.flag_errors(items, title=f"{res.en_title} / {title}",
-                            batch=batch)
+                            batch=batch, check_censor=check_censor)
     st["flagged"] = len(flags)
     todo = []
     for i, (kind, why) in flags.items():
@@ -510,9 +515,11 @@ def apply_error_repair(res: ChapterResult, llm, title="",
             st["censor"] += 1
             todo.append({"i": i, "en": items[i]["en"],
                          "zh": items[i]["zh"], "why": why})
-        elif kind == "skew":
-            p.skew = True
-            st["skew"] += 1
+        elif kind in ("skew", "missing", "offset"):
+            setattr(p, kind, True)
+            p.flag_kind = kind
+            p.flag_why = why
+            st[kind] += 1
 
     if todo:
         fixed = llm.repair_censored(todo, title=f"{res.en_title} / {title}",

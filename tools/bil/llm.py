@@ -603,29 +603,51 @@ class LLM:
 
     # -------------------------------------------- 能力 4：勘误打标（新增两类）
     def flag_errors(self, items: list[dict], title: str = "",
-                    batch: int = 20) -> dict:
+                    batch: int = 20, check_censor: bool = False) -> dict:
         """对 chapter 内的 pair 逐批打标，返回 {pair序号: 标记}。
 
-        items: [{"i": 全局序号, "en": 英文, "zh": 中文}]，按 (增删/改动) 判定：
-          * "censor"  译文删减/替换了原文内容（句子或词语被拿掉、软化）
-          * "skew"    中英段落边界错位（中文少一句或多一句，偏移累积）
-          * "ok"      正常
-        返回 {i: (标记, 说明)}；标记为 "ok" 的不返回，节省下游处理。
+        items: [{"i": 全局序号, "en": 英文, "zh": 中文}]，判定类型：
+          * "skew"    中英**相对漂移**：这段中文是上一段/下一段英文的内容，
+                      或中文在段内多出/少掉一句（边界偏移、累积错位）
+          * "missing" 漏翻译：英文有整句/整段内容，中文完全没有（参考文献除外）
+          * "offset"  注释对齐偏移：正文 [n] 编号与注释区条目的对应关系错了
+          * "censor"  仅当 check_censor=True 才检查（默认关闭，见下）
+          * "ok"      正常（**语言上的取舍算 ok**）
+
+        ⚠ check_censor 默认 False：技术书/科普书不存在审查删改，让 LLM 判它
+        只会误判（把「语言取舍导致少一句」当成审查改动）。只有涉华的国外
+        史政社科书才由人开启。
+        返回 {i: (标记, 说明)}；"ok" 不返回。
         """
         if not self.enabled or not items or self.only_mapping:
             return {}
         out: dict[int, tuple] = {}
         system = (
             "你是双语书籍的段落级勘误审校助手。给你同一段落的英文原文与中文译文，"
-            "逐条判断是否存在**且仅存在**下面这一类问题：\n"
-            "censor（政治/历史/伦理敏感内容审查导致的译文改动）：中文为了规避"
-            "审查而删掉了英文里的句子或词语，或把涉政、涉史、涉伦理的表述"
-            "改写、软化、替换成了别的说法。\n"
-            "⚠ 只有「信息量因审查而确实少了或变了」才算 censor。下列情况"
-            "**一律记 ok**，不要报：意译、语序调整、语体/文体差异、繁简取舍、"
-            "成语替换、把长句拆短、术语不同译法、标题层级差异 —— 这些都是"
-            "正常的语言取舍，不是错误，不要管。" + CENSORSHIP_NOTICE
+            "逐条判断是否存在下列问题（**语言上的取舍不算问题**）：\n"
+            "A. skew（中英相对漂移）：这段中文明显是上一段或下一段英文的内容"
+            "（段落边界整体偏移）；或中文在段内多出一句、少掉一句、重复一句，"
+            "即中英的相对位置发生了漂移。\n"
+            "B. missing（漏翻译）：英文的整句/整段内容在中文里完全没有出现"
+            "（同一段内少了句子，不是措辞不同）。参考文献/注释条目类文本不判此条。\n"
+            "C. offset（注释对齐偏移）：正文里的 [n] 注释编号与注释区第 n 条"
+            "对不上（编号整体错位、或指到了别的注释内容）。\n"
         )
+        if check_censor:
+            system += (
+                "D. censor（敏感审查改动）：**仅当**删改是「因为宗教/伦理/道德/"
+                "政治等敏感内容而做的审查处理」才算。判断标准很严：必须是"
+                "「内容因敏感话题被拿掉或改写」。**仅仅因为语言取舍**（省略废话、"
+                "合并句子、换用成语、语体调整，且在该段上下文语境里仍保留原意）"
+                "**一律不算** censor，记 ok。\n"
+            ) + CENSORSHIP_NOTICE
+        else:
+            system += (
+                "⚠ 特别注意：**不要**判定任何「内容审查/敏感内容」类问题。"
+                "中文比英文短、少一句、措辞不同，只要在本段语境下仍表达原意，"
+                "一律记 ok。\n"
+            )
+        system += "以上类型都没有 → 记 ok。"
         # 先切批，再并发发送（每批一次请求，32 线程可同时压满 RPM）
         chunks = [items[s:s + batch] for s in range(0, len(items), batch)]
         reqs = []
@@ -634,12 +656,14 @@ class LLM:
             for it in chunk:
                 lines.append(f"### 第 {it['i']} 条\n[EN] {it['en'][:1400]}\n"
                              f"[ZH] {(it['zh'] or '（中文版缺失）')[:1400]}")
+            _kinds = ("skew / missing / offset / censor / ok。" if check_censor
+                      else "skew / missing / offset / ok。")
             reqs.append((system,
                          f"书名/章节：{title}\n\n" + "\n\n".join(lines) +
                          "\n\n只输出 JSON 对象，键为条号，值为二元素数组 "
-                         "[类型, 简短理由]，类型只能取 censor 或 ok。"
-                         '例如 {"12":["censor","漏译了最后一句"],'
-                         '"13":["ok",""]}。'))
+                         "[类型, 简短理由]，类型取 " + _kinds +
+                         '例如 {"12":["skew","中文是下一段的内容"],'
+                         '"13":["missing","末句未译"],"14":["ok",""]}。'))
         for got in self.json_many(reqs):
             if not isinstance(got, dict):
                 continue
@@ -652,7 +676,8 @@ class LLM:
                     continue
                 kind = str(v[0]).strip().lower()
                 why = str(v[1]).strip() if len(v) > 1 else ""
-                if kind == "censor":        # skew 不再是错误类型（语言取舍）
+                if kind in ("skew", "missing", "offset") or (
+                        kind == "censor" and check_censor):
                     out[key] = (kind, why)
         return out
 

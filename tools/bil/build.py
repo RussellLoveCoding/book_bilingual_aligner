@@ -400,7 +400,8 @@ def render_chapter(res, prefix=""):
                                         note_texts)
                                for x in p.en)
             tag = "blockquote" if sec.en_paras[p.en[0]].type == "quote" else "p"
-            parts.append(f'<div class="pair"><{tag} class="en">{en_html}</{tag}>')
+            parts.append(f'<div class="pair"><{tag} class="en en_original">'
+                             f'{en_html}</{tag}>')
             # 英文图：落在英文原文的位置（不动、不删）
             for f in figs_en.get(pi, []):
                 h = _figure_html(f, prefix, side="en")
@@ -419,7 +420,8 @@ def render_chapter(res, prefix=""):
                 zh_html = _put_notes(zh_html, p, prefix, note_texts)
                 # 引用格式跟随英文原文（用户要求：英文是引用，中文也按引用排，
                 # 不再输出 AI 翻译图标 —— 图标只留给审查修复）
-                parts.append(f'<{tag} class="zh">{zh_html}</{tag}>')
+                parts.append(f'<{tag} class="zh zh_transed">'
+                             f'{zh_html}</{tag}>')
             elif p.mt:
                 zh_html = _put_notes(_esc(p.mt), p, prefix, note_texts)
                 parts.append(f'<p class="zh">{zh_html}</p>')

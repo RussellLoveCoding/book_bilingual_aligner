@@ -183,11 +183,13 @@ def main():
             st = P.apply_llm(res, llm, title=cp.en_title,
                              translate=args.ai_fill_missing,
                              max_section=args.max_section)
-            # 内容审查勘误（政治/历史/伦理敏感内容）**默认关**：只有涉华的
-            # 国外史政社科书才需要，由人显式开启。
-            if args.ai_repair_censor:
-                ec = P.apply_error_repair(res, llm, title=cp.en_title)
-                st["censor"] = ec
+            # 勘误诊断**默认开**（LLM 辅助对齐的关键）：skew 漂移 / missing
+            # 漏译 / offset 注释编号偏移 —— 这些是「每个英文段是否落到一个
+            # 有正确中文的 pair」的监督信号。censor（审查改动）默认不查：
+            # 技术书/科普书不存在，查了只会误判。
+            ec = P.apply_error_repair(res, llm, title=cp.en_title,
+                                      check_censor=args.ai_repair_censor)
+            st["censor"] = ec
             res.stats["llm"] = st
         return res
 

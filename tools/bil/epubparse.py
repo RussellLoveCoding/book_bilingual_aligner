@@ -71,6 +71,47 @@ _JUNK_SIZE_SIG = {(337, 386)}
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
 
+# 注释引用锚点的多种写法 → 统一归一化成 `[n]`（下游只认这一种）。
+# 实测三种：
+#   ① <a class="noteref" ...>[1]</a>            （旧版/中文版）
+#   ② <a href="notes.xhtml#fn1">fn1</a>          （新版 z-lib 英文：可见文本是 fn1）
+#   ③ <a epub:type="noteref" ...>1</a>
+# 2026-09-14 事故：② 没被识别 → 全书注释角标消失（用户实测「注释角标全没了」）。
+_NOTE_A_RE = re.compile(r"<a\b[^>]*?>(.*?)</a>", re.S | re.I)
+_NOTE_HREF_RE = re.compile(r'href\s*=\s*"[^"]*?(?:fn|note|endnote)[-_]?(\d+)', re.I)
+_NOTE_TYPE_RE = re.compile(r'(?:epub:)?type\s*=\s*"[^"]*noteref', re.I)
+_NOTE_TEXT_RE = re.compile(r"^\s*\[?\s*?f?n?\.?\s*(\d+)\s*\]?\s*$", re.I)
+
+
+def normalize_noterefs(html: str) -> str:
+    """把各种注释引用锚点统一写成 `[n]`，上层不必再猜格式。"""
+    if not html or "<a" not in html:
+        return html
+
+    def _sub(m):
+        tag, inner = m.group(0), m.group(1)
+        txt = strip_tags(inner).strip()
+        n = None
+        mm = _NOTE_HREF_RE.search(tag)
+        if mm:
+            n = mm.group(1)
+        elif _NOTE_TYPE_RE.search(tag) or "noteref" in tag.lower():
+            mt = _NOTE_TEXT_RE.match(txt)
+            if mt:
+                n = mt.group(1)
+        if not n:
+            mt = _NOTE_TEXT_RE.match(txt)
+            # 只有「看起来就是注释号」才归一化（fn1 / [1] / 1），别动 figure 链接
+            if mt and (txt.lower().startswith(("fn", "n", "[")) or
+                       re.search(r"(?:fn|note)", tag, re.I)):
+                n = mt.group(1)
+        # 归一到下游认识的标准形态（build._rewrite 的 NOTEREF_RE 认这个），
+        # 文本内容仍是 [n]，段落对齐不受影响
+        return (f'<a class="noteref">[{n}]</a>' if n else m.group(0))
+
+    return _NOTE_A_RE.sub(_sub, html)
+
+
 def image_size(data: bytes) -> tuple[int, int] | None:
     """从字节流读图片尺寸（PNG / JPEG），供广告图识别用。"""
     if data[:8] == PNG_SIG:
@@ -385,7 +426,10 @@ def parse_blocks(src: str, strict: bool = True,
         # 只看自身 class 认不出来，必须看祖先链。
         if btype == "para" and any(f["tag"] == "blockquote" for f in frames):
             btype = "quote"
-        blk = Block(tag=tag, cls=cls, html=inner.strip(), text=text,
+        _html = normalize_noterefs(inner.strip())
+        if _html != inner.strip():
+            text = strip_tags(_html)
+        blk = Block(tag=tag, cls=cls, html=_html, text=text,
                     type=btype, level=level)
         blk._src_a = fr["start"]          # 块在 body_text 里的源偏移
         results.append(blk)
