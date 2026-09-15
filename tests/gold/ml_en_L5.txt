@@ -1,0 +1,472 @@
+# EN　源：ml_en.epub　kind=epub　条目 471（原 473）
+   1|L1| |Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow
+   2|L2| |Preface
+   3|L3| |The Machine Learning Tsunami
+   4|L3| |Machine Learning in Your Projects
+   5|L3| |Objective and Approach
+   6|L3| |Code Examples
+   7|L3| |Prerequisites
+   8|L3| |Roadmap
+   9|L3| |Changes Between the First and the Second Edition
+  10|L3| |Changes Between the Second and the Third Edition
+  11|L3| |Other Resources
+  12|L3| |Conventions Used in This Book
+  13|L3| |O’Reilly Online Learning
+  14|L3| |How to Contact Us
+  15|L3| |Acknowledgments
+  16|L2| |I. The Fundamentals of Machine Learning
+  17|L2| |1. The Machine Learning Landscape
+  18|L3| |What Is Machine Learning?
+  19|L3| |Why Use Machine Learning?
+  20|L3| |Examples of Applications
+  21|L3| |Types of Machine Learning Systems
+  22|L4| |Training Supervision
+  23|L5| |Supervised learning
+  24|L5| |Unsupervised learning
+  25|L5| |Semi-supervised learning
+  26|L5| |Self-supervised learning
+  27|L5| |Reinforcement learning
+  28|L4| |Batch Versus Online Learning
+  29|L5| |Batch learning
+  30|L5| |Online learning
+  31|L4| |Instance-Based Versus Model-Based Learning
+  32|L5| |Instance-based learning
+  33|L5| |Model-based learning and a typical machine learning workflow
+  34|L3| |Main Challenges of Machine Learning
+  35|L4| |Insufficient Quantity of Training Data
+  36|L4| |Nonrepresentative Training Data
+  37|L4| |Poor-Quality Data
+  38|L4| |Irrelevant Features
+  39|L4| |Overfitting the Training Data
+  40|L4| |Underfitting the Training Data
+  41|L4| |Stepping Back
+  42|L3| |Testing and Validating
+  43|L4| |Hyperparameter Tuning and Model Selection
+  44|L4| |Data Mismatch
+  45|L3| |Exercises
+  46|L2| |2. End-to-End Machine Learning Project
+  47|L3| |Working with Real Data
+  48|L3| |Look at the Big Picture
+  49|L4| |Frame the Problem
+  50|L4| |Select a Performance Measure
+  51|L4| |Check the Assumptions
+  52|L3| |Get the Data
+  53|L4| |Running the Code Examples Using Google Colab
+  54|L4| |Saving Your Code Changes and Your Data
+  55|L4| |The Power and Danger of Interactivity
+  56|L4| |Book Code Versus Notebook Code
+  57|L4| |Download the Data
+  58|L4| |Take a Quick Look at the Data Structure
+  59|L4| |Create a Test Set
+  60|L3| |Explore and Visualize the Data to Gain Insights
+  61|L4| |Visualizing Geographical Data
+  62|L4| |Look for Correlations
+  63|L4| |Experiment with Attribute Combinations
+  64|L3| |Prepare the Data for Machine Learning Algorithms
+  65|L4| |Clean the Data
+  66|L4| |Handling Text and Categorical Attributes
+  67|L4| |Feature Scaling and Transformation
+  68|L4| |Custom Transformers
+  69|L4| |Transformation Pipelines
+  70|L3| |Select and Train a Model
+  71|L4| |Train and Evaluate on the Training Set
+  72|L4| |Better Evaluation Using Cross-Validation
+  73|L3| |Fine-Tune Your Model
+  74|L4| |Grid Search
+  75|L4| |Randomized Search
+  76|L4| |Ensemble Methods
+  77|L4| |Analyzing the Best Models and Their Errors
+  78|L4| |Evaluate Your System on the Test Set
+  79|L3| |Launch, Monitor, and Maintain Your System
+  80|L3| |Try It Out!
+  81|L3| |Exercises
+  82|L2| |3. Classification
+  83|L3| |MNIST
+  84|L3| |Training a Binary Classifier
+  85|L3| |Performance Measures
+  86|L4| |Measuring Accuracy Using Cross-Validation
+  87|L4| |Confusion Matrices
+  88|L4| |Precision and Recall
+  89|L4| |The Precision/Recall Trade-off
+  90|L4| |The ROC Curve
+  91|L3| |Multiclass Classification
+  92|L3| |Error Analysis
+  93|L3| |Multilabel Classification
+  94|L3| |Multioutput Classification
+  95|L3| |Exercises
+  96|L2| |4. Training Models
+  97|L3| |Linear Regression
+  98|L4| |The Normal Equation
+  99|L4| |Computational Complexity
+ 100|L3| |Gradient Descent
+ 101|L4| |Batch Gradient Descent
+ 102|L4| |Stochastic Gradient Descent
+ 103|L4| |Mini-Batch Gradient Descent
+ 104|L3| |Polynomial Regression
+ 105|L3| |Learning Curves
+ 106|L3| |Regularized Linear Models
+ 107|L4| |Ridge Regression
+ 108|L4| |Lasso Regression
+ 109|L4| |Elastic Net Regression
+ 110|L4| |Early Stopping
+ 111|L3| |Logistic Regression
+ 112|L4| |Estimating Probabilities
+ 113|L4| |Training and Cost Function
+ 114|L4| |Decision Boundaries
+ 115|L4| |Softmax Regression
+ 116|L3| |Exercises
+ 117|L2| |5. Support Vector Machines
+ 118|L3| |Linear SVM Classification
+ 119|L4| |Soft Margin Classification
+ 120|L3| |Nonlinear SVM Classification
+ 121|L4| |Polynomial Kernel
+ 122|L4| |Similarity Features
+ 123|L4| |Gaussian RBF Kernel
+ 124|L4| |SVM Classes and Computational Complexity
+ 125|L3| |SVM Regression
+ 126|L3| |Under the Hood of Linear SVM Classifiers
+ 127|L3| |The Dual Problem
+ 128|L4| |Kernelized SVMs
+ 129|L3| |Exercises
+ 130|L2| |6. Decision Trees
+ 131|L3| |Training and Visualizing a Decision Tree
+ 132|L3| |Making Predictions
+ 133|L3| |Estimating Class Probabilities
+ 134|L3| |The CART Training Algorithm
+ 135|L3| |Computational Complexity
+ 136|L3| |Gini Impurity or Entropy?
+ 137|L3| |Regularization Hyperparameters
+ 138|L3| |Regression
+ 139|L3| |Sensitivity to Axis Orientation
+ 140|L3| |Decision Trees Have a High Variance
+ 141|L3| |Exercises
+ 142|L2| |7. Ensemble Learning and Random Forests
+ 143|L3| |Voting Classifiers
+ 144|L3| |Bagging and Pasting
+ 145|L4| |Bagging and Pasting in Scikit-Learn
+ 146|L4| |Out-of-Bag Evaluation
+ 147|L4| |Random Patches and Random Subspaces
+ 148|L3| |Random Forests
+ 149|L4| |Extra-Trees
+ 150|L4| |Feature Importance
+ 151|L3| |Boosting
+ 152|L4| |AdaBoost
+ 153|L4| |Gradient Boosting
+ 154|L4| |Histogram-Based Gradient Boosting
+ 155|L3| |Stacking
+ 156|L3| |Exercises
+ 157|L2| |8. Dimensionality Reduction
+ 158|L3| |The Curse of Dimensionality
+ 159|L3| |Main Approaches for Dimensionality Reduction
+ 160|L4| |Projection
+ 161|L4| |Manifold Learning
+ 162|L3| |PCA
+ 163|L4| |Preserving the Variance
+ 164|L4| |Principal Components
+ 165|L4| |Projecting Down to d Dimensions
+ 166|L4| |Using Scikit-Learn
+ 167|L4| |Explained Variance Ratio
+ 168|L4| |Choosing the Right Number of Dimensions
+ 169|L4| |PCA for Compression
+ 170|L4| |Randomized PCA
+ 171|L4| |Incremental PCA
+ 172|L3| |Random Projection
+ 173|L3| |LLE
+ 174|L3| |Other Dimensionality Reduction Techniques
+ 175|L3| |Exercises
+ 176|L2| |9. Unsupervised Learning Techniques
+ 177|L3| |Clustering Algorithms: k-means and DBSCAN
+ 178|L4| |k-means
+ 179|L5| |The k-means algorithm
+ 180|L5| |Centroid initialization methods
+ 181|L5| |Accelerated k-means and mini-batch k-means
+ 182|L5| |Finding the optimal number of clusters
+ 183|L4| |Limits of k-means
+ 184|L4| |Using Clustering for Image Segmentation
+ 185|L4| |Using Clustering for Semi-Supervised Learning
+ 186|L4| |DBSCAN
+ 187|L4| |Other Clustering Algorithms
+ 188|L3| |Gaussian Mixtures
+ 189|L4| |Using Gaussian Mixtures for Anomaly Detection
+ 190|L4| |Selecting the Number of Clusters
+ 191|L4| |Bayesian Gaussian Mixture Models
+ 192|L4| |Other Algorithms for Anomaly and Novelty Detection
+ 193|L3| |Exercises
+ 194|L2| |II. Neural Networks and Deep Learning
+ 195|L2| |10. Introduction to Artificial Neural Networks with Keras
+ 196|L3| |From Biological to Artificial Neurons
+ 197|L4| |Biological Neurons
+ 198|L4| |Logical Computations with Neurons
+ 199|L4| |The Perceptron
+ 200|L4| |The Multilayer Perceptron and Backpropagation
+ 201|L4| |Regression MLPs
+ 202|L4| |Classification MLPs
+ 203|L3| |Implementing MLPs with Keras
+ 204|L4| |Building an Image Classifier Using the Sequential API
+ 205|L5| |Using Keras to load the dataset
+ 206|L5| |Creating the model using the sequential API
+ 207|L5| |Compiling the model
+ 208|L5| |Training and evaluating the model
+ 209|L5| |Using the model to make predictions
+ 210|L4| |Building a Regression MLP Using the Sequential API
+ 211|L4| |Building Complex Models Using the Functional API
+ 212|L4| |Using the Subclassing API to Build Dynamic Models
+ 213|L4| |Saving and Restoring a Model
+ 214|L4| |Using Callbacks
+ 215|L4| |Using TensorBoard for Visualization
+ 216|L3| |Fine-Tuning Neural Network Hyperparameters
+ 217|L4| |Number of Hidden Layers
+ 218|L4| |Number of Neurons per Hidden Layer
+ 219|L4| |Learning Rate, Batch Size, and Other Hyperparameters
+ 220|L3| |Exercises
+ 221|L2| |11. Training Deep Neural Networks
+ 222|L3| |The Vanishing/Exploding Gradients Problems
+ 223|L4| |Glorot and He Initialization
+ 224|L4| |Better Activation Functions
+ 225|L5| |Leaky ReLU
+ 226|L5| |ELU and SELU
+ 227|L5| |GELU, Swish, and Mish
+ 228|L4| |Batch Normalization
+ 229|L5| |Implementing batch normalization with Keras
+ 230|L4| |Gradient Clipping
+ 231|L3| |Reusing Pretrained Layers
+ 232|L4| |Transfer Learning with Keras
+ 233|L4| |Unsupervised Pretraining
+ 234|L4| |Pretraining on an Auxiliary Task
+ 235|L3| |Faster Optimizers
+ 236|L4| |Momentum
+ 237|L4| |Nesterov Accelerated Gradient
+ 238|L4| |AdaGrad
+ 239|L4| |RMSProp
+ 240|L4| |Adam
+ 241|L4| |AdaMax
+ 242|L4| |Nadam
+ 243|L4| |AdamW
+ 244|L3| |Learning Rate Scheduling
+ 245|L3| |Avoiding Overfitting Through Regularization
+ 246|L4| |ℓ1 and ℓ2 Regularization
+ 247|L4| |Dropout
+ 248|L4| |Monte Carlo (MC) Dropout
+ 249|L4| |Max-Norm Regularization
+ 250|L3| |Summary and Practical Guidelines
+ 251|L3| |Exercises
+ 252|L2| |12. Custom Models and Training with TensorFlow
+ 253|L3| |A Quick Tour of TensorFlow
+ 254|L3| |Using TensorFlow like NumPy
+ 255|L4| |Tensors and Operations
+ 256|L4| |Tensors and NumPy
+ 257|L4| |Type Conversions
+ 258|L4| |Variables
+ 259|L4| |Other Data Structures
+ 260|L3| |Customizing Models and Training Algorithms
+ 261|L4| |Custom Loss Functions
+ 262|L4| |Saving and Loading Models That Contain Custom Components
+ 263|L4| |Custom Activation Functions, Initializers, Regularizers, and Constraints
+ 264|L4| |Custom Metrics
+ 265|L4| |Custom Layers
+ 266|L4| |Custom Models
+ 267|L4| |Losses and Metrics Based on Model Internals
+ 268|L4| |Computing Gradients Using Autodiff
+ 269|L4| |Custom Training Loops
+ 270|L3| |TensorFlow Functions and Graphs
+ 271|L4| |AutoGraph and Tracing
+ 272|L4| |TF Function Rules
+ 273|L3| |Exercises
+ 274|L2| |13. Loading and Preprocessing Data with TensorFlow
+ 275|L3| |The tf.data API
+ 276|L4| |Chaining Transformations
+ 277|L4| |Shuffling the Data
+ 278|L4| |Interleaving Lines from Multiple Files
+ 279|L4| |Preprocessing the Data
+ 280|L4| |Putting Everything Together
+ 281|L4| |Prefetching
+ 282|L4| |Using the Dataset with Keras
+ 283|L3| |The TFRecord Format
+ 284|L4| |Compressed TFRecord Files
+ 285|L4| |A Brief Introduction to Protocol Buffers
+ 286|L4| |TensorFlow Protobufs
+ 287|L4| |Loading and Parsing Examples
+ 288|L4| |Handling Lists of Lists Using the SequenceExample Protobuf
+ 289|L3| |Keras Preprocessing Layers
+ 290|L4| |The Normalization Layer
+ 291|L4| |The Discretization Layer
+ 292|L4| |The CategoryEncoding Layer
+ 293|L4| |The StringLookup Layer
+ 294|L4| |The Hashing Layer
+ 295|L4| |Encoding Categorical Features Using Embeddings
+ 296|L4| |Text Preprocessing
+ 297|L4| |Using Pretrained Language Model Components
+ 298|L4| |Image Preprocessing Layers
+ 299|L3| |The TensorFlow Datasets Project
+ 300|L3| |Exercises
+ 301|L2| |14. Deep Computer Vision Using Convolutional Neural Networks
+ 302|L3| |The Architecture of the Visual Cortex
+ 303|L3| |Convolutional Layers
+ 304|L4| |Filters
+ 305|L4| |Stacking Multiple Feature Maps
+ 306|L4| |Implementing Convolutional Layers with Keras
+ 307|L4| |Memory Requirements
+ 308|L3| |Pooling Layers
+ 309|L3| |Implementing Pooling Layers with Keras
+ 310|L3| |CNN Architectures
+ 311|L4| |LeNet-5
+ 312|L4| |AlexNet
+ 313|L4| |GoogLeNet
+ 314|L4| |VGGNet
+ 315|L4| |ResNet
+ 316|L4| |Xception
+ 317|L4| |SENet
+ 318|L4| |Other Noteworthy Architectures
+ 319|L4| |Choosing the Right CNN Architecture
+ 320|L3| |Implementing a ResNet-34 CNN Using Keras
+ 321|L3| |Using Pretrained Models from Keras
+ 322|L3| |Pretrained Models for Transfer Learning
+ 323|L3| |Classification and Localization
+ 324|L3| |Object Detection
+ 325|L4| |Fully Convolutional Networks
+ 326|L4| |You Only Look Once
+ 327|L3| |Object Tracking
+ 328|L3| |Semantic Segmentation
+ 329|L3| |Exercises
+ 330|L2| |15. Processing Sequences Using RNNs and CNNs
+ 331|L3| |Recurrent Neurons and Layers
+ 332|L4| |Memory Cells
+ 333|L4| |Input and Output Sequences
+ 334|L3| |Training RNNs
+ 335|L3| |Forecasting a Time Series
+ 336|L4| |The ARMA Model Family
+ 337|L4| |Preparing the Data for Machine Learning Models
+ 338|L4| |Forecasting Using a Linear Model
+ 339|L4| |Forecasting Using a Simple RNN
+ 340|L4| |Forecasting Using a Deep RNN
+ 341|L4| |Forecasting Multivariate Time Series
+ 342|L4| |Forecasting Several Time Steps Ahead
+ 343|L4| |Forecasting Using a Sequence-to-Sequence Model
+ 344|L3| |Handling Long Sequences
+ 345|L4| |Fighting the Unstable Gradients Problem
+ 346|L4| |Tackling the Short-Term Memory Problem
+ 347|L5| |LSTM cells
+ 348|L5| |GRU cells
+ 349|L5| |Using 1D convolutional layers to process sequences
+ 350|L5| |WaveNet
+ 351|L3| |Exercises
+ 352|L2| |16. Natural Language Processing with RNNs and Attention
+ 353|L3| |Generating Shakespearean Text Using a Character RNN
+ 354|L4| |Creating the Training Dataset
+ 355|L4| |Building and Training the Char-RNN Model
+ 356|L4| |Generating Fake Shakespearean Text
+ 357|L4| |Stateful RNN
+ 358|L3| |Sentiment Analysis
+ 359|L4| |Masking
+ 360|L4| |Reusing Pretrained Embeddings and Language Models
+ 361|L3| |An Encoder–Decoder Network for Neural Machine Translation
+ 362|L4| |Bidirectional RNNs
+ 363|L4| |Beam Search
+ 364|L3| |Attention Mechanisms
+ 365|L4| |Attention Is All You Need: The Original Transformer Architecture
+ 366|L5| |Positional encodings
+ 367|L5| |Multi-head attention
+ 368|L3| |An Avalanche of Transformer Models
+ 369|L3| |Vision Transformers
+ 370|L3| |Hugging Face’s Transformers Library
+ 371|L3| |Exercises
+ 372|L2| |17. Autoencoders, GANs, and Diffusion Models
+ 373|L3| |Efficient Data Representations
+ 374|L3| |Performing PCA with an Undercomplete Linear Autoencoder
+ 375|L3| |Stacked Autoencoders
+ 376|L4| |Implementing a Stacked Autoencoder Using Keras
+ 377|L4| |Visualizing the Reconstructions
+ 378|L4| |Visualizing the Fashion MNIST Dataset
+ 379|L4| |Unsupervised Pretraining Using Stacked Autoencoders
+ 380|L4| |Tying Weights
+ 381|L4| |Training One Autoencoder at a Time
+ 382|L3| |Convolutional Autoencoders
+ 383|L3| |Denoising Autoencoders
+ 384|L3| |Sparse Autoencoders
+ 385|L3| |Variational Autoencoders
+ 386|L3| |Generating Fashion MNIST Images
+ 387|L3| |Generative Adversarial Networks
+ 388|L4| |The Difficulties of Training GANs
+ 389|L4| |Deep Convolutional GANs
+ 390|L4| |Progressive Growing of GANs
+ 391|L4| |StyleGANs
+ 392|L3| |Diffusion Models
+ 393|L3| |Exercises
+ 394|L2| |18. Reinforcement Learning
+ 395|L3| |Learning to Optimize Rewards
+ 396|L3| |Policy Search
+ 397|L3| |Introduction to OpenAI Gym
+ 398|L3| |Neural Network Policies
+ 399|L3| |Evaluating Actions: The Credit Assignment Problem
+ 400|L3| |Policy Gradients
+ 401|L3| |Markov Decision Processes
+ 402|L3| |Temporal Difference Learning
+ 403|L3| |Q-Learning
+ 404|L4| |Exploration Policies
+ 405|L4| |Approximate Q-Learning and Deep Q-Learning
+ 406|L3| |Implementing Deep Q-Learning
+ 407|L3| |Deep Q-Learning Variants
+ 408|L4| |Fixed Q-value Targets
+ 409|L4| |Double DQN
+ 410|L4| |Prioritized Experience Replay
+ 411|L4| |Dueling DQN
+ 412|L3| |Overview of Some Popular RL Algorithms
+ 413|L3| |Exercises
+ 414|L2| |19. Training and Deploying TensorFlow Models at Scale
+ 415|L3| |Serving a TensorFlow Model
+ 416|L4| |Using TensorFlow Serving
+ 417|L5| |Exporting SavedModels
+ 418|L5| |Installing and starting TensorFlow Serving
+ 419|L5| |Querying TF Serving through the REST API
+ 420|L5| |Querying TF Serving through the gRPC API
+ 421|L5| |Deploying a new model version
+ 422|L4| |Creating a Prediction Service on Vertex AI
+ 423|L4| |Running Batch Prediction Jobs on Vertex AI
+ 424|L3| |Deploying a Model to a Mobile or Embedded Device
+ 425|L3| |Running a Model in a Web Page
+ 426|L3| |Using GPUs to Speed Up Computations
+ 427|L4| |Getting Your Own GPU
+ 428|L4| |Managing the GPU RAM
+ 429|L4| |Placing Operations and Variables on Devices
+ 430|L4| |Parallel Execution Across Multiple Devices
+ 431|L3| |Training Models Across Multiple Devices
+ 432|L4| |Model Parallelism
+ 433|L4| |Data Parallelism
+ 434|L5| |Data parallelism using the mirrored strategy
+ 435|L5| |Data parallelism with centralized parameters
+ 436|L5| |Bandwidth saturation
+ 437|L4| |Training at Scale Using the Distribution Strategies API
+ 438|L4| |Training a Model on a TensorFlow Cluster
+ 439|L4| |Running Large Training Jobs on Vertex AI
+ 440|L4| |Hyperparameter Tuning on Vertex AI
+ 441|L3| |Exercises
+ 442|L3| |Thank You!
+ 443|L2| |A. Machine Learning Project Checklist
+ 444|L3| |Frame the Problem and Look at the Big Picture
+ 445|L3| |Get the Data
+ 446|L3| |Explore the Data
+ 447|L3| |Prepare the Data
+ 448|L3| |Shortlist Promising Models
+ 449|L3| |Fine-Tune the System
+ 450|L3| |Present Your Solution
+ 451|L3| |Launch!
+ 452|L2| |B. Autodiff
+ 453|L3| |Manual Differentiation
+ 454|L3| |Finite Difference Approximation
+ 455|L3| |Forward-Mode Autodiff
+ 456|L3| |Reverse-Mode Autodiff
+ 457|L2| |C. Special Data Structures
+ 458|L3| |Strings
+ 459|L3| |Ragged Tensors
+ 460|L3| |Sparse Tensors
+ 461|L3| |Tensor Arrays
+ 462|L3| |Sets
+ 463|L3| |Queues
+ 464|L2| |D. TensorFlow Graphs
+ 465|L3| |TF Functions and Concrete Functions
+ 466|L3| |Exploring Function Definitions and Graphs
+ 467|L3| |A Closer Look at Tracing
+ 468|L3| |Using AutoGraph to Capture Control Flow
+ 469|L3| |Handling Variables and Other Resources in TF Functions
+ 470|L3| |Using TF Functions with Keras (or Not)
+ 471|L2| |Index

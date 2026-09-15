@@ -99,8 +99,16 @@ def load_md(path, lang: str) -> dict[str, list]:
         if buf:
             para = " ".join(x.strip() for x in buf if x.strip())
             if para:
-                cur.append(Block(tag="p", cls="", html=_esc(para),
-                                 text=para, type="para"))
+                if para.startswith("$$") and para.endswith("$$") \
+                        and len(para) > 4:
+                    # 行间公式段：不参与段落 DP（与图/表同待遇，is_visual），
+                    # 渲染时按位置挂载。行内 $...$ 不受影响（在正文段里）。
+                    cur.append(Block(tag="div", cls="eq-display",
+                                     html=_esc(para), text=para,
+                                     type="formula"))
+                else:
+                    cur.append(Block(tag="p", cls="", html=_esc(para),
+                                     text=para, type="para"))
             buf.clear()
 
     def open_doc(title: str, level: int):

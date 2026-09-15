@@ -1,0 +1,29 @@
+# EN　源：ml_en.epub　kind=epub　条目 28（原 473）
+   1|L1| |Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow
+   2|L2| |Preface
+   3|L2| |I. The Fundamentals of Machine Learning
+   4|L2| |1. The Machine Learning Landscape
+   5|L2| |2. End-to-End Machine Learning Project
+   6|L2| |3. Classification
+   7|L2| |4. Training Models
+   8|L2| |5. Support Vector Machines
+   9|L2| |6. Decision Trees
+  10|L2| |7. Ensemble Learning and Random Forests
+  11|L2| |8. Dimensionality Reduction
+  12|L2| |9. Unsupervised Learning Techniques
+  13|L2| |II. Neural Networks and Deep Learning
+  14|L2| |10. Introduction to Artificial Neural Networks with Keras
+  15|L2| |11. Training Deep Neural Networks
+  16|L2| |12. Custom Models and Training with TensorFlow
+  17|L2| |13. Loading and Preprocessing Data with TensorFlow
+  18|L2| |14. Deep Computer Vision Using Convolutional Neural Networks
+  19|L2| |15. Processing Sequences Using RNNs and CNNs
+  20|L2| |16. Natural Language Processing with RNNs and Attention
+  21|L2| |17. Autoencoders, GANs, and Diffusion Models
+  22|L2| |18. Reinforcement Learning
+  23|L2| |19. Training and Deploying TensorFlow Models at Scale
+  24|L2| |A. Machine Learning Project Checklist
+  25|L2| |B. Autodiff
+  26|L2| |C. Special Data Structures
+  27|L2| |D. TensorFlow Graphs
+  28|L2| |Index

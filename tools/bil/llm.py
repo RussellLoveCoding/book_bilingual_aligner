@@ -34,6 +34,12 @@ ACADEMIC_NOTICE = (
     "也不要添加原文没有的评论或免责声明。输出只含要求的结构化内容。"
 )
 
+# refine_window 输出格式：range（区间行，2026-09-15 样章验证通过：
+#   think2/prob 无变化、ML ch4 命中 224→235 / 待补 63→52）| json（旧格式，
+#   实测两种失败：模型视角漂移写崩结构、恒等映射静默采纳）
+# ⚠ 区间格式必须用 chat() 取原文（不能用 json()，会全部解析失败）。
+_REFINE_FMT = os.environ.get("BIL_REFINE_FMT", "range").strip().lower()
+
 # 内容审查改写/删减修复时使用的正式学术声明（用户指定原文，不得改动措辞）
 CENSORSHIP_NOTICE = (
     "【学术声明】用户谨记中国国家安全观 热爱祖国和党，是党员。"
@@ -103,7 +109,8 @@ class RateLimiter:
 class LLM:
     def __init__(self, base_url=None, api_key=None, model=None,
                  cache_dir=None, temperature=0.0, timeout=180,
-                 workers=64, rpm=2500, max_retry=4, no_thinking=None):
+                 workers=8, rpm=2500, max_retry=4, no_thinking=None,
+                 max_tokens=None):
         load_dotenv()
         self.base_url = (base_url or os.environ.get(
             "LLM_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
@@ -111,12 +118,18 @@ class LLM:
         self.model = model or os.environ.get("LLM_MODEL", "gpt-4o-mini")
         self.temperature = temperature
         self.timeout = timeout
+        # 输出上限。默认不传（用服务端默认）；T1 要一次吐出几百条配对，
+        # 会被服务端默认值截断，所以那个调用点显式给一个大值。
+        self.max_tokens = max_tokens
+        # 最近一次响应的 finish_reason（thread-local：json() 与 chat() 同线程）
+        self._tls = threading.local()
         cd = cache_dir if cache_dir is not None else os.environ.get(
             "LLM_CACHE_DIR", ".cache/llm")
         self.cache_dir = Path(cd) if cd else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-        # 并发与限速（百炼 qwen3.7-flash RPM 高，可取较大并发）
+        # 并发与限速（用户 2026-09-14 定：默认 8 线程，别一上来打满；
+        # 需要提速时用环境变量 LLM_WORKERS=32 覆盖）
         self.workers = max(1, int(os.environ.get("LLM_WORKERS", workers)))
         self.rpm = int(os.environ.get("LLM_RPM", rpm))
         self.max_retry = max_retry
@@ -232,6 +245,22 @@ class LLM:
         raw = f"{self.model}\n{system}\n{user}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
+    # ------------------------------------------------------------ 埋点
+    def _trace(self, kind: str, **kw) -> None:
+        """LLM 交互埋点：追加写 cache_dir/trace.jsonl，供复盘优化。
+
+        只记元数据（token/缓存/成败/规模），不记正文 —— 要看正文样本
+        去翻缓存文件，文件名就是 key 前 12 位。"""
+        if not self.cache_dir:
+            return
+        try:
+            rec = {"t": time.strftime("%m-%d %H:%M:%S"), "kind": kind, **kw}
+            with open(self.cache_dir / "trace.jsonl", "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:                        # noqa: BLE001
+            pass
+
     def chat(self, system: str, user: str) -> str | None:
         if not self.enabled:
             return None
@@ -241,6 +270,8 @@ class LLM:
             if f.exists():
                 with self._lock:
                     self.cache_hits += 1
+                self._trace("api", hit=1, key=k[:12],
+                            bytes_=f.stat().st_size)
                 return f.read_text(encoding="utf-8")
         body = {
             "model": self.model,
@@ -248,6 +279,8 @@ class LLM:
                          {"role": "user", "content": user}],
             "temperature": self.temperature,
         }
+        if self.max_tokens:
+            body["max_tokens"] = int(self.max_tokens)
         # 关闭思考模式（DeepSeek 系）：本任务只要一个极短的 JSON 判定，
         # 实测开着思考会烧掉 97% 的输出 token（9676 里 9400 是 reasoning），
         # 关掉后输出降到个位数 token，速度也快约 10×。
@@ -276,7 +309,16 @@ class LLM:
                         u.get("prompt_cache_hit_tokens")
                         or (u.get("prompt_tokens_details") or {}).get(
                             "cached_tokens", 0))
+                    self._trace("api", hit=0, key=k[:12],
+                                in_tok=u.get("prompt_tokens", 0),
+                                out_tok=u.get("completion_tokens", 0),
+                                srv_cache=(u.get("prompt_cache_hit_tokens")
+                                           or (u.get("prompt_tokens_details")
+                                               or {}).get("cached_tokens", 0)),
+                                out_head=(out := data["choices"][0]["message"]["content"])[:60],
+                                finish=(data["choices"][0].get("finish_reason") or ""))
                 self._check_budget()          # 每次记账后检查软/硬上限
+                self._tls.finish = (data["choices"][0].get("finish_reason") or "")
                 out = data["choices"][0]["message"]["content"]
                 if self.cache_dir:
                     (self.cache_dir / f"{k}.txt").write_text(out, encoding="utf-8")
@@ -288,12 +330,26 @@ class LLM:
                     time.sleep(min(2.0 ** attempt, 12.0))
                     continue
                 print(f"    [llm] HTTP {e.code}：{e.reason}")
+                self._trace("api", hit=0, key=k[:12], ok=0,
+                            err=f"HTTP {e.code}")
                 return None
             except (urllib.error.URLError, TimeoutError) as e:
                 last_err = e
                 time.sleep(min(2.0 ** attempt, 12.0))
         print(f"    [llm] 重试 {self.max_retry} 次仍失败：{last_err}")
+        self._trace("api", hit=0, key=k[:12], ok=0,
+                    err=str(last_err)[:60])
         return None
+
+    @property
+    def last_truncated(self) -> bool:
+        """上一次响应是否**因为输出被截断**而结束。
+
+        ⚠ 从前没有这个信号，失败了只会**盲目重试同一个请求** —— 而请求本来就
+        太大，重试必然再截断（实测 prob 输出正好 32,768 = 撞上限，重试 3 次
+        全废）。有了它才能**二分**：把输入切成两半各自再问。
+        """
+        return getattr(self._tls, "finish", "") == "length"
 
     def chat_many(self, requests: list[tuple[str, str]]) -> list[str | None]:
         """并发执行多组 (system, user)，顺序与输入一致。
@@ -365,28 +421,14 @@ class LLM:
         return [self._parse_json(t) for t in raws]
 
     # -------------------------------------------------------------- 能力 1：小节映射
-    def _map_lists(self, en_titles: list[str], zh_titles: list[str],
-                   en_counts: list[int] | None = None,
-                   zh_counts: list[int] | None = None,
-                   level: str = "section",
-                   en_firsts: list[str] | None = None,
-                   zh_firsts: list[str] | None = None):
-        """标题配对内核：只传标题与段数，输出极短（纯 mapping metadata）。
+    def _map_prompt(self, en_titles, zh_titles, en_counts=None,
+                    zh_counts=None, level="section",
+                    en_firsts=None, zh_firsts=None):
+        """内核 prompt 的**唯一副本**（逐字冻结，改一个字 = 缓存全失效）。
 
-        level="section" → 章内小节配对（两版章节已确认对应）
-        level="chapter" → **章级配对**（两版切分方式可能不同：英文可能是
-        z-lib split 版没有 Chapter 标记，中文用「第N章」；或章序/合并不同）
-
-        en_firsts/zh_firsts：每节首段文本预览（≤60 字）。两版小节切分
-        粒度差异大时（实测机器学习实战 EN 13 节 vs ZH 8 节），光看标题
-        LLM 会把多节懒政地塞给同一节；首段内容是真正的对齐锚点。
-        ⚠ 不提供首段时行格式逐字不变，旧磁盘缓存照常命中。
-
-        返回 [(en_idx[], zh_idx[])]，或 None（不可用/失败/不合规）。
+        `_map_lists` 与并发版 `map_*_many` 都调它 —— 保证两边报文逐字一致，
+        磁盘缓存才能互相命中。
         """
-        if not self.enabled:
-            return None
-
         def _line(idx, t, counts, firsts):
             s = f"{idx}|{(t or '(无标题)')[:60]}"
             if counts:
@@ -399,7 +441,6 @@ class LLM:
                     for i, t in enumerate(en_titles)]
         zh_lines = [_line(j, t, zh_counts, zh_firsts)
                     for j, t in enumerate(zh_titles)]
-        unit = "章" if level == "chapter" else "小节"
         if level == "chapter":
             system = (
                 "你是双语书籍结构对齐助手。需要把英文原著的章与中文译本的章"
@@ -441,9 +482,77 @@ class LLM:
                 "   [i,[j1,j2]] 表示英文第 i 节对应中文 j1、j2 两节；[[i1,i2],j] 反之。\n"
                 "5. 只输出数组，例如 [[0,0],[1,1],[2,null],[3,[3,4]]]。"
             )
-        out = self.json(system, user)
-        if not isinstance(out, list):
+        return system, user
+
+    def _map_lists(self, en_titles: list[str], zh_titles: list[str],
+                   en_counts: list[int] | None = None,
+                   zh_counts: list[int] | None = None,
+                   level: str = "section",
+                   en_firsts: list[str] | None = None,
+                   zh_firsts: list[str] | None = None,
+                   _depth: int = 0):
+        """标题配对内核：只传标题与段数，输出极短（纯 mapping metadata）。
+
+        level="section" → 章内小节配对（两版章节已确认对应）
+        level="chapter" → **章级配对**（两版切分方式可能不同：英文可能是
+        z-lib split 版没有 Chapter 标记，中文用「第N章」；或章序/合并不同）
+
+        en_firsts/zh_firsts：每节首段文本预览（≤60 字）。两版小节切分
+        粒度差异大时（实测机器学习实战 EN 13 节 vs ZH 8 节），光看标题
+        LLM 会把多节懒政地塞给同一节；首段内容是真正的对齐锚点。
+        ⚠ 不提供首段时行格式逐字不变，旧磁盘缓存照常命中。
+
+        返回 [(en_idx[], zh_idx[])]，或 None（不可用/失败/不合规）。
+        """
+        if not self.enabled:
             return None
+
+        system, user = self._map_prompt(en_titles, zh_titles, en_counts,
+                                        zh_counts, level, en_firsts, zh_firsts)
+        out = self.json(system, user)
+
+        out = self.json(system, user)
+        if isinstance(out, list):
+            return self._norm_map(out)
+        # ── 失败：先判断**是不是输出被截断**，是就二分（不是就老实返回 None）
+        # 实测：prob 一次要吐 350+ 对，输出正好撞上 32,768 上限被截 → 非法
+        # JSON。盲目重试同一个请求必然再截。切成两半，各自只吐一半 → 都装得下。
+        if (self.last_truncated and _depth < 4
+                and len(en_titles) > 4 and len(zh_titles) > 4):
+            ce = len(en_titles) // 2
+            cz = max(1, min(len(zh_titles) - 1,
+                            round(len(zh_titles) * ce / len(en_titles))))
+            print(f"    [llm] 输出被截断 → 二分：{len(en_titles)}×{len(zh_titles)}"
+                  f" → {ce}×{cz} + {len(en_titles) - ce}×{len(zh_titles) - cz}")
+            a = self._map_lists(en_titles[:ce], zh_titles[:cz],
+                                (en_counts[:ce] if en_counts else None),
+                                (zh_counts[:cz] if zh_counts else None),
+                                level,
+                                (en_firsts[:ce] if en_firsts else None),
+                                (zh_firsts[:cz] if zh_firsts else None),
+                                _depth + 1)
+            b = self._map_lists(en_titles[ce:], zh_titles[cz:],
+                                (en_counts[ce:] if en_counts else None),
+                                (zh_counts[cz:] if zh_counts else None),
+                                level,
+                                (en_firsts[ce:] if en_firsts else None),
+                                (zh_firsts[cz:] if zh_firsts else None),
+                                _depth + 1)
+            if a is not None and b is not None:
+                merged = list(a) + [([i + ce for i in ea], [j + cz for j in zb])
+                                    for ea, zb in b]
+                seen, uniq = set(), []          # 边界那对可能两半都报 → 去重
+                for ea, zb in merged:
+                    key = (tuple(ea), tuple(zb))
+                    if key not in seen:
+                        seen.add(key)
+                        uniq.append((ea, zb))
+                return uniq
+        return None
+
+    @staticmethod
+    def _norm_map(out: list):
+        """把内核的 `[[0,0],[1,null]…]` 规整成 [(en_idx[], zh_idx[])]。"""
         norm = []
         for item in out:
             if not isinstance(item, list) or len(item) != 2:
@@ -455,6 +564,24 @@ class LLM:
                 return None
             norm.append((ea, zb))
         return norm
+
+    def map_sections_many(self, jobs: list[tuple[list, list]],
+                          level: str = "section") -> list:
+        """**并发版**：jobs = [(en_titles, zh_titles), …] → 与输入等长的结果列表。
+
+        每项是 `[(en_idx[], zh_idx[])]` 或 `None`（该章失败）。
+        几十个章一次并发跑（`LLM_WORKERS`，默认 16）—— 单章报文只有几百 token，
+        串行跑是浪费；并发后墙钟 ≈ 最慢那一个。
+        """
+        if not jobs:
+            return []
+        reqs = [self._map_prompt(en, zh, level=level) for en, zh in jobs]
+        raws = self.chat_many(reqs)
+        out = []
+        for t in raws:
+            v = self._parse_json(t)
+            out.append(self._norm_map(v) if isinstance(v, list) else None)
+        return out
 
     def map_sections(self, en_titles: list[str], zh_titles: list[str],
                      en_counts: list[int] | None = None,
@@ -480,13 +607,50 @@ class LLM:
     # -------------------------------------------------------------- 能力 2：窗口细化
     def refine_window(self, en_lines: list[str], zh_lines: list[str],
                       locked_before: str = "", locked_after: str = ""):
-        """对一小段窗口重新对齐，返回 [[en_ids],[zh_ids]] 或 None。"""
+        """对一小段窗口重新对齐，返回 [([en下标],[zh下标])…] 或 None。
+
+        输出格式由 BIL_REFINE_FMT 控制（默认 json）：
+        * json  —— 旧格式：[[en行号,[zh行号…]]…]（基线/缓存与其绑定）
+        * range —— v3 区间行格式（token 省 5~10 倍、逐行容错、难写崩）：
+            1-15:0        EN 1-15 无中文对应（0=空）
+            16:27-28      EN 16 ↔ ZH 27-28（1:N）
+            18,19:30      EN 18+19 ↔ ZH 30（N:1）
+            21-40:31-50   两侧数量相等 → 逐段对应
+          ⚠ 2026-09-14 实测：range 格式在 think2 全书回归上**变差**
+          （missing 38→68），未验证通过前**默认不启用**；先在单章小样
+          （prob ch2）验证后再切。
+        """
         if not self.enabled:
             return None
         system = (
             "你是双语书籍段落对齐助手。给你同一小节的英文段落与中文段落"
             "（行号从 1 开始），请输出对应关系。" + ACADEMIC_NOTICE
         )
+        if _REFINE_FMT == "range":
+            user = (
+                ("前文（已锁定，仅供参考）：\n" + locked_before + "\n\n" if locked_before else "") +
+                "英文：\n" + "\n".join(f"{i+1}|{t}" for i, t in enumerate(en_lines)) +
+                "\n\n中文：\n" + "\n".join(f"{j+1}|{t}" for j, t in enumerate(zh_lines)) +
+                (("\n\n后文（已锁定）：\n" + locked_after) if locked_after else "") +
+                "\n\n输出规则（严格遵守，每行一条，不要解释、不要代码块）：\n"
+                "格式 = 英文行号:中文行号\n"
+                "1. 区间用连字符（18-40），并列用逗号（18,19）。\n"
+                "2. 两侧数量相等（如 21-40:31-50）= 逐段一一对应；"
+                "数量不等 = 这些英文段合并对应这些中文段。\n"
+                "3. 英文段没有中文对应：右边写 0（如 1-15:0）。\n"
+                "4. 英文每个行号最多出现一次，按英文顺序输出；"
+                "没提到的中文段 = 中文独有（不必输出）。\n"
+                "5. 不要改写任何文本，只做匹配。\n"
+            )
+            # ⚠ 区间格式是**纯文本行**，不能走 self.json（它会当 JSON 解析，
+            # 实测全部报「JSON 解析失败：1:1」）→ 必须用 chat 取原文。
+            out = self.chat(system, user)
+            pairs = self._parse_range_map(out, len(en_lines), len(zh_lines))
+            self._trace("refine", fmt="range", n_en=len(en_lines),
+                        n_zh=len(zh_lines), ok=int(bool(pairs)),
+                        rules=len(pairs) if pairs else 0)
+            return pairs
+
         user = (
             ("前文（已锁定，仅供参考）：\n" + locked_before + "\n\n" if locked_before else "") +
             "英文：\n" + "\n".join(f"{i+1}|{t}" for i, t in enumerate(en_lines)) +
@@ -500,18 +664,83 @@ class LLM:
             "5. 不要改写任何文本，只做匹配。只输出数组。"
         )
         out = self.json(system, user)
-        if not isinstance(out, list):
+        pairs = None
+        if isinstance(out, list):
+            pairs = []
+            for item in out:
+                if not isinstance(item, list) or len(item) != 2:
+                    pairs = None
+                    break
+                a, b = item
+                a = [a] if isinstance(a, int) else list(a or [])
+                b = [b] if isinstance(b, int) else list(b or [])
+                if any(not isinstance(x, int) for x in a + b):
+                    pairs = None
+                    break
+                pairs.append(([x - 1 for x in a], [x - 1 for x in b]))
+        self._trace("refine", fmt="json", n_en=len(en_lines),
+                    n_zh=len(zh_lines), ok=int(bool(pairs)),
+                    rules=len(pairs) if pairs else 0)
+        return pairs
+
+    @staticmethod
+    def _parse_side(s: str):
+        """'1-15' / '18,19' / '0' → 行号列表；空/非法 → None。"""
+        s = (s or "").strip()
+        if s in ("", "无"):
             return None
-        pairs = []
-        for item in out:
-            if not isinstance(item, list) or len(item) != 2:
+        if s in ("0", "-"):
+            return []
+        out: list[int] = []
+        for part in re.split(r"[,，]", s):
+            part = part.strip()
+            m = re.match(r"^(\d+)\s*[-–—~]\s*(\d+)$", part)
+            if m:
+                a, b = int(m.group(1)), int(m.group(2))
+                if a > b:
+                    return None
+                out.extend(range(a, b + 1))
+            elif part.isdigit():
+                out.append(int(part))
+            else:
                 return None
-            a, b = item
-            a = [a] if isinstance(a, int) else list(a or [])
-            b = [b] if isinstance(b, int) else list(b or [])
-            if any(not isinstance(x, int) for x in a + b):
-                return None
-            pairs.append(([x - 1 for x in a], [x - 1 for x in b]))
+        return out
+
+    def _parse_range_map(self, txt, n_en: int, n_zh: int):
+        """解析区间行格式。逐行容错：坏行跳过；整体守三条底线：
+        ① EN 覆盖率 ≥80%，② 空对（[]）占比 ≤60%，③ 行号不得重复。
+        触线整窗拒收（返回 None → 回退 DP），防「恒等映射+大量空对」静默进成品。"""
+        if not txt or not isinstance(txt, str):
+            return None
+        pairs: list[tuple[list[int], list[int]]] = []
+        en_seen: set[int] = set()
+        zh_seen: set[int] = set()
+        n_empty = 0
+        for ln in txt.splitlines():
+            ln = ln.strip().strip("`").strip()
+            if not ln or ":" not in ln or ln.startswith(("#", "-", "输出", "格式")):
+                continue
+            lhs, _, rhs = ln.partition(":")
+            L, R = self._parse_side(lhs), self._parse_side(rhs)
+            if L is None or R is None:
+                continue
+            L = [x for x in L if 1 <= x <= n_en]
+            R = [x for x in R if 1 <= x <= n_zh]
+            if not L or any(x in en_seen for x in L):
+                continue                      # 越界/重复 → 丢弃该行（逐行容错）
+            en_seen.update(L)
+            zh_seen.update(R)
+            if not R:
+                n_empty += len(L)
+                pairs.append(([x - 1 for x in L], []))
+                continue
+            if len(L) == len(R):
+                pairs.extend(([a - 1], [b - 1]) for a, b in zip(L, R))
+            else:
+                pairs.append(([x - 1 for x in L], [x - 1 for x in R]))
+        cov = len(en_seen) / max(1, n_en)
+        if cov < 0.8 or (n_empty / max(1, n_en)) > 0.6:
+            return None
         return pairs
 
     # -------------------------------------------------------------- 能力 3：补译（两步）
@@ -679,6 +908,7 @@ class LLM:
                 if kind in ("skew", "missing", "offset") or (
                         kind == "censor" and check_censor):
                     out[key] = (kind, why)
+        self._trace("flag", n=len(items), flagged=len(out))
         return out
 
     # -------------------------------------------- 能力 5：审查删减内容修复
@@ -731,5 +961,6 @@ class LLM:
         return out
 
 
-def get_client() -> LLM:
-    return LLM()
+def get_client(**kw) -> LLM:
+    """按 `.env` 建客户端。`kw` 透传给 `LLM()`（如 `max_tokens=`）。"""
+    return LLM(**kw)

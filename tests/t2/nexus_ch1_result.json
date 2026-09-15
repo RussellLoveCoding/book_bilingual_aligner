@@ -1,0 +1,64 @@
+{
+ "units": [
+  {
+   "id": "u1",
+   "en": [
+    "E01"
+   ],
+   "zh": [
+    "Z01"
+   ],
+   "num_en": "1.1",
+   "num_zh": "1.1",
+   "en_title": "What Is Truth?",
+   "zh_title": "真相究竟是什么？",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u2",
+   "en": [
+    "E02"
+   ],
+   "zh": [
+    "Z02"
+   ],
+   "num_en": "1.2",
+   "num_zh": "1.2",
+   "en_title": "What Information Does",
+   "zh_title": "信息有何作用？",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u3",
+   "en": [
+    "E03"
+   ],
+   "zh": [
+    "Z03"
+   ],
+   "num_en": "1.3",
+   "num_zh": "1.3",
+   "en_title": "Information in Human History",
+   "zh_title": "人类历史的信息",
+   "confidence": 0.95,
+   "parent": null
+  }
+ ],
+ "unmatched": {
+  "en": [],
+  "zh": [
+   "Z04"
+  ],
+  "noise": []
+ },
+ "self_check": {
+  "order_monotonic": true,
+  "num_conflicts": [],
+  "missed": [],
+  "notes": [
+   "Z04 (注释 / Notes) is a standard chapter-end section, not a content subsection, so it is placed in unmatched.zh."
+  ]
+ }
+}

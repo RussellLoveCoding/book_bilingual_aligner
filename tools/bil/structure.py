@@ -202,7 +202,14 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     if llm is not None and getattr(llm, "enabled", False):
         llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm)
         if llm_pairs:
-            return _apply_toc(llm_pairs, en_toc, zh_toc)
+            # ⚠ 必须先 _apply_toc 再校验：正文标题常常**没有章号**（章号在
+            # 独立的 chapter-number 段落里，或正文只写「第2章」），只有目录
+            # 标题才带完整编号 → 不补目录就抽不到编号，校验形同虚设。
+            cand = _apply_toc(llm_pairs, en_toc, zh_toc)
+            if _llm_map_number_ok(cand):
+                return cand
+            # 编号校验不过：LLM 的章映射不可信（实测 qwen3.7-flash 把
+            # EN 第4章 配到 ZH 第5章，整体差一位）→ 丢掉，退回顺序兜底。
     seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
     if seq:
         for cp in seq:
@@ -317,6 +324,31 @@ def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None):
             " / ".join(_title(en_docs[p]) for p in ep),
             " / ".join(_title(zh_docs[p]) for p in zp), map_src="llm"))
     return out
+
+
+def _llm_map_number_ok(pairs, max_bad=0.25) -> bool:
+    """用**章号**给 LLM 章映射做硬校验（策略 v2：编号是最稳的锚）。
+
+    两侧标题都能抽出章号时，最顶层章号必须相等（EN '4. …' ↔ ZH '第4章 …'）。
+    错配率超阈值就判 LLM 映射不可信 → 拒收，退回顺序兜底。
+    可比对的条目太少（<3）时不拦，避免误伤。
+    """
+    try:
+        from . import toc_tree as TT
+    except Exception:                                   # noqa: BLE001
+        return True
+    cmp_ = bad = 0
+    for cp in pairs:
+        en_n = TT.num_of(getattr(cp, "en_title", "") or "")
+        zh_n = TT.num_of(getattr(cp, "zh_title", "") or "")
+        if not en_n or not zh_n:
+            continue
+        if en_n.split(".")[0] != zh_n.split(".")[0]:
+            bad += 1
+        cmp_ += 1
+    if cmp_ < 3:
+        return True
+    return (bad / cmp_) <= max_bad
 
 
 def _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, old_pairs):

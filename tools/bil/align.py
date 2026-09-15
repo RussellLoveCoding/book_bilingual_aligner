@@ -199,12 +199,19 @@ def _is_visual(b) -> bool:
     return getattr(b, "is_visual", False)
 
 
-def split_sections(blocks: Sequence, strict: bool = True) -> tuple[str, list[Section]]:
+def split_sections(blocks: Sequence, strict: bool = True,
+                   deep: bool = False) -> tuple[str, list[Section]]:
     """按标题切分小节。返回 (章标题, [Section])。
 
     规则：第一个标题 = 章标题；其后出现次数最多的标题层级 = 小节层级。
     视觉元素（图/表）单独收进 visuals，不混进 paras —— 否则图会参与段落
     DP，既污染长度信号，又会被当成「没有中文对应的段落」而报缺失。
+
+    deep=True（策略 v2，2026-09-15）：**保留完整标题树**，即章内**每个**
+    标题都切一刀，不做「众数层级」拍平。实测《概率论沉思录》ch2：
+    拍平时 EN 7 节 vs ZH 11 节（EN 的 `<p class="h2">` 2.6.1~2.6.4 被
+    吞进 2.6 节里），deep 之后两侧都是 11 节、标题编号一一对应 →
+    **按编号即可精确配对小节**。层级记在 `Section.title_level`。
 
     strict=True 时做**段落守恒对账**：切分出的正文段 + 视觉块总数必须等于
     输入的非标题块数。切分是最容易静默丢内容的一步（章首未被 title 保护的
@@ -229,7 +236,7 @@ def split_sections(blocks: Sequence, strict: bool = True) -> tuple[str, list[Sec
             if b is heads[0]:
                 cur.blocks.append(b)
                 continue
-            if b.level == level:
+            if deep or b.level == level:
                 if _has_content(cur):
                     secs.append(_finish(cur, cur.blocks))
                 cur = Section(title=b.text, title_level=b.level, blocks=[b])

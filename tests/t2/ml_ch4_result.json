@@ -1,0 +1,323 @@
+{
+ "units": [
+  {
+   "id": "u1",
+   "en": [
+    "E01"
+   ],
+   "zh": [
+    "Z01"
+   ],
+   "num_en": "4.1",
+   "num_zh": "4.1",
+   "en_title": "Linear Regression",
+   "zh_title": "4.1线性回归",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u2",
+   "en": [
+    "E02"
+   ],
+   "zh": [],
+   "num_en": "4.1.1",
+   "num_zh": "",
+   "en_title": "The Normal Equation",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u1"
+  },
+  {
+   "id": "u3",
+   "en": [
+    "E03"
+   ],
+   "zh": [],
+   "num_en": "4.1.2",
+   "num_zh": "",
+   "en_title": "Computational Complexity",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u1"
+  },
+  {
+   "id": "u4",
+   "en": [
+    "E04"
+   ],
+   "zh": [
+    "Z02"
+   ],
+   "num_en": "4.2",
+   "num_zh": "4.2",
+   "en_title": "Gradient Descent",
+   "zh_title": "4.2梯度下降",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u5",
+   "en": [
+    "E05"
+   ],
+   "zh": [],
+   "num_en": "4.2.1",
+   "num_zh": "",
+   "en_title": "Batch Gradient Descent",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u4"
+  },
+  {
+   "id": "u6",
+   "en": [
+    "E06"
+   ],
+   "zh": [],
+   "num_en": "4.2.2",
+   "num_zh": "",
+   "en_title": "Stochastic Gradient Descent",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u4"
+  },
+  {
+   "id": "u7",
+   "en": [
+    "E07"
+   ],
+   "zh": [],
+   "num_en": "4.2.3",
+   "num_zh": "",
+   "en_title": "Mini-Batch Gradient Descent",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u4"
+  },
+  {
+   "id": "u8",
+   "en": [
+    "E08"
+   ],
+   "zh": [
+    "Z04"
+   ],
+   "num_en": "4.3",
+   "num_zh": "4.3",
+   "en_title": "Polynomial Regression",
+   "zh_title": "4.3多项式回归",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u9",
+   "en": [
+    "E09"
+   ],
+   "zh": [
+    "Z05"
+   ],
+   "num_en": "4.4",
+   "num_zh": "4.4",
+   "en_title": "Learning Curves",
+   "zh_title": "4.4学习曲线",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u10",
+   "en": [],
+   "zh": [
+    "Z06"
+   ],
+   "num_en": "",
+   "num_zh": "4.4.1",
+   "en_title": "",
+   "zh_title": "偏差/方差权衡",
+   "confidence": 0.8,
+   "parent": "u9"
+  },
+  {
+   "id": "u11",
+   "en": [],
+   "zh": [
+    "Z07"
+   ],
+   "num_en": "",
+   "num_zh": "4.4.2",
+   "en_title": "",
+   "zh_title": "方差",
+   "confidence": 0.8,
+   "parent": "u10"
+  },
+  {
+   "id": "u12",
+   "en": [
+    "E10"
+   ],
+   "zh": [
+    "Z08"
+   ],
+   "num_en": "4.5",
+   "num_zh": "4.5",
+   "en_title": "Regularized Linear Models",
+   "zh_title": "4.5正则化线性模型",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u13",
+   "en": [
+    "E11"
+   ],
+   "zh": [],
+   "num_en": "4.5.1",
+   "num_zh": "",
+   "en_title": "Ridge Regression",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u12"
+  },
+  {
+   "id": "u14",
+   "en": [
+    "E12"
+   ],
+   "zh": [],
+   "num_en": "4.5.2",
+   "num_zh": "",
+   "en_title": "Lasso Regression",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u12"
+  },
+  {
+   "id": "u15",
+   "en": [
+    "E13"
+   ],
+   "zh": [],
+   "num_en": "4.5.3",
+   "num_zh": "",
+   "en_title": "Elastic Net Regression",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u12"
+  },
+  {
+   "id": "u16",
+   "en": [
+    "E14"
+   ],
+   "zh": [],
+   "num_en": "4.5.4",
+   "num_zh": "",
+   "en_title": "Early Stopping",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u12"
+  },
+  {
+   "id": "u17",
+   "en": [
+    "E15"
+   ],
+   "zh": [
+    "Z09"
+   ],
+   "num_en": "4.6",
+   "num_zh": "4.6",
+   "en_title": "Logistic Regression",
+   "zh_title": "4.6逻辑回归",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u18",
+   "en": [
+    "E16"
+   ],
+   "zh": [],
+   "num_en": "4.6.1",
+   "num_zh": "",
+   "en_title": "Estimating Probabilities",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u17"
+  },
+  {
+   "id": "u19",
+   "en": [
+    "E17"
+   ],
+   "zh": [],
+   "num_en": "4.6.2",
+   "num_zh": "",
+   "en_title": "Training and Cost Function",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u17"
+  },
+  {
+   "id": "u20",
+   "en": [
+    "E18"
+   ],
+   "zh": [],
+   "num_en": "4.6.3",
+   "num_zh": "",
+   "en_title": "Decision Boundaries",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u17"
+  },
+  {
+   "id": "u21",
+   "en": [
+    "E19"
+   ],
+   "zh": [],
+   "num_en": "4.6.4",
+   "num_zh": "",
+   "en_title": "Softmax Regression",
+   "zh_title": "",
+   "confidence": 0.9,
+   "parent": "u17"
+  },
+  {
+   "id": "u22",
+   "en": [
+    "E20"
+   ],
+   "zh": [
+    "Z12"
+   ],
+   "num_en": "4.7",
+   "num_zh": "4.7",
+   "en_title": "Exercises",
+   "zh_title": "4.7练习题",
+   "confidence": 0.95,
+   "parent": null
+  }
+ ],
+ "unmatched": {
+  "en": [],
+  "zh": [
+   "Z03",
+   "Z10",
+   "Z11"
+  ],
+  "noise": []
+ },
+ "self_check": {
+  "order_monotonic": true,
+  "num_conflicts": [],
+  "missed": [],
+  "notes": [
+   "Z03 (收敛速度) is likely a subsection of Z02 (Gradient Descent) but lacks semantic match with any English h2 under E04. Placed in unmatched.",
+   "Z10 (T) is noise/incomplete text.",
+   "Z11 (交叉熵) appears to be a section title but has no corresponding English candidate in the provided list for Logistic Regression subsections. Placed in unmatched."
+  ]
+ }
+}

@@ -1,0 +1,56 @@
+# EN　源：think2_en.epub　kind=epub　条目 55（原 55）
+   1|L1|F|Cover
+   2|L1| |Title Page
+   3|L1| |About the Author
+   4|L1|F|Dedication
+   5|L1| |Introduction
+   6|L1| |Part 1: TWO SYSTEMS
+   7|L2| |1: The Characters of the Story
+   8|L2| |2: Attention and Effort
+   9|L2| |3: The Lazy Controller
+  10|L2| |4: The Associative Machine
+  11|L2| |5: Cognitive Ease
+  12|L2| |6: Norms, Surprises, and Causes
+  13|L2| |7: A Machine for Jumping to Conclusions
+  14|L2| |8: How Judgments Happen
+  15|L2| |9: Answering an Easier Question
+  16|L1| |Part 2: HEURISTICS AND BIASES
+  17|L2| |10: The Law of Small Numbers
+  18|L2| |11: Anchors
+  19|L2| |12: The Science of Availability
+  20|L2| |13: Availability, Emotion, and Risk
+  21|L2| |14: Tom W’s Specialty
+  22|L2| |15: Linda: Less is More
+  23|L2| |16: Causes Trump Statistics
+  24|L2| |17: Regression to the Mean
+  25|L2| |18: Taming Intuitive Predictions
+  26|L1| |Part 3: OVERCONFIDENCE
+  27|L2| |19: The Illusion of Understanding
+  28|L2| |20: The Illusion of Validity
+  29|L2| |21: Intuitions vs. Formulas
+  30|L2| |22: Expert Intuition: When Can We Trust It?
+  31|L2| |23: The Outside View
+  32|L2| |24: The Engine of Capitalism
+  33|L1| |Part 4: CHOICES
+  34|L2| |25: Bernoulli’s Errors
+  35|L2| |26: Prospect Theory
+  36|L2| |27: The Endowment Effect
+  37|L2| |28: Bad Events
+  38|L2| |29: The Fourfold Pattern
+  39|L2| |30: Rare Events
+  40|L2| |31: Risk Policies
+  41|L2| |32: Keeping Score
+  42|L2| |33: Reversals
+  43|L2| |34: Frames and Reality
+  44|L1| |Part 5: TWO SELVES
+  45|L2| |35: Two Selves
+  46|L2| |36: Life as a Story
+  47|L2| |37: Experienced Well-Being
+  48|L2| |38: Thinking About Life
+  49|L1| |Conclusions
+  50|L1| |Appendix A: Judgment Under Uncertainty: Heuristics and Biases
+  51|L1| |Appendix B: Choices, Values, and Frames
+  52|L1| |Notes
+  53|L1| |Acknowledgments
+  54|L1| |Follow Penguin
+  55|L1|F|Copyright Page

@@ -1,0 +1,367 @@
+# EN　源：prob_en.epub　kind=epub　条目 366
+   1|L1| |Probability Theory the Logic of Science
+   2|L2|F|Cover
+   3|L2| |Half Title
+   4|L2| |Title Page
+   5|L2|F|Copyright
+   6|L2|F|Dedication
+   7|L2|F|Contents
+   8|L2| |Editor’s foreword
+   9|L2| |Preface
+  10|L2| |Part I: Principles and elementary applications
+  11|L3| |1. Plausible reasoning
+  12|L4| |1.1 Deductive and plausible reasoning
+  13|L4| |1.2 Analogies with physical theories
+  14|L4| |1.3 The thinking computer
+  15|L4| |1.4 Introducing the robot
+  16|L4| |1.5 Boolean algebra
+  17|L4| |1.6 Adequate sets of operations
+  18|L4| |1.7 The basic desiderata
+  19|L4| |1.8 Comments
+  20|L5| |1.8.1 Common language vs. formal logic
+  21|L5| |1.8.2 Nitpicking
+  22|L3| |2. The quantitative rules
+  23|L4| |2.1 The product rule
+  24|L4| |2.2 The sum rule
+  25|L4| |2.3 Qualitative properties
+  26|L4| |2.4 Numerical values
+  27|L4| |2.5 Notation and finite-sets policy
+  28|L4| |2.6 Comments
+  29|L5| |2.6.1 ‘Subjective’ vs. ‘objective’
+  30|L5| |2.6.2 Gödel’s theorem
+  31|L5| |2.6.3 Venn diagrams
+  32|L5| |2.6.4 The ‘Kolmogorov axioms’
+  33|L3| |3. Elementary sampling theory
+  34|L4| |3.1 Sampling without replacement
+  35|L4| |3.2 Logic vs. propensity
+  36|L4| |3.3 Reasoning from less precise information
+  37|L4| |3.4 Expectations
+  38|L4| |3.5 Other forms and extensions
+  39|L4| |3.6 Probability as a mathematical tool
+  40|L4| |3.7 The binomial distribution
+  41|L4| |3.8 Sampling with replacement
+  42|L5| |3.8.1 Digression: a sermon on reality vs. models
+  43|L4| |3.9 Correction for correlations
+  44|L4| |3.10 Simplification
+  45|L4| |3.11 Comments
+  46|L5| |3.11.1 A look ahead
+  47|L3| |4. Elementary hypothesis testing
+  48|L4| |4.1 Prior probabilities
+  49|L4| |4.2 Testing binary hypotheses with binary data
+  50|L4| |4.3 Nonextensibility beyond the binary case
+  51|L4| |4.4 Multiple hypothesis testing
+  52|L5| |4.4.1 Digression on another derivation
+  53|L4| |4.5 Continuous probability distribution functions
+  54|L4| |4.6 Testing an infinite number of hypotheses
+  55|L5| |4.6.1 Historical digression
+  56|L4| |4.7 Simple and compound (or composite) hypotheses
+  57|L4| |4.8 Comments
+  58|L5| |4.8.1 Etymology
+  59|L5| |4.8.2 What have we accomplished?
+  60|L3| |5. Queer uses for probability theory
+  61|L4| |5.1 Extrasensory perception
+  62|L4| |5.2 Mrs Stewart’s telepathic powers
+  63|L5| |5.2.1 Digression on the normal approximation
+  64|L5| |5.2.2 Back to Mrs Stewart
+  65|L4| |5.3 Converging and diverging views
+  66|L4| |5.4 Visual perception – evolution into Bayesianity?
+  67|L4| |5.5 The discovery of Neptune
+  68|L5| |5.5.1 Digression on alternative hypotheses
+  69|L5| |5.5.2 Back to Newton
+  70|L4| |5.6 Horse racing and weather forecasting
+  71|L5| |5.6.1 Discussion
+  72|L4| |5.7 Paradoxes of intuition
+  73|L4| |5.8 Bayesian jurisprudence
+  74|L4| |5.9 Comments
+  75|L5| |5.9.1 What is queer?
+  76|L3| |6. Elementary parameter estimation
+  77|L4| |6.1 Inversion of the urn distributions
+  78|L4| |6.2 Both N and R unknown
+  79|L4| |6.3 Uniform prior
+  80|L4| |6.4 Predictive distributions
+  81|L4| |6.5 Truncated uniform priors
+  82|L4| |6.6 A concave prior
+  83|L4| |6.7 The binomial monkey prior
+  84|L4| |6.8 Metamorphosis into continuous parameter estimation
+  85|L4| |6.9 Estimation with a binomial sampling distribution
+  86|L5| |6.9.1 Digression on optional stopping
+  87|L4| |6.10 Compound estimation problems
+  88|L4| |6.11 A simple Bayesian estimate: quantitative prior information
+  89|L5| |6.11.1 From posterior distribution function to estimate
+  90|L4| |6.12 Effects of qualitative prior information
+  91|L4| |6.13 Choice of a prior
+  92|L4| |6.14 On with the calculation!
+  93|L4| |6.15 The Jeffreys prior
+  94|L4| |6.16 The point of it all
+  95|L4| |6.17 Interval estimation
+  96|L4| |6.18 Calculation of variance
+  97|L4| |6.19 Generalization and asymptotic forms
+  98|L4| |6.20 Rectangular sampling distribution
+  99|L4| |6.21 Small samples
+ 100|L4| |6.22 Mathematical trickery
+ 101|L4| |6.23 Comments
+ 102|L3| |7. The central, Gaussian or normal distribution
+ 103|L4| |7.1 The gravitating phenomenon
+ 104|L4| |7.2 The Herschel–Maxwell derivation
+ 105|L4| |7.3 The Gauss derivation
+ 106|L4| |7.4 Historical importance of Gauss’s result
+ 107|L4| |7.5 The Landon derivation
+ 108|L4| |7.6 Why the ubiquitous use of Gaussian distributions?
+ 109|L4| |7.7 Why the ubiquitous success?
+ 110|L4| |7.8 What estimator should we use?
+ 111|L4| |7.9 Error cancellation
+ 112|L4| |7.10 The near irrelevance of sampling frequency distributions
+ 113|L4| |7.11 The remarkable efficiency of information transfer
+ 114|L4| |7.12 Other sampling distributions
+ 115|L4| |7.13 Nuisance parameters as safety devices
+ 116|L4| |7.14 More general properties
+ 117|L4| |7.15 Convolution of Gaussians
+ 118|L4| |7.16 The central limit theorem
+ 119|L4| |7.17 Accuracy of computations
+ 120|L4| |7.18 Galton’s discovery
+ 121|L4| |7.19 Population dynamics and Darwinian evolution
+ 122|L4| |7.20 Evolution of humming-birds and flowers
+ 123|L4| |7.21 Application to economics
+ 124|L4| |7.22 The great inequality of Jupiter and Saturn
+ 125|L4| |7.23 Resolution of distributions into Gaussians
+ 126|L4| |7.24 Hermite polynomial solutions
+ 127|L4| |7.25 Fourier transform relations
+ 128|L4| |7.26 There is hope after all
+ 129|L4| |7.27 Comments
+ 130|L5| |7.27.1 Terminology again
+ 131|L3| |8. Sufficiency, ancillarity, and all that
+ 132|L4| |8.1 Sufficiency
+ 133|L4| |8.2 Fisher sufficiency
+ 134|L5| |8.2.1 Examples
+ 135|L5| |8.2.2 The Blackwell–Rao theorem
+ 136|L4| |8.3 Generalized sufficiency
+ 137|L4| |8.4 Sufficiency plus nuisance parameters
+ 138|L4| |8.5 The likelihood principle
+ 139|L4| |8.6 Ancillarity
+ 140|L4| |8.7 Generalized ancillary information
+ 141|L4| |8.8 Asymptotic likelihood: Fisher information
+ 142|L4| |8.9 Combining evidence from different sources
+ 143|L4| |8.10 Pooling the data
+ 144|L5| |8.10.1 Fine-grained propositions
+ 145|L4| |8.11 Sam’s broken thermometer
+ 146|L4| |8.12 Comments
+ 147|L5| |8.12.1 The fallacy of sample re-use
+ 148|L5| |8.12.2 A folk theorem
+ 149|L5| |8.12.3 Effect of prior information
+ 150|L5| |8.12.4 Clever tricks and gamesmanship
+ 151|L3| |9. Repetitive experiments: probability and frequency
+ 152|L4| |9.1 Physical experiments
+ 153|L4| |9.2 The poorly informed robot
+ 154|L4| |9.3 Induction
+ 155|L4| |9.4 Are there general inductive rules?
+ 156|L4| |9.5 Multiplicity factors
+ 157|L4| |9.6 Partition function algorithms
+ 158|L5| |9.6.1 Solution by inspection
+ 159|L4| |9.7 Entropy algorithms
+ 160|L4| |9.8 Another way of looking at it
+ 161|L4| |9.9 Entropy maximization
+ 162|L4| |9.10 Probability and frequency
+ 163|L4| |9.11 Significance tests
+ 164|L5| |9.11.1 Implied alternatives
+ 165|L4| |9.12 Comparison of psi and chi-squared
+ 166|L4| |9.13 The chi-squared test
+ 167|L4| |9.14 Generalization
+ 168|L4| |9.15 Halley’s mortality table
+ 169|L4| |9.16 Comments
+ 170|L5| |9.16.1 The irrationalists
+ 171|L5| |9.16.2 Superstitions
+ 172|L3| |10. Physics of ‘random experiments’
+ 173|L4| |10.1 An interesting correlation
+ 174|L4| |10.2 Historical background
+ 175|L4| |10.3 How to cheat at coin and die tossing
+ 176|L5| |10.3.1 Experimental evidence
+ 177|L4| |10.4 Bridge hands
+ 178|L4| |10.5 General random experiments
+ 179|L4| |10.6 Induction revisited
+ 180|L4| |10.7 But what about quantum theory?
+ 181|L4| |10.8 Mechanics under the clouds
+ 182|L4| |10.9 More on coins and symmetry
+ 183|L4| |10.10 Independence of tosses
+ 184|L4| |10.11 The arrogance of the uninformed
+ 185|L2| |Part II: Advanced applications
+ 186|L3| |11. Discrete prior probabilities: the entropy principle
+ 187|L4| |11.1 A new kind of prior information
+ 188|L4| |11.2 Minimum ∑ p2i
+ 189|L4| |11.3 Entropy: Shannon’s theorem
+ 190|L4| |11.4 The Wallis derivation
+ 191|L4| |11.5 An example
+ 192|L4| |11.6 Generalization: a more rigorous proof
+ 193|L4| |11.7 Formal properties of maximum entropy distributions
+ 194|L4| |11.8 Conceptual problems – frequency correspondence
+ 195|L4| |11.9 Comments
+ 196|L3| |12. Ignorance priors and transformation groups
+ 197|L4| |12.1 What are we trying to do?
+ 198|L4| |12.2 Ignorance priors
+ 199|L4| |12.3 Continuous distributions
+ 200|L4| |12.4 Transformation groups
+ 201|L5| |12.4.1 Location and scale parameters
+ 202|L5| |12.4.2 A Poisson rate
+ 203|L5| |12.4.3 Unknown probability for success
+ 204|L5| |12.4.4 Bertrand’s problem
+ 205|L4| |12.5 Comments
+ 206|L3| |13. Decision theory, historical background
+ 207|L4| |13.1 Inference vs. decision
+ 208|L4| |13.2 Daniel Bernoulli’s suggestion
+ 209|L4| |13.3 The rationale of insurance
+ 210|L4| |13.4 Entropy and utility
+ 211|L4| |13.5 The honest weatherman
+ 212|L4| |13.6 Reactions to Daniel Bernoulli and Laplace
+ 213|L4| |13.7 Wald’s decision theory
+ 214|L4| |13.8 Parameter estimation for minimum loss
+ 215|L4| |13.9 Reformulation of the problem
+ 216|L4| |13.10 Effect of varying loss functions
+ 217|L4| |13.11 General decision theory
+ 218|L4| |13.12 Comments
+ 219|L5| |13.12.1 ‘Objectivity’ of decision theory
+ 220|L5| |13.12.2 Loss functions in human society
+ 221|L5| |13.12.3 A new look at the Jeffreys prior
+ 222|L5| |13.12.4 Decision theory is not fundamental
+ 223|L5| |13.12.5 Another dimension?
+ 224|L3| |14. Simple applications of decision theory
+ 225|L4| |14.1 Definitions and preliminaries
+ 226|L4| |14.2 Sufficiency and information
+ 227|L4| |14.3 Loss functions and criteria of optimum performance
+ 228|L4| |14.4 A discrete example
+ 229|L4| |14.5 How would our robot do it?
+ 230|L4| |14.6 Historical remarks
+ 231|L5| |14.6.1 The classical matched filter
+ 232|L4| |14.7 The widget problem
+ 233|L5| |14.7.1 Solution for Stage 2
+ 234|L5| |14.7.2 Solution for Stage 3
+ 235|L5| |14.7.3 Solution for Stage 4
+ 236|L4| |14.8 Comments
+ 237|L3| |15. Paradoxes of probability theory
+ 238|L4| |15.1 How do paradoxes survive and grow?
+ 239|L4| |15.2 Summing a series the easy way
+ 240|L4| |15.3 Nonconglomerability
+ 241|L4| |15.4 The tumbling tetrahedra
+ 242|L4| |15.5 Solution for a finite number of tosses
+ 243|L4| |15.6 Finite vs. countable additivity
+ 244|L4| |15.7 The Borel–Kolmogorov paradox
+ 245|L4| |15.8 The marginalization paradox
+ 246|L5| |15.8.1 On to greater disasters
+ 247|L4| |15.9 Discussion
+ 248|L5| |15.9.1 The DSZ Example #5
+ 249|L5| |15.9.2 Summary
+ 250|L4| |15.10 A useful result after all?
+ 251|L4| |15.11 How to mass-produce paradoxes
+ 252|L4| |15.12 Comments
+ 253|L3| |16. Orthodox methods: historical background
+ 254|L4| |16.1 The early problems
+ 255|L4| |16.2 Sociology of orthodox statistics
+ 256|L4| |16.3 Ronald Fisher, Harold Jeffreys, and Jerzy Neyman
+ 257|L4| |16.4 Pre-data and post-data considerations
+ 258|L4| |16.5 The sampling distribution for an estimator
+ 259|L4| |16.6 Pro-causal and anti-causal bias
+ 260|L4| |16.7 What is real, the probability or the phenomenon?
+ 261|L4| |16.8 Comments
+ 262|L5| |16.8.1 Communication difficulties
+ 263|L3| |17. Principles and pathology of orthodox statistics
+ 264|L4| |17.1 Information loss
+ 265|L4| |17.2 Unbiased estimators
+ 266|L4| |17.3 Pathology of an unbiased estimate
+ 267|L4| |17.4 The fundamental inequality of the sampling variance
+ 268|L4| |17.5 Periodicity: the weather in Central Park
+ 269|L5| |17.5.1 The folly of pre-filtering data
+ 270|L4| |17.6 A Bayesian analysis
+ 271|L4| |17.7 The folly of randomization
+ 272|L4| |17.8 Fisher: common sense at Rothamsted
+ 273|L5| |17.8.1 The Bayesian safety device
+ 274|L4| |17.9 Missing data
+ 275|L4| |17.10 Trend and seasonality in time series
+ 276|L5| |17.10.1 Orthodox methods
+ 277|L5| |17.10.2 The Bayesian method
+ 278|L5| |17.10.3 Comparison of Bayesian and orthodox estimates
+ 279|L5| |17.10.4 An improved orthodox estimate
+ 280|L5| |17.10.5 The orthodox criterion of performance
+ 281|L4| |17.11 The general case
+ 282|L4| |17.12 Comments
+ 283|L3| |18. The Ap distribution and rule of succession
+ 284|L4| |18.1 Memory storage for old robots
+ 285|L4| |18.2 Relevance
+ 286|L4| |18.3 A surprising consequence
+ 287|L4| |18.4 Outer and inner robots
+ 288|L4| |18.5 An application
+ 289|L4| |18.6 Laplace’s rule of succession
+ 290|L4| |18.7 Jeffreys’ objection
+ 291|L4| |18.8 Bass or carp?
+ 292|L4| |18.9 So where does this leave the rule?
+ 293|L4| |18.10 Generalization
+ 294|L4| |18.11 Confirmation and weight of evidence
+ 295|L5| |18.11.1 Is indifference based on knowledge or ignorance?
+ 296|L4| |18.12 Carnap’s inductive methods
+ 297|L4| |18.13 Probability and frequency in exchangeable sequences
+ 298|L4| |18.14 Prediction of frequencies
+ 299|L4| |18.15 One-dimensional neutron multiplication
+ 300|L5| |18.15.1 The frequentist solution
+ 301|L5| |18.15.2 The Laplace solution
+ 302|L4| |18.16 The de Finetti theorem
+ 303|L4| |18.17 Comments
+ 304|L3| |19. Physical measurements
+ 305|L4| |19.1 Reduction of equations of condition
+ 306|L4| |19.2 Reformulation as a decision problem
+ 307|L5| |19.2.1 Sermon on Gaussian error distributions
+ 308|L4| |19.3 The underdetermined case: K is singular
+ 309|L4| |19.4 The overdetermined case: K can be made nonsingular
+ 310|L4| |19.5 Numericale valuation of the result
+ 311|L4| |19.6 Accuracy of the estimates
+ 312|L4| |19.7 Comments
+ 313|L5| |19.7.1 A paradox
+ 314|L3| |20. Model comparison
+ 315|L4| |20.1 Formulation of the problem
+ 316|L4| |20.2 The fair judge and the cruel realist
+ 317|L5| |20.2.1 Parameters known in advance
+ 318|L5| |20.2.2 Parameters unknown
+ 319|L4| |20.3 But where is the idea of simplicity?
+ 320|L4| |20.4 An example: linear response models
+ 321|L5| |20.4.1 Digression: the old sermon still another time
+ 322|L4| |20.5 Comments
+ 323|L5| |20.5.1 Final causes
+ 324|L3| |21. Outliers and robustness
+ 325|L4| |21.1 The experimenter’s dilemma
+ 326|L4| |21.2 Robustness
+ 327|L4| |21.3 The two-model model
+ 328|L4| |21.4 Exchangeable selection
+ 329|L4| |21.5 The general Bayesian solution
+ 330|L4| |21.6 Pure outliers
+ 331|L4| |21.7 One receding datum
+ 332|L3| |22. Introduction to communication theory
+ 333|L4| |22.1 Origins of the theory
+ 334|L4| |22.2 The noiseless channel
+ 335|L4| |22.3 The information source
+ 336|L4| |22.4 Does the English language have statistical properties?
+ 337|L4| |22.5 Optimum encoding: letter frequencies known
+ 338|L4| |22.6 Better encoding from knowledge of digram frequencies
+ 339|L4| |22.7 Relation to a stochastic model
+ 340|L4| |22.8 The noisy channel
+ 341|L2| |Appendix A: Other approaches to probability theory
+ 342|L3| |A.1 The Kolmogorov system of probability
+ 343|L3| |A.2 The de Finetti system of probability
+ 344|L3| |A.3 Comparative probability
+ 345|L3| |A.4 Holdouts against universal comparability
+ 346|L3| |A.5 Speculations about lattice theories
+ 347|L2| |Appendix B: Mathematical formalities and style
+ 348|L3| |B.1 Notation and logical hierarchy
+ 349|L3| |B.2 Our ‘cautious approach’ policy
+ 350|L3| |B.3 Willy Feller on measure theory
+ 351|L3| |B.4 Kronecker vs. Weierstrasz
+ 352|L3| |B.5 What is a legitimate mathematical function?
+ 353|L4| |B.5.1 Delta-functions
+ 354|L4| |B.5.2 Nondifferentiable functions
+ 355|L4| |B.5.3 Bogus nondifferentiable functions
+ 356|L3| |B.6 Counting infinite sets?
+ 357|L3| |B.7 The Hausdorff sphere paradox and mathematical diseases
+ 358|L3| |B.8 What am I supposed to publish?
+ 359|L3| |B.9 Mathematical courtesy
+ 360|L2| |Appendix C: Convolutions and cumulants
+ 361|L3| |C.1 Relation of cumulants and moments
+ 362|L3| |C.2 Examples
+ 363|L2| |References
+ 364|L2| |Bibliography
+ 365|L2| |Author index
+ 366|L2| |Subject index

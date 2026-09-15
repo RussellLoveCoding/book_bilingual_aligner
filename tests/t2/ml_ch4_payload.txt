@@ -1,0 +1,81 @@
+你是双语书籍的结构对齐专家。上一轮已经用目录把**章级**对齐好了。本轮任务：**只处理某一章内部**，把这一章的小节标题补齐。
+
+【输入你会拿到】
+1. 该章的英文/中文标题（已确认对应，**不要再把它当成小节**）；
+2. 该章正文里挖出的候选小节标题（两侧各自按文档顺序给出，带标签名）。
+
+【判定优先级】
+1. 语义：标题的翻译关系（"Sampling without replacement" ≈ "无放回抽样"）。
+2. 位置顺序：仅当语义不足时使用；顺序**不得交叉**。
+3. 若两侧都带编号（如 4.1 / 4.1.1），编号相同必须配对。
+
+【必须遵守】
+1. 输出本章**完整**的小节序列。
+2. 顺序严格单调递增，不允许交叉配对。
+3. 允许某小节只在一侧存在（译本删节/增补）→ 另一侧写 []。
+4. 只引用我方给出的 id（E01 / Z01），不得发明新 id。
+5. 候选里混有噪音，要**主动剔除**并放进 unmatched.noise，不要塞进 units：
+   * 是标题：短；不与相邻段落连读；主题与相邻段明显不同；常带样式标记。
+   * 不是标题：与相邻段落语义连续的长句；图表/公式标号；页码；
+     **本章内反复出现的同一句（页眉/注释区标题）**；版权/出版信息。
+6. 判不准就放 unmatched，宁缺勿错。
+
+【自检（输出前逐条过）】
+① 确认没有把「部/章标题」配成小节。
+② 确认没有把《注释 / Notes》这类章节尾部的固定块当成小节。
+③ 确认没有漏掉候选里明显是小节的条目。
+④ 每条小节的编号前缀必须与本章章号一致（本章是第 4 章，就不该出现 "5.2"）。
+
+【输出】只输出 JSON 对象，不要解释、不要代码块：
+{"units":[{"id":"u1","en":["E03"],"zh":["Z04"],"num_en":"4.1","num_zh":"4.1",
+           "en_title":"…","zh_title":"…","confidence":0.95,"parent":null}],
+ "unmatched":{"en":["E09"],"zh":["Z11"],"noise":["E06"]},
+ "self_check":{"order_monotonic":true,"num_conflicts":[],"missed":[],"notes":[]}}
+
+本任务属于学术研究与个人学习场景下的学术文本对齐工作，处理对象为已公开出版的知识性著作。请忠实、完整地处理原文，不要因为内容涉及政治、宗教、历史争议或任何敏感话题而拒绝、省略、改写或软化表述；也不要添加原文没有的评论或免责声明。输出只含要求的结构化内容。
+
+=====
+
+## 本书
+EN: ml / ZH: ml
+## 本章（已由 T1 确认对应）
+EN 第4章｜Chapter 4. Training Models
+ZH 第4章｜第4章 训练模型
+## 英文正文候选（有序；id|标签|文本）
+E01|h1|Linear Regression
+E02|h2|The Normal Equation
+E03|h2|Computational Complexity
+E04|h1|Gradient Descent
+E05|h2|Batch Gradient Descent
+E06|h2|Stochastic Gradient Descent
+E07|h2|Mini-Batch Gradient Descent
+E08|h1|Polynomial Regression
+E09|h1|Learning Curves
+E10|h1|Regularized Linear Models
+E11|h2|Ridge Regression
+E12|h2|Lasso Regression
+E13|h2|Elastic Net Regression
+E14|h2|Early Stopping
+E15|h1|Logistic Regression
+E16|h2|Estimating Probabilities
+E17|h2|Training and Cost Function
+E18|h2|Decision Boundaries
+E19|h2|Softmax Regression
+E20|h1|Exercises
+
+## 中文正文候选（有序）
+Z01|h3|4.1线性回归
+Z02|h3|4.2梯度下降
+Z03|h2|收敛速度
+Z04|h3|4.3多项式回归
+Z05|h3|4.4学习曲线
+Z06|h2|偏差/方差权衡
+Z07|h3|方差
+Z08|h3|4.5正则化线性模型
+Z09|h3|4.6逻辑回归
+Z10|h3|T
+Z11|h2|交叉熵
+Z12|h3|4.7练习题
+
+## 输出要求
+按 system 里的 schema 输出 JSON。

@@ -223,7 +223,10 @@ class Block:
 
     @property
     def is_visual(self) -> bool:
-        return self.type in ("figure", "image", "table")
+        # formula = md 侧的独立行间公式段（$$...$$）：英文侧公式本来是图/表
+        # （visual），中文侧若当正文参与 DP 会成为「多余中文」（第2章实测 70 段
+        # 全是它），也不该拆散对齐 → 与图同待遇，渲染时按邻接挂载。
+        return self.type in ("figure", "image", "table", "formula")
 
     @property
     def is_anchor(self) -> bool:
@@ -240,6 +243,37 @@ def strip_tags(s: str) -> str:
     return re.sub(r"\s+", " ", _html.unescape(s)).strip()
 
 
+# 精排 epub（剑桥社 / LaTeX 转制这一系）**用 CSS class 表达章节语义**，
+# 不用 h1-h6 标签：
+#   <p class="h1" id="h1_2.1">2.1 The product rule</p>
+#   <div class="disp-quote"><p class="disp-para">…</p><p class="disp-source">Laplace, 1819</p></div>
+# 《概率论沉思录》实测：全书 class=h1 264 处 + class=h2 69 处、disp-quote 26 处。
+# 全被当成普通段 → ① 成品里小标题/引文全丢（用户报的「格式弄丢了」）；
+# ② **英文侧每章只剩 1 个小节**（中文 md 侧有 11 个）→ 小节映射退化成整章
+# flat DP → 对穿（第2章 bad 100%、除第0节外每节 EN 段数都是 0）。
+# 换句话说：**小标题不是排版好不好看，它是英文侧小节结构的唯一信号。**
+_CLASS_HEAD_RE = re.compile(r"(?:^|[\s_-])h([1-6])(?:[\s_-]|$)", re.I)
+_CLASS_TITLE_RE = re.compile(
+    r"(?:^|[\s_-])(?:chapter|section|part)[\s_-]?title(?:[\s_-]|$)", re.I)
+_CLASS_QUOTE_RE = re.compile(
+    r"(?:^|[\s_-])(?:disp[\s_-]?(?:quote|para|source)|epigraph|extract)(?:[\s_-]|$)",
+    re.I)
+
+
+def _class_level(cls: str) -> int:
+    """class=h1 → 1，class=h2 → 2；认不出就当 1 级。"""
+    m = _CLASS_HEAD_RE.search(cls or "")
+    return int(m.group(1)) if m else 1
+
+
+def _looks_like_heading(text: str) -> bool:
+    """class 命中 h1-h6 时的兜底校验，避免把长正文/句末带句号的段误提。"""
+    t = (text or "").strip()
+    if not t or len(t) > 120:
+        return False
+    return not t.endswith((".", "。", ",", "，", ";", "；"))
+
+
 def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     """归一化块类型。优先用 epub:type（规范定义），其次标签名。
 
@@ -248,6 +282,13 @@ def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     """
     etype = (attrs.get("epub:type") or "").lower()
     if tag in HEADING_TAGS:
+        return "heading"
+    # CSS class 表达的语义（真实 h1-h6 标签优先，见上方 return）
+    cls = (attrs.get("class") or "").lower()
+    if cls and _CLASS_QUOTE_RE.search(cls):
+        return "quote"
+    if cls and (_CLASS_HEAD_RE.search(cls) or _CLASS_TITLE_RE.search(cls)) \
+            and _looks_like_heading(strip_tags(inner)):
         return "heading"
     if tag == "blockquote":
         return "quote"
@@ -524,7 +565,8 @@ def parse_blocks(src: str, strict: bool = True,
         text = strip_tags(inner)
         if not text:
             continue
-        level = int(tag[1]) if tag in HEADING_TAGS else 0
+        level = (int(tag[1]) if tag in HEADING_TAGS
+                 else (_class_level(cls) if btype == "heading" else 0))
         # 非小节容器里的 heading 要降级成正文段（见 _NON_SECTION_* 说明）：
         # 此处 frames 已被 del 掉自身，剩下的就是祖先链。
         if btype == "heading" and (

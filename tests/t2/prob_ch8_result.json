@@ -1,0 +1,356 @@
+{
+ "units": [
+  {
+   "id": "u1",
+   "en": [
+    "E01"
+   ],
+   "zh": [
+    "Z01"
+   ],
+   "num_en": "8.1",
+   "num_zh": "8.1",
+   "en_title": "Sufficiency",
+   "zh_title": "充分性",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u2",
+   "en": [
+    "E02"
+   ],
+   "zh": [
+    "Z02"
+   ],
+   "num_en": "8.2",
+   "num_zh": "8.2",
+   "en_title": "Fisher sufficiency",
+   "zh_title": "费希尔充分性",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u3",
+   "en": [
+    "E03"
+   ],
+   "zh": [
+    "Z04"
+   ],
+   "num_en": "8.2.1",
+   "num_zh": "8.2.1",
+   "en_title": "Examples",
+   "zh_title": "示例",
+   "confidence": 0.95,
+   "parent": "u2"
+  },
+  {
+   "id": "u4",
+   "en": [
+    "E04"
+   ],
+   "zh": [
+    "Z06"
+   ],
+   "num_en": "8.2.2",
+   "num_zh": "8.2.2",
+   "en_title": "The Blackwell–Rao theorem",
+   "zh_title": "布莱克韦尔-拉奥定理",
+   "confidence": 0.95,
+   "parent": "u2"
+  },
+  {
+   "id": "u5",
+   "en": [
+    "E05"
+   ],
+   "zh": [
+    "Z08"
+   ],
+   "num_en": "8.3",
+   "num_zh": "8.3",
+   "en_title": "Generalized sufficiency",
+   "zh_title": "广义充分性",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u6",
+   "en": [
+    "E06"
+   ],
+   "zh": [
+    "Z09"
+   ],
+   "num_en": "8.4",
+   "num_zh": "8.4",
+   "en_title": "Sufficiency plus nuisance parameters",
+   "zh_title": "带冗余参数的充分性",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u7",
+   "en": [
+    "E07"
+   ],
+   "zh": [
+    "Z10"
+   ],
+   "num_en": "8.5",
+   "num_zh": "8.5",
+   "en_title": "The likelihood principle",
+   "zh_title": "似然原理",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u8",
+   "en": [
+    "E08"
+   ],
+   "zh": [
+    "Z11"
+   ],
+   "num_en": "",
+   "num_zh": "",
+   "en_title": "Conditionality principle",
+   "zh_title": "条件原理",
+   "confidence": 0.9,
+   "parent": "u7"
+  },
+  {
+   "id": "u9",
+   "en": [
+    "E09"
+   ],
+   "zh": [
+    "Z12"
+   ],
+   "num_en": "8.6",
+   "num_zh": "8.6",
+   "en_title": "Ancillarity",
+   "zh_title": "辅助性",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u10",
+   "en": [
+    "E10"
+   ],
+   "zh": [
+    "Z13"
+   ],
+   "num_en": "8.7",
+   "num_zh": "8.7",
+   "en_title": "Generalized ancillary information",
+   "zh_title": "广义辅助信息",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u11",
+   "en": [
+    "E11"
+   ],
+   "zh": [
+    "Z26"
+   ],
+   "num_en": "8.8",
+   "num_zh": "8.8",
+   "en_title": "Asymptotic likelihood: Fisher information",
+   "zh_title": "渐近似然：费希尔信息",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u12",
+   "en": [
+    "E12"
+   ],
+   "zh": [
+    "Z29"
+   ],
+   "num_en": "8.9",
+   "num_zh": "8.9",
+   "en_title": "Combining evidence from different sources",
+   "zh_title": "结合不同来源的证据",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u13",
+   "en": [
+    "E13"
+   ],
+   "zh": [
+    "Z37"
+   ],
+   "num_en": "8.10",
+   "num_zh": "8.10",
+   "en_title": "Pooling the data",
+   "zh_title": "合并数据",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u14",
+   "en": [
+    "E14"
+   ],
+   "zh": [
+    "Z42"
+   ],
+   "num_en": "8.10.1",
+   "num_zh": "",
+   "en_title": "Fine-grained propositions",
+   "zh_title": "细粒度命题",
+   "confidence": 0.9,
+   "parent": "u13"
+  },
+  {
+   "id": "u15",
+   "en": [
+    "E15"
+   ],
+   "zh": [
+    "Z43"
+   ],
+   "num_en": "8.11",
+   "num_zh": "8.11",
+   "en_title": "Sam’s broken thermometer",
+   "zh_title": "萨姆的坏温度计",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u16",
+   "en": [
+    "E16"
+   ],
+   "zh": [
+    "Z49"
+   ],
+   "num_en": "8.12",
+   "num_zh": "8.12",
+   "en_title": "Comments",
+   "zh_title": "评注",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u17",
+   "en": [
+    "E17"
+   ],
+   "zh": [
+    "Z51"
+   ],
+   "num_en": "8.12.1",
+   "num_zh": "8.12.1",
+   "en_title": "The fallacy of sample re-use",
+   "zh_title": "样本重复使用的错误",
+   "confidence": 0.95,
+   "parent": "u16"
+  },
+  {
+   "id": "u18",
+   "en": [
+    "E18"
+   ],
+   "zh": [
+    "Z54"
+   ],
+   "num_en": "8.12.2",
+   "num_zh": "8.12.2",
+   "en_title": "A folk theorem",
+   "zh_title": "民间定理",
+   "confidence": 0.95,
+   "parent": "u16"
+  },
+  {
+   "id": "u19",
+   "en": [
+    "E19"
+   ],
+   "zh": [
+    "Z55"
+   ],
+   "num_en": "8.12.3",
+   "num_zh": "8.12.3",
+   "en_title": "Effect of prior information",
+   "zh_title": "先验信息的作用",
+   "confidence": 0.95,
+   "parent": "u16"
+  },
+  {
+   "id": "u20",
+   "en": [
+    "E20"
+   ],
+   "zh": [
+    "Z56"
+   ],
+   "num_en": "8.12.4",
+   "num_zh": "8.12.4",
+   "en_title": "Clever tricks and gamesmanship",
+   "zh_title": "技巧和花招",
+   "confidence": 0.95,
+   "parent": "u16"
+  }
+ ],
+ "unmatched": {
+  "en": [],
+  "zh": [],
+  "noise": [
+   "Z03",
+   "Z05",
+   "Z07",
+   "Z14",
+   "Z15",
+   "Z16",
+   "Z17",
+   "Z18",
+   "Z19",
+   "Z20",
+   "Z21",
+   "Z22",
+   "Z23",
+   "Z24",
+   "Z25",
+   "Z27",
+   "Z28",
+   "Z30",
+   "Z31",
+   "Z32",
+   "Z33",
+   "Z34",
+   "Z35",
+   "Z36",
+   "Z38",
+   "Z39",
+   "Z40",
+   "Z41",
+   "Z44",
+   "Z45",
+   "Z46",
+   "Z47",
+   "Z48",
+   "Z50",
+   "Z52",
+   "Z53",
+   "Z57",
+   "Z58"
+  ]
+ },
+ "self_check": {
+  "order_monotonic": true,
+  "num_conflicts": [],
+  "missed": [],
+  "notes": [
+   "E08 (Conditionality principle) is a sub-point under E07 in English but lacks explicit numbering in candidate; matched with Z11 based on semantic proximity to Likelihood Principle section."
+  ]
+ }
+}

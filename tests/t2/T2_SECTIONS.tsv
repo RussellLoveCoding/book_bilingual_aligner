@@ -1,0 +1,102 @@
+book	ei	zj	label	st	np	tp	fp	cap
+ml	0	0	Preface ／ 前言	1	12	12	0	13
+ml	2	2	Chapter 1. The Machine Lea ／ 第1章 机器学习概览	1	27	18	0	19
+ml	3	3	Chapter 2. End-to-End Mach ／ 第2章 端到端机器学习项目	1	12	11	0	12
+ml	4	4	Chapter 3. Classification ／ 第3章 分类	1	9	8	0	9
+ml	5	5	Chapter 4. Training Models ／ 第4章 训练模型	1	18	9	0	11
+ml	6	6	Chapter 5. Support Vector  ／ 第5章 支持向量机	1	9	7	0	9
+ml	7	7	Chapter 6. Decision Trees ／ 第6章 决策树	1	11	10	0	11
+ml	8	8	Chapter 7. Ensemble Learni ／ 第7章 集成学习和随机森林	1	13	6	0	6
+ml	9	9	Chapter 8. Dimensionality  ／ 第8章 降维	1	6	6	0	7
+ml	10	10	Chapter 9. Unsupervised Le ／ 第9章 无监督学习技术	1	17	6	0	11
+ml	12	12	Chapter 10. Introduction t ／ 第10章 Keras人工神经网络简介	1	20	4	0	11
+ml	13	13	Chapter 11. Training Deep  ／ 第11章 训练深度神经网络	1	11	10	0	11
+ml	14	14	Chapter 12. Custom Models  ／ 第12章 使用TensorFlow自	1	20	5	0	5
+ml	15	15	Chapter 13. Loading and Pr ／ 第13章 使用TensorFlow加	1	5	4	0	6
+ml	16	16	Chapter 14. Deep Computer  ／ 第14章 使用卷积神经网络进行深度计	1	28	14	0	16
+ml	17	17	Chapter 15. Processing Seq ／ 第15章 使用RNN和CNN处理序列	1	6	5	0	9
+ml	18	18	Chapter 16. Natural Langua ／ 第16章 基于RNN和注意力机制的自	1	13	12	0	13
+ml	19	19	Chapter 17. Autoencoders,  ／ 第17章 自动编码器、GAN和扩散模	1	20	8	0	11
+ml	20	20	Chapter 18. Reinforcement  ／ 第18章 强化学习	1	12	12	0	13
+ml	21	21	Chapter 19. Training and D ／ 第19章 大规模训练和部署Tenso	1	17	16	0	18
+ml	22	22	Appendix A. Machine Learni ／ 附录A	1	8	8	0	8
+ml	23	23	Appendix B. Autodiff ／ 附录B	1	4	3	0	4
+ml	24	24	Appendix C. Special Data S ／ 附录C	1	6	6	0	6
+ml	25	25	Appendix D. TensorFlow Gra ／ 附录D	1	6	6	0	6
+nexus	0	0	Prologue ／ 序言	1	4	4	0	4
+nexus	2	1	Chapter 1 What Is Informat ／ 第一章信息是什么？	1	3	3	0	3
+nexus	3	2	Chapter 2 Stories: Unlimit ／ 第二章故事：无限的联结	1	4	4	0	4
+nexus	4	3	Chapter 3 Documents: The B ／ 第三章文件：纸老虎也会咬人	1	7	7	0	7
+nexus	5	4	Chapter 4 Errors: The Fant ／ 第四章错误：绝对正确是一种幻想	1	13	13	0	13
+nexus	6	5	Chapter 5 Decisions: A Bri ／ 第五章抉择：民主与极权制度简史	1	16	16	0	17
+nexus	8	6	Chapter 6 The New Members: ／ 第六章新成员：与众不同的计算机	1	6	6	0	6
+nexus	9	7	Chapter 7 Relentless: The  ／ 第七章永不停歇：网络永远持续运行	1	5	5	0	6
+nexus	10	8	Chapter 8 Fallible: The Ne ／ 第八章可能出错：谬误百出的网络	1	11	11	0	11
+nexus	12	9	Chapter 9 Democracies: Can ／ 第九章民主制度：我们还能对话吗？	1	9	9	0	9
+nexus	13	10	Chapter 10 Totalitarianism ／ 第十章极权主义：所有力量归于算法？	1	3	3	0	3
+nexus	14	11	Chapter 11 The Silicon Cur ／ 第十一章硅幕：全球帝国还是全球分裂？	1	7	7	0	7
+nexus	15	12	Epilogue ／ 结语	1	1	1	0	1
+prob	2	3	Plausible reasoning ／ 第 1 章 合情推理	1	12	10	0	10
+prob	3	4	The quantitative rules ／ 第2章 定量规则	1	10	10	0	10
+prob	4	5	Elementary sampling theory ／ 第 3 章 初等抽样论	1	12	11	0	12
+prob	5	6	Elementary hypothesis test ／ 第 4 章 初等假设检验	1	9	8	0	10
+prob	6	7	Queer uses for probability ／ 第 5 章 概率论的怪异应用	1	13	12	0	13
+prob	7	8	Elementary parameter estim ／ 第 6 章 初等参数估计	1	23	23	0	24
+prob	8	9	The central, Gaussian or n ／ 第 7 章 中心分布、高斯分布或正态	1	30	26	0	27
+prob	9	10	Sufficiency, ancillarity,  ／ 第 8 章 充分性与辅助性	1	19	18	0	19
+prob	10	11	Repetitive experiments: pr ／ 第 9 章 重复实验：概率与频率	1	20	19	0	19
+prob	11	12	Physics of ‘random experim ／ 第 10 章 随机试验物理学	1	12	11	0	11
+prob	13	14	Discrete prior probabiliti ／ 第 11 章 离散先验概率：熵原理	1	9	9	0	9
+prob	14	15	Ignorance priors and trans ／ 第 12 章 无知先验和变换群	1	15	9	0	9
+prob	15	16	Decision theory, historica ／ 第 13 章 决策论：历史背景	1	16	16	0	17
+prob	16	17	Simple applications of dec ／ 第 14 章 决策论的简单应用	1	12	11	0	12
+prob	17	18	Paradoxes of probability t ／ 第 15 章 概率论中的悖论	1	18	13	0	14
+prob	18	19	Orthodox methods: historic ／ 第 16 章 正统方法：历史背景	1	8	8	0	8
+prob	19	20	Principles and pathology o ／ 第 17 章 正统统计学原理与病理	1	19	19	0	19
+prob	20	21	The Ap distribution and ru ／ 第18章 $A_{p}$ 分布与连续	1	19	18	0	19
+prob	21	22	Physical measurements ／ 第 19 章 物理测量	1	8	8	0	8
+prob	22	23	Model comparison ／ 第 20 章 模型比较	1	9	7	0	7
+prob	23	24	Outliers and robustness ／ 第 21 章 离群值与稳健性	1	7	7	0	7
+prob	24	25	Introduction to communicat ／ 第 22 章 通信理论导论	1	8	8	0	8
+think2	0	0	Introduction ／ 序言	1	3	3	0	3
+think2	1	2	The Characters of the Stor ／ 第1章 故事中的角色	1	6	5	0	5
+think2	2	3	Attention and Effort ／ 第2章 脑力劳动	1	2	1	0	1
+think2	3	4	The Lazy Controller ／ 第3章 懒惰的掌控者	1	4	3	0	3
+think2	4	5	The Associative Machine ／ 第4章 促发的奇迹	1	3	1	0	2
+think2	5	6	Cognitive Ease ／ 第5章 认知轻松	1	6	5	0	6
+think2	6	7	Norms, Surprises, and Caus ／ 第6章 常态、意外及原因	1	3	3	0	3
+think2	7	8	A Machine for Jumping to C ／ 第7章 妄下结论的机器	1	4	3	0	4
+think2	8	9	How Judgments Happen ／ 第8章 判断是如何发生的	1	5	5	0	5
+think2	9	10	Answering an Easier Questi ／ 第9章 回答一个更简单的问题	1	5	4	0	5
+think2	10	12	The Law of Small Numbers ／ 第10章 小数定律	1	3	3	0	4
+think2	11	13	Anchors ／ 第11章 锚定	1	6	6	0	6
+think2	12	14	The Science of Availabilit ／ 第12章 可得性的科学	1	2	2	0	2
+think2	13	15	Availability, Emotion, and ／ 第13章 可得性、情感和风险	1	3	3	0	3
+think2	14	16	Tom W’s Specialty ／ 第14章 汤姆的专业	1	4	4	0	4
+think2	15	17	Linda: Less is More ／ 第15章 琳达问题：少即是多	1	1	1	0	1
+think2	16	18	Causes Trump Statistics ／ 第16章 原因胜过统计	1	4	3	0	3
+think2	17	19	Regression to the Mean ／ 第17章 回归均值	1	3	3	0	3
+think2	18	20	Taming Intuitive Predictio ／ 第18章 驯服直觉性预测	1	4	3	0	4
+think2	19	22	The Illusion of Understand ／ 第19章 理解的错觉	1	3	3	0	3
+think2	20	23	The Illusion of Validity ／ 第20章 有效性错觉	1	3	3	0	5
+think2	21	24	Intuitions vs. Formulas ／ 第21章 直觉与公式	1	4	4	0	4
+think2	22	25	Expert Intuition: When Can ／ 第22章 专家直觉何时可信？	1	7	7	0	7
+think2	23	26	The Outside View ／ 第23章 外部视角	1	6	5	0	5
+think2	24	27	The Engine of Capitalism ／ 第24章 资本主义的引擎	1	4	3	0	5
+think2	25	29	Bernoulli’s Errors ／ 第25章 伯努利的错误	1	1	1	0	2
+think2	26	30	Prospect Theory ／ 第26章 前景理论	1	3	3	0	3
+think2	27	31	The Endowment Effect ／ 第27章 禀赋效应	1	2	2	0	3
+think2	28	32	Bad Events ／ 第28章 负面事件	1	4	3	0	4
+think2	29	33	The Fourfold Pattern ／ 第29章 四重模式	1	5	5	0	6
+think2	30	34	Rare Events ／ 第30章 罕见事件	1	5	5	0	5
+think2	31	35	Risk Policies ／ 第31章 风险政策	1	2	2	0	3
+think2	32	36	Keeping Score ／ 第32章 记分	1	4	4	0	4
+think2	33	37	Reversals ／ 第33章 逆转	1	3	3	0	4
+think2	34	38	Frames and Reality ／ 第34章 框架与现实	1	4	4	0	4
+think2	35	40	Two Selves ／ 第35章 体验效用	1	4	3	0	3
+think2	36	41	Life as a Story ／ 第36章 人生是个故事	1	2	2	0	2
+think2	37	42	Experienced Well-Being ／ 第37章 体验幸福	1	1	1	0	2
+think2	38	43	Thinking About Life ／ 第38章 思考人生	1	3	3	0	3
+think2	39	44	Conclusions ／ 结论	1	3	1	0	1
+think2	40	45	Appendix A: [1] ／ 附录 A	1	5	4	0	5
+think2	41	46	Appendix B: [1] ／ 附录 B	1	9	8	0	8

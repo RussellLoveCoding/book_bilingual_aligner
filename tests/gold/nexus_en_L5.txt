@@ -1,0 +1,27 @@
+# EN　源：nexus_en.epub　kind=epub　条目 26（原 26）
+   1|L1| |Cover
+   2|L1| |By Yuval Noah Harari
+   3|L1| |Title Page
+   4|L1| |Copyright
+   5|L1|F|Contents
+   6|L1| |Dedication
+   7|L1| |Prologue
+   8|L1| |Part I: Human Networks
+   9|L2| |Chapter 1: What Is Information?
+  10|L2| |Chapter 2: Stories: Unlimited Connections
+  11|L2| |Chapter 3: Documents: The Bite of the Paper Tigers
+  12|L2| |Chapter 4: Errors: The Fantasy of Infallibility
+  13|L2| |Chapter 5: Decisions: A Brief History of Democracy and Totalitarianism
+  14|L1| |Part II: The Inorganic Network
+  15|L2| |Chapter 6: The New Members: How Computers Are Different from Printing Presses
+  16|L2| |Chapter 7: Relentless: The Network Is Always On
+  17|L2| |Chapter 8: Fallible: The Network Is Often Wrong
+  18|L1| |Part III: Computer Politics
+  19|L2| |Chapter 9: Democracies: Can We Still Hold a Conversation?
+  20|L2| |Chapter 10: Totalitarianism: All Power to the Algorithms?
+  21|L2| |Chapter 11: The Silicon Curtain: Global Empire or Global Split?
+  22|L1| |Epilogue
+  23|L1| |Acknowledgments
+  24|L1| |Notes
+  25|L1| |Index
+  26|L1| |About the Author

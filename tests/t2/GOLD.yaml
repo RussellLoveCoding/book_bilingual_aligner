@@ -1,0 +1,69 @@
+# T2 测试金标准（我先定，再跑 LLM，避免事后凑答案）
+# 2026-09-15　依据：两侧正文候选逐条读 + 我的判断
+# 「噪」= 不是小节标题；「单侧」= 该侧确实没有对应小节
+
+# ── ml 第4章 Training Models ────────────────────────────────
+ml_ch4:
+  pairs_numbered:              # 按 4.x 编号，确定
+    - {"4.1": ["E03 Linear Regression", "Z04 4.1线性回归"]}
+    - {"4.2": ["E06 Gradient Descent", "Z07 4.2梯度下降"]}
+    - {"4.3": ["E10 Polynomial Regression", "Z09 4.3多项式回归"]}
+    - {"4.4": ["E11 Learning Curves", "Z10 4.4学习曲线"]}
+    - {"4.5": ["E12 Regularized Linear Models", "Z13 4.5正则化线性模型"]}
+    - {"4.6": ["E17 Logistic Regression", "Z14 4.6逻辑回归"]}
+    - {"4.7": ["E22 Exercises", "Z17 4.7练习题"]}
+  en_only:                     # 英文有、中文候选里没有（中文版没编号到三级）
+    - "E04 The Normal Equation"
+    - "E05 Computational Complexity"
+    - "E07 Batch Gradient Descent"
+    - "E08 Stochastic Gradient Descent"
+    - "E09 Mini-Batch Gradient Descent"
+    - "E13 Ridge Regression"
+    - "E14 Lasso Regression"
+    - "E15 Elastic Net Regression"
+    - "E16 Early Stopping"
+    - "E18 Estimating Probabilities"
+    - "E19 Training and Cost Function"
+    - "E20 Decision Boundaries"
+    - "E21 Softmax Regression"
+  zh_only:                     # 中文有、英文候选里没有
+    - "Z08 收敛速度"
+    - "Z11 偏差/方差权衡"
+    - "Z12 方差"
+    - "Z16 交叉熵"
+  noise:
+    en: ["E01 title", "E02 h1 Chapter 4. Training Models"]
+    zh: ["Z01 title", "Z02 第4章", "Z03 训练模型", "Z05 1", "Z06 2", "Z15 T",
+         "Z18 11"]
+  note: |
+    中文版只编号到 4.x（三级 4.x.y 没有编号也没有标题），英文版有 4.x.y。
+    所以这一章**大部分小节是单侧的** —— 这是考点：LLM 该如实报单侧，
+    不该硬凑。
+
+# ── think2 第5章 Cognitive Ease ─────────────────────────────
+think2_ch5:
+  pairs:
+    - ["E03 ILLUSIONS OF REMEMBERING", "Z04 记忆错觉"]
+    - ["E04 ILLUSIONS OF TRUTH", "Z05 真相错觉"]
+    - ["E05 HOW TO WRITE A PERSUASIVE MESSAGE", "Z06 怎样写出令人信服的信息"]
+    - ["E06 STRAIN AND EFFORT", "Z07 压力与努力"]
+    - ["E07 THE PLEASURE OF COGNITIVE EASE", "Z08 认知轻松的乐趣"]
+    - ["E09 SPEAKING OF COGNITIVE EASE", "Z09 谈谈认知轻松"]
+  en_only: ["E08 EASE, MOOD, AND INTUITION"]   # 中文候选里没有（可能被合并）
+  noise:
+    en: ["E01 title Thinking, Fast and Slow", "E02 h2 Cognitive Ease（章标题）"]
+    zh: ["Z01 title 第5章 认知轻松", "Z02 第5章", "Z03 认知轻松（章标题）"]
+  note: "英文 7 节 vs 中文 6 节；顺序一一对应，无交叉。"
+
+# ── nexus 第1章 What Is Information? ───────────────────────
+nexus_ch1:
+  pairs:
+    - ["E04 What Is Truth?", "Z03 真相究竟是什么？"]
+    - ["E05 What Information Does", "Z04 信息有何作用？"]
+    - ["E06 Information in Human History", "Z05 人类历史的信息"]
+  en_only: []
+  zh_only: []
+  noise:
+    en: ["E01 title", "E02 h2 Chapter 1", "E03 章标题 What Is Information?"]
+    zh: ["Z01 title", "Z02 章标题 第一章信息是什么？"]
+  note: "最干净的一章：3 对 3，顺序一致。"

@@ -1,0 +1,103 @@
+# 金标准目录：思考快与慢 / 机器学习实战 / 智人之上
+# 作者：助理逐条核对（2026-09-15），**不是**算法输出
+# 数据源：两侧 = 各自 epub 的出版方目录（nav/ncx，权威）
+#
+# ⚠ 这三本的**小节没有编号**（目录只列标题，如 "What Is Machine Learning?"），
+#   所以「小节的正确配对」无法从目录建立金标准，必须读正文人工建 —— 见文末。
+
+# ══════════════════════════════════════════════════════════════
+think2:
+  book: {en: "Thinking, Fast and Slow", zh: "思考，快与慢（第二版）"}
+  chapter_gold: 49      # 对数（含部/前言/结论/附录/致谢/版权）
+  structure:
+    en: [Cover, Title Page, About the Author, Dedication,
+         Introduction,
+         "Part 1: TWO SYSTEMS", "1: … ~ 9: …",
+         "Part 2: HEURISTICS AND BIASES", "10: … ~ 18: …",
+         "Part 3: OVERCONFIDENCE", "19: … ~ 24: …",
+         "Part 4: CHOICES", "25: … ~ 34: …",
+         "Part 5: TWO SELVES", "35: … ~ 38: …",
+         Conclusions, "Appendix A: Judgment Under Uncertainty",
+         "Appendix B: Choices, Values, and Frames", Notes,
+         Acknowledgments, Follow Penguin, Copyright Page]
+    zh: [UnKnown, 版权信息, 序言,
+         "第一部分 两个系统", "第1章 … ~ 第9章 …",
+         "第二部分 启发式与偏差", "第10章 … ~ 第18章 …",
+         "第三部分 过度自信", "第19章 … ~ 第24章 …",
+         "第四部分 选择", "第25章 … ~ 第34章 …",
+         "第五部分 两个自我", "第35章 … ~ 第38章 …",
+         结论, "附录A 不确定状况下的判断", "附录B 选择、价值与框架", 致谢]
+  pairs_verified:
+    chapter: "38 章按编号 1:1（EN `N: ` ↔ ZH `第N章 `），无缺无多"
+    parts: "5 部按序号 1:1"
+    others: "Introduction↔序言 · Conclusions↔结论 · 附录A/B 同名 · Acknowledgments↔致谢"
+  en_only: [Cover, Title Page, About the Author, Dedication, Notes, Follow Penguin]
+  zh_only: [UnKnown, 版权信息在中文侧、Copyright Page 在英文侧末尾（位置不同）]
+  section_level: "**目录里没有小节** —— 小节标题只在正文（EN 273 条 / ZH 257 条）"
+
+# ══════════════════════════════════════════════════════════════
+ml:
+  book: {en: "Hands-On Machine Learning (3rd ed.)", zh: "机器学习实战（第3版）"}
+  chapter_gold: 26
+  structure:
+    en: [书名, Preface,
+         "I. The Fundamentals of Machine Learning", "1. … ~ 9. …",
+         "II. Neural Networks and Deep Learning", "10. … ~ 19. …",
+         "A. Machine Learning Project Checklist", "B. Autodiff",
+         "C. Special Data Structures", "D. TensorFlow Graphs", Index]
+    zh: [版权信息, "O'Reilly Media，Inc. 介绍", 前言,
+         "第一部分 机器学习的基础知识", "第1章 … ~ 第9章 …",
+         "第二部分 神经网络与深度学习", "第10章 … ~ 第19章 …",
+         "附录A 机器学习项目清单", "附录B 自动微分",
+         "附录C 特殊数据结构", "附录D TensorFlow图", 作者介绍, 封面介绍]
+  pairs_verified:
+    chapter: "19 章按编号 1:1，无缺无多"
+    parts: "2 部按序号 1:1（**注意：第 3 版只有两部分**，不是 I~VII）"
+    appendix: "附录 A/B/C/D 四条同名对应"
+  en_only: [书名行, Index]
+  zh_only: ["O'Reilly Media，Inc. 介绍", 作者介绍, 封面介绍, 版权信息]
+  section_level: |
+    ⚠ **英文目录到小节级（471 条，但只有标题没有编号）**，
+    中文目录**只到章级（30 条）** → 中文小节只能从正文挖（369 条）。
+    两侧小节都没有编号 ⇒ 目录层面**无法建立小节金标准**。
+
+# ══════════════════════════════════════════════════════════════
+nexus:
+  book: {en: "Nexus", zh: "智人之上：从石器时代到AI时代的信息网络简史"}
+  chapter_gold: 14
+  warning: |
+    ⚠ 工作区里的「英文侧」是**我们自己 emit 出来的**单语版，它的 nav 标题
+      已经中文化（封面 / 扉页）。**原始书店版不在工作区**（用户提到的
+      `OEBPS/9780593734247_nav.xhtml`），所以这本数据仅供参考。
+  structure:
+    en: [封面, 扉页, Prologue, Chapter 1 … Chapter 11, Epilogue, Acknowledgments]
+    zh: [封面, 扉页, 序言, 第一章 … 第十一章, 结语, 致谢]
+  pairs_verified:
+    chapter: "11 章按编号 1:1（EN `Chapter N` ↔ ZH `第N章`，中文用汉字数字）"
+    others: "Prologue↔序言 · Epilogue↔结语 · Acknowledgments↔致谢"
+  noise: |
+    两侧都把「章内小标题」混在同一层级里（EN: The Biological Dramas /
+    Print, Science, and Witches / Mass Media… / Total Control / What Are the
+    Implications? / The Calculus of Suffering / The Right to an Explanation /
+    The Global Bond；ZH 只有 4 条），且**两侧数量不等** →
+    纯位置对齐必然漂移（实测 Recall 42.9%）。
+  section_level: "目录里没有系统的小节；正文里两侧各 157/160 条候选"
+
+# ══════════════════════════════════════════════════════════════
+# 跨书结论
+conclusion:
+  章级: |
+    四本书在**章级都是 1:1**（19~38 章，无缺无多）。所以章级对齐不是难点，
+    难点是①噪音清理 ②无编号条目的配对 ③小节级。
+  小节级_按书的信号分流:
+    prob: |
+      **两版都有小节编号** → 确定性编号匹配 = 正确率上限：
+      284/307 直接命中（92.5%），另 6 条「ZH 编号丢失」靠位置可唯一推定，
+      余 17 条判「EN 独有」。**合计 307/307 = 100%，不需要 LLM。**
+    ml: |
+      两侧小节**都无编号**，且中文目录只到章级 → 小节必须靠**标题语义**配，
+      LLM 是唯一出路。
+    think2: |
+      两侧小节**都无编号**（目录里没有小节）→ 同 ml，靠语义。
+    nexus: |
+      章有编号（第N章/Chapter N）、小节无编号 → 章靠编号、小节靠语义。

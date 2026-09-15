@@ -1,0 +1,19 @@
+# EN　源：prob_en.epub　kind=epub　条目 18（原 366）
+   1|L1| |Probability Theory the Logic of Science
+   2|L2|F|Cover
+   3|L2| |Half Title
+   4|L2| |Title Page
+   5|L2|F|Copyright
+   6|L2|F|Dedication
+   7|L2|F|Contents
+   8|L2| |Editor’s foreword
+   9|L2| |Preface
+  10|L2| |Part I: Principles and elementary applications
+  11|L2| |Part II: Advanced applications
+  12|L2| |Appendix A: Other approaches to probability theory
+  13|L2| |Appendix B: Mathematical formalities and style
+  14|L2| |Appendix C: Convolutions and cumulants
+  15|L2| |References
+  16|L2| |Bibliography
+  17|L2| |Author index
+  18|L2| |Subject index

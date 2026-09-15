@@ -1,0 +1,109 @@
+{
+ "units": [
+  {
+   "id": "u1",
+   "en": [
+    "E01"
+   ],
+   "zh": [
+    "Z01"
+   ],
+   "num_en": "5.1",
+   "num_zh": "5.1",
+   "en_title": "ILLUSIONS OF REMEMBERING",
+   "zh_title": "记忆错觉",
+   "confidence": 0.98,
+   "parent": null
+  },
+  {
+   "id": "u2",
+   "en": [
+    "E02"
+   ],
+   "zh": [
+    "Z02"
+   ],
+   "num_en": "5.2",
+   "num_zh": "5.2",
+   "en_title": "ILLUSIONS OF TRUTH",
+   "zh_title": "真相错觉",
+   "confidence": 0.98,
+   "parent": null
+  },
+  {
+   "id": "u3",
+   "en": [
+    "E03"
+   ],
+   "zh": [
+    "Z03"
+   ],
+   "num_en": "5.3",
+   "num_zh": "5.3",
+   "en_title": "HOW TO WRITE A PERSUASIVE MESSAGE",
+   "zh_title": "怎样写出令人信服的信息",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u4",
+   "en": [
+    "E04"
+   ],
+   "zh": [
+    "Z04"
+   ],
+   "num_en": "5.4",
+   "num_zh": "5.4",
+   "en_title": "STRAIN AND EFFORT",
+   "zh_title": "压力与努力",
+   "confidence": 0.95,
+   "parent": null
+  },
+  {
+   "id": "u5",
+   "en": [
+    "E05"
+   ],
+   "zh": [
+    "Z05"
+   ],
+   "num_en": "5.5",
+   "num_zh": "5.5",
+   "en_title": "THE PLEASURE OF COGNITIVE EASE",
+   "zh_title": "认知轻松的乐趣",
+   "confidence": 0.98,
+   "parent": null
+  },
+  {
+   "id": "u6",
+   "en": [
+    "E07"
+   ],
+   "zh": [
+    "Z06"
+   ],
+   "num_en": "5.6",
+   "num_zh": "5.6",
+   "en_title": "SPEAKING OF COGNITIVE EASE",
+   "zh_title": "谈谈认知轻松",
+   "confidence": 0.95,
+   "parent": null
+  }
+ ],
+ "unmatched": {
+  "en": [
+   "E06"
+  ],
+  "zh": [],
+  "noise": []
+ },
+ "self_check": {
+  "order_monotonic": true,
+  "num_conflicts": [],
+  "missed": [],
+  "notes": [
+   "E06 (EASE, MOOD, AND INTUITION) 在中文候选中没有对应项，且其语义位置介于 'THE PLEASURE OF COGNITIVE EASE' 和 'SPEAKING OF COGNITIVE EASE' 之间。由于中文序列中 Z05 直接连接到 Z06，中间缺失了关于情绪和直觉的独立小节标题，故将 E06 放入 unmatched.en。"
+  ]
+ }
+}

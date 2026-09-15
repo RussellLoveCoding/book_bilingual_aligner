@@ -4,8 +4,17 @@ LLM 是可选件：llm=None 时全流程确定性运行，只把需要 LLM 的�
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
+
+# 分窗大小。⚠ 2026-09-14 实测：改 win 会导致窗口 prompt 全变 → 缓存失效
+# + 基线漂移（1961→1954），**要和 BIL_REFINE_FMT=range 一起、在单章小样
+# 验证通过后再改默认值**。当前默认维持 40（基线绑定），实验用环境变量。
+_REFINE_WIN = max(10, int(os.environ.get("BIL_REFINE_WIN", "40")))
+# 策略 v2：标题链编号配对小节（关闭用 BIL_NUM_CHAIN=0）
+_NUM_CHAIN = os.environ.get("BIL_NUM_CHAIN", "1") != "0"
+_REFINE_OVERLAP = max(0, int(os.environ.get("BIL_REFINE_OVERLAP", "10")))
 
 from . import epubparse as E
 from . import align as A
@@ -307,12 +316,12 @@ def _fig_refs(text: str) -> set[int]:
     return nums
 
 
-def _refine_windowed(llm, s, win: int = 40, overlap: int = 10,
+def _refine_windowed(llm, s, win: int | None = None, overlap: int | None = None,
                      slack: int = 6):
     """分窗细化：整节几百段一次性发给 LLM，输出映射必然又长又脆
     （实测 ML ch1 细化 0 节成功的主因）。改为滑动窗口：
     1. 用确定性 DP 的临时配对做锚点，给每个英文窗口定位对应的中文邻域；
-    2. 每窗口只让 LLM 重排 ~40 段（输入小、输出短、可校验）；
+    2. 每窗口只让 LLM 重排 ~30 段（输入小、输出短、可校验）；
     3. 重叠区以先到的窗口为准；LLM 没接管的段回退 DP 临时配对。
 
     v2：**图表引用锚点**（2026-09-14，用户提议）。正文里「见图1-8」/
@@ -324,6 +333,8 @@ def _refine_windowed(llm, s, win: int = 40, overlap: int = 10,
     """
     en_t = [p.text for p in s.en_paras]
     zh_t = [p.text for p in s.zh_paras]
+    win = _REFINE_WIN if win is None else win
+    overlap = _REFINE_OVERLAP if overlap is None else overlap
     n, m = len(en_t), len(zh_t)
     if n == 0 or m == 0:
         return None
@@ -561,6 +572,38 @@ def _sec_offsets_of(secs):
     return offs
 
 
+def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
+    """策略 v2 第 1 步：按**标题编号**配对小节（零成本、精确、抗倒装）。
+
+    为什么它比 DP/LLM 都可靠：编号是跨语言保真的（'2.6.1' ↔ '2.6.1'），
+    而位置不可靠（实测 md 里 2.6.4 排在 2.6.3 前面）、层级也不可靠
+    （minerU 把 2.1 和 2.6.1 都拍成 `###`）。
+
+    返回 [(en_idx_list, zh_idx_list)]，含未配上的小节（单侧为空 →
+    下游按「中文版缺/多此小节」处理，**不会丢内容**）；覆盖率不足返回 None。
+    """
+    try:
+        from . import toc_tree as TT
+    except Exception:                                   # noqa: BLE001
+        return None
+    en_chain = [(s.title_level or 1, s.title or "") for s in en_secs]
+    zh_chain = [(s.title_level or 1, s.title or "") for s in zh_secs]
+    pairs, en_un, zh_un = TT.match_chains(en_chain, zh_chain)
+    need = min(len(en_secs), len(zh_secs))
+    if not need or len(pairs) < min_hits or len(pairs) < need * min_cover:
+        return None
+    out = [([i], [j]) for i, j, _n in pairs]
+    # 未配上的小节（多半是无编号的**章首块** / 尾部附录）：
+    # 先按顺序互配（章首↔章首），剩下的单侧尾巴才做成单边对 —— 否则
+    # 会把整段章首内容判成「中文缺失」（实测 prob ch2 待补 16 段全是它）。
+    k = min(len(en_un), len(zh_un))
+    out += [([i], [j]) for i, j in zip(en_un[:k], zh_un[:k])]
+    out += [([i], []) for i in en_un[k:]]
+    out += [([], [j]) for j in zh_un[k:]]
+    out.sort(key=lambda x: (x[0] or x[1]))
+    return out
+
+
 def _chapter_units(llm_map, en_secs, zh_secs, en_off, zh_off):
     """由整章映射反推小节单元 [(en_sec_idx], [zh_sec_idx])。
 
@@ -642,8 +685,20 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     refs = E.extract_noterefs(en_blocks)
     n_notes = len(refs)
     zh_kept, notes, nl = cut_notes(zh_blocks, n_notes)
+    # 默认按旧行为切（众数层级）
     en_title, en_secs = A.split_sections(en_blocks)
     zh_title, zh_secs = A.split_sections(zh_kept)
+    # 策略 v2：**只有编号链真的成立时**才切成完整标题树（deep）。
+    # 实测 ML ch4 编号覆盖率不足 → 编号链没生效，但 deep 把小节切碎后
+    # DP 反而变差（bad 57%→69%）；prob ch2 编号链成立 → deep 是必要的。
+    _deep_pairs = None
+    if _NUM_CHAIN:
+        _en_d = A.split_sections(en_blocks, deep=True)
+        _zh_d = A.split_sections(zh_kept, deep=True)
+        _deep_pairs = _sections_by_number(_en_d[1], _zh_d[1])
+        if _deep_pairs:
+            en_title, en_secs = _en_d[0], _en_d[1]
+            zh_title, zh_secs = _zh_d[0], _zh_d[1]
 
     # 图位：章节内按顺序配对（视觉单位不进段落 DP，见 A.pair_visuals 的说明）
     zh_vs_all = [v for s in zh_secs for v in A.visual_of_sec(s)]
@@ -702,6 +757,11 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                      [b for b in zh_kept
                       if b.type != "heading" and not _is_visual(b)])
     sec_pairs, src = None, "DP"
+
+    # ── 策略 v2 第 1 步：标题链编号配对（免费、精确）──────────────────
+    # 优先于整章 DP / LLM 分窗：编号配对命中就直接用，连一次 LLM 都不调。
+    if _deep_pairs:
+        sec_pairs, src = _deep_pairs, "编号链"
     # ── 整章分窗 LLM 对齐（2026-09-14 架构翻转）────────────────────────
     # 不再让「小节映射」定义对齐单元：两版小节粒度差异大（ML ch1 实测
     # EN 13 节 vs ZH 8 节），映射错误会直接传导到段落层。改为整章一次
@@ -709,8 +769,9 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     # 把结果切回小节 —— 小节退化成渲染单位，不再是对齐单位。
     llm_map = None          # {en 全章段序: [zh 全章段序...]}
     _dp_bad = False         # DP 体检不达标 → DP 不可信，不再拿它当裁判
+    # sec_pairs is None：编号链已给出映射时**不要**再被整章 DP/LLM 覆写
     if (llm is not None and getattr(llm, "enabled", False)
-            and en_secs and zh_secs):
+            and en_secs and zh_secs and sec_pairs is None):
         flat_en = [p for s in en_secs for p in s.paras]
         flat_zh = [p for s in zh_secs for p in s.paras]
         if flat_en and flat_zh:

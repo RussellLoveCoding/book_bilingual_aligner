@@ -20,6 +20,13 @@ from datetime import datetime
 
 # (缓存命中输入, 未命中输入, 输出) —— 空闲时段单价
 PRICES = {
+    # qwen3.7-flash：**阶梯计费**，这里只登记「输入 ≤32k」那一档
+    # （用户 2026-09-16 给的价格表）：
+    #   输入 ¥0.2/M · 输出 ¥0.8/M · 输入(缓存命中) ¥0.04/M
+    #   Batch File：输入 ¥0.1/M · 输出 ¥0.4/M（未用）
+    # ⚠ **>32k 那一档的价格用户没给** → 超档时 report() 会显式警告。
+    # 旧表（deepseek-flash 1.00/4.00）曾把成本**高估 3.5 倍**，别再拿它算 qwen。
+    "qwen3.7-flash": (0.04, 0.20, 0.80),
     "deepseek-flash": (0.02, 1.00, 4.00),
     "deepseek-v4-pro": (0.15, 4.50, 13.5),
     "deepseek-reasoner": (0.02, 1.00, 4.00),
@@ -107,6 +114,9 @@ class Cost:
             + (f"（缓存已省 ¥{self.saved_cny():.4f}）"
                if self.cached_tokens else ""),
         ]
+        if "qwen" in (self.model or "").lower() and self.prompt_tokens > 32000:
+            lines.append("  ⚠ 输入超过 32k，已跨出「≤32k」档；该档价格**未确认**，"
+                         "上面金额是按 ≤32k 档算的（只能当参考）")
         return "\n".join(lines)
 
 

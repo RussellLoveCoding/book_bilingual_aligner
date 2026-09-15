@@ -1,0 +1,57 @@
+# EN　源：prob_en.epub　kind=epub　条目 56（原 366）
+   1|L1| |Probability Theory the Logic of Science
+   2|L2|F|Cover
+   3|L2| |Half Title
+   4|L2| |Title Page
+   5|L2|F|Copyright
+   6|L2|F|Dedication
+   7|L2|F|Contents
+   8|L2| |Editor’s foreword
+   9|L2| |Preface
+  10|L2| |Part I: Principles and elementary applications
+  11|L3| |1. Plausible reasoning
+  12|L3| |2. The quantitative rules
+  13|L3| |3. Elementary sampling theory
+  14|L3| |4. Elementary hypothesis testing
+  15|L3| |5. Queer uses for probability theory
+  16|L3| |6. Elementary parameter estimation
+  17|L3| |7. The central, Gaussian or normal distribution
+  18|L3| |8. Sufficiency, ancillarity, and all that
+  19|L3| |9. Repetitive experiments: probability and frequency
+  20|L3| |10. Physics of ‘random experiments’
+  21|L2| |Part II: Advanced applications
+  22|L3| |11. Discrete prior probabilities: the entropy principle
+  23|L3| |12. Ignorance priors and transformation groups
+  24|L3| |13. Decision theory, historical background
+  25|L3| |14. Simple applications of decision theory
+  26|L3| |15. Paradoxes of probability theory
+  27|L3| |16. Orthodox methods: historical background
+  28|L3| |17. Principles and pathology of orthodox statistics
+  29|L3| |18. The Ap distribution and rule of succession
+  30|L3| |19. Physical measurements
+  31|L3| |20. Model comparison
+  32|L3| |21. Outliers and robustness
+  33|L3| |22. Introduction to communication theory
+  34|L2| |Appendix A: Other approaches to probability theory
+  35|L3| |A.1 The Kolmogorov system of probability
+  36|L3| |A.2 The de Finetti system of probability
+  37|L3| |A.3 Comparative probability
+  38|L3| |A.4 Holdouts against universal comparability
+  39|L3| |A.5 Speculations about lattice theories
+  40|L2| |Appendix B: Mathematical formalities and style
+  41|L3| |B.1 Notation and logical hierarchy
+  42|L3| |B.2 Our ‘cautious approach’ policy
+  43|L3| |B.3 Willy Feller on measure theory
+  44|L3| |B.4 Kronecker vs. Weierstrasz
+  45|L3| |B.5 What is a legitimate mathematical function?
+  46|L3| |B.6 Counting infinite sets?
+  47|L3| |B.7 The Hausdorff sphere paradox and mathematical diseases
+  48|L3| |B.8 What am I supposed to publish?
+  49|L3| |B.9 Mathematical courtesy
+  50|L2| |Appendix C: Convolutions and cumulants
+  51|L3| |C.1 Relation of cumulants and moments
+  52|L3| |C.2 Examples
+  53|L2| |References
+  54|L2| |Bibliography
+  55|L2| |Author index
+  56|L2| |Subject index

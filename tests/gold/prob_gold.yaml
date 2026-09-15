@@ -1,0 +1,175 @@
+# 金标准目录（gold TOC）：概率论沉思录
+# 作者：助理逐条推理核对（2026-09-15），**不是**算法输出
+# 数据来源：EN 侧 = prob_en.epub 出版方目录（nav/ncx，权威）；
+#           ZH 侧 = prob_zh.md 的 # 标题 + 我的逐章判定
+#
+# 用途：作为评价「标题/小节配对算法」的参照物。
+# 结论摘要见文件末尾「核对结果」。
+
+book:
+  en: "Probability Theory: The Logic of Science"
+  zh: "概率论沉思录"
+
+# ── 顶层结构 ────────────────────────────────────────────────
+structure:
+  en:
+    - {level: 2, text: "Cover", front: true}
+    - {level: 2, text: "Half Title", front: true}
+    - {level: 2, text: "Title Page", front: true}
+    - {level: 2, text: "Copyright", front: true}
+    - {level: 2, text: "Dedication", front: true}
+    - {level: 2, text: "Contents", front: true}
+    - {level: 2, text: "Editor’s foreword"}
+    - {level: 2, text: "Preface"}
+    - {level: 2, text: "Part I: Principles and elementary applications"}
+    - {level: 3, text: "1. Plausible reasoning", chapter: 1}
+    # …第 2~10 章（编号连续）
+    - {level: 2, text: "Part II: Advanced applications"}
+    # …第 11~22 章
+    - {level: 2, text: "Appendix A: Other approaches to probability theory"}
+    - {level: 2, text: "Appendix B: Mathematical formalities and style"}
+    - {level: 2, text: "Appendix C: Convolutions and cumulants"}
+    - {level: 2, text: "References"}
+    - {level: 2, text: "Bibliography"}
+    - {level: 2, text: "Author index"}
+    - {level: 2, text: "Subject index"}
+  zh:
+    - {level: 2, text: "出版信息", front: true}
+    - {level: 3, text: "内容提要", front: true}
+    - {level: 3, text: "版权声明", front: true}
+    - {level: 3, text: "编者序", front: true}
+    - {level: 3, text: "前言", front: true}
+    - {level: 2, text: "第一部分 原则和初级应用"}
+    # …第 1~10 章
+    - {level: 2, text: "第二部分 高级应用"}
+    # …第 11~22 章
+    - {level: 2, text: "后记"}
+    - {level: 3, text: "附录A 概率论的其他流派"}
+    - {level: 3, text: "附录 B 数学形式与风格"}
+    - {level: 3, text: "附录 C 卷积和累积量"}
+    # 以下是中文版自带的后附文章（英文版没有）
+    - {level: 3, text: "一位物理学家的概率观", zh_only: true}
+    - {level: 3, text: "概率论公理与可列可加性", zh_only: true}
+    - {level: 3, text: "也论无穷大", zh_only: true}
+    - {level: 3, text: "随机变量的迷雾", zh_only: true}
+    - {level: 3, text: "波利亚的合情推理", zh_only: true}
+    - {level: 3, text: "杰弗里斯概率论", zh_only: true}
+    - {level: 3, text: "丹尼斯·林德利的概率统计思想", zh_only: true}
+    - {level: 3, text: "频率派、客观贝叶斯派、主观贝叶斯派，究竟谁正确？", zh_only: true}
+    - {level: 3, text: "概率论与因果推断", zh_only: true}
+    - {level: 3, text: "本书的影响", zh_only: true}
+    - {level: 3, text: "概率观世界", zh_only: true}
+    - {level: 3, text: "翻译因缘", zh_only: true}
+    - {level: 3, text: "致谢"}
+    - {level: 3, text: "人名索引"}
+    - {level: 3, text: "术语索引"}
+    - {level: 3, text: "符号"}
+
+# ── 主规则：章内小节按「编号」配对（两版编号体系一致）────────
+# 第 1~22 章全部适用。EN 侧小节编号形如 2.6.1；ZH 侧同形。
+pair_rule: {within_chapter: by_number}
+
+# ── 例外清单（我逐章核对出来的全部偏差）────────────────────
+exceptions:
+
+  # ① ZH 侧编号丢失：md 里这几条标题没有编号，但按位置可唯一推定
+  zh_number_lost:
+    - {en: "3.11.1 A look ahead",              zh: "展望",
+       at: "第3章，紧跟 3.11 评注",            recover: "唯一候选，可确定"}
+    - {en: "6.9.1 Digression on optional stopping", zh: "关于可选停止",
+       at: "第6章，紧跟 6.9",                  recover: "唯一候选，可确定"}
+    - {en: "9.11.1 Implied alternatives",      zh: "隐含备择假设",
+       at: "第9章，紧跟 9.11 显著性检验",      recover: "唯一候选，可确定"}
+    - {en: "14.6.1 The classical matched filter", zh: "经典匹配滤波器",
+       at: "第14章，紧跟 14.6 历史评述",       recover: "唯一候选，可确定"}
+    - {en: "17.8.1 The Bayesian safety device", zh: "贝叶斯安全装置",
+       at: "第17章，紧跟 17.8 费希尔",         recover: "唯一候选，可确定"}
+    - {en: "19.2.1 Sermon on Gaussian error distributions",
+       zh: "关于高斯误差分布的说明",
+       at: "第19章，紧跟 19.2",                recover: "唯一候选，可确定"}
+
+  # ② 倒装：中文 md 里顺序与英文相反
+  reorder:
+    - {chapter: 2,
+       en: ["2.6.3 Venn diagrams", "2.6.4 The ‘Kolmogorov axioms’"],
+       zh: ["2.6.4 柯尔莫哥洛夫公理", "2.6.3 维恩图"],
+       note: "ZH 的 2.6.4 排在 2.6.3 之前 —— 按位置配必错，按编号配才对"}
+
+  # ③ 【2026-09-15 重大更正】原先列为「EN 有小节、ZH 完全没有」的 17 条，
+  #    经用户指出后逐条核实：**中文侧全都有**，只是 md 里没编号、且是**裸段落**
+  #    （不是 `#` 标题）→ 我的提取漏了，误判成「中文版无此小节」。
+  #    逐条对照（EN 编号 → 中文标题，均在 prob_zh.md 里定位到行号）：
+  zh_bare_paragraph_titles:      # 裸段落（无 #），共 15 条
+    - {"3.8.1":  "离题：关于现实与模型的说明",           line: 2410}
+    - {"4.4.1":  "离题：另一种推导",                     line: 3193}
+    - {"4.6.1":  "历史题外话",                           line: 3473}
+    - {"5.6.1":  "讨论",                                 line: 4157}
+    - {"5.9.1":  "关于“怪异”",                           line: 4257}
+    - {"6.11.1": "根据后验分布函数进行估计",              line: 4982}
+    - {"7.27.1": "再论术语",                             line: 6614}
+    - {"8.10.1": "细粒度命题",                           line: 7214}
+    - {"9.6.1":  "通过观察求解",                         line: 7714}
+    - {"10.3.1": "实验证据",                             line: 8571}
+    - {"15.8.1": "应对更大的灾难",                       line: 12384}
+    - {"16.8.1": "沟通障碍",                             line: 13020}
+    - {"17.5.1": "数据预滤波的愚蠢",                     line: 13344}
+    - {"18.11.1": "无差别是基于知识还是无知？",           line: 14885}
+    - {"19.7.1": "悖论",                                 line: 15613}
+    - {"20.4.1": "离题：又一次说明",                     line: 15801}
+    - {"20.5.1": "终极原因",                             line: 15987}
+  en_only: []                    # ← 更正后为 0：两侧小节**一一对应，零删节**
+  en_only_note: |
+    原先的 17 条全部推翻。**prob 的两版在结构上完全一致**：
+    EN 307 个编号小节 = ZH 284 编号 + 6 个 `###` 无编号 + 17 个裸段落无编号。
+    这意味着**按编号配对的正确率上限是 100%**，前提是解析层能认出
+    「无编号 + 裸段落」这两种标题形态（已修，见 titlesrc 的 S4b 源）。
+
+  # ④ ZH 有小节、EN 目录里没有 —— 需要人工确认（**我不确定**，标记待核）
+  zh_only:
+    - {zh: "条件原理", at: "第8章，8.5 似然原理 与 8.6 辅助性 之间",
+       guess: "可能是 EN §8.5 段内的小标题，英文目录未列",
+       status: "待核"}
+    - {zh: "补救措施", at: "第17章，17.3 无偏估计的病理 与 17.4 之间",
+       guess: "同上，英文目录未列",
+       status: "待核"}
+
+# ── 核对结果（我的结论）────────────────────────────────────
+findings:
+  chapter_level: "22 章 + 3 附录，两侧章级完全对应，无缺无多"
+  section_level: |
+    ZH 侧编号系统与 EN 一致 → 「按编号配对」本身就是正确答案，
+    不需要 LLM 的语义判断。真正需要判断的只有上面 4 类例外。
+  条目计数（从两侧目录逐条清点得出）:
+    en_total: 366        # nav 条目（含 L1 书名 1 + L2 顶层 17）
+    en_sections: 307     # L4+L5 = 章内小节 + 附录子节
+    en_chapters_and_appendix_heads: 41   # 22 章 + 附录 A/B/C 的 19 个二级标题
+    zh_total: 351        # md 的 # 标题
+    zh_inside_chapters: 294   # 章内小节（含 6 条编号丢失、2 条待核）
+  偏差清单:
+    by_number_direct: "284 条 —— 编号相同，确定性配对的正确率 100%"
+    zh_number_lost: |
+      6 条 —— 中文侧是 `###` 标题但**没有编号**（展望 / 关于可选停止 /
+      隐含备择假设 / 经典匹配滤波器 / 贝叶斯安全装置 / 关于高斯误差分布的说明），
+      靠位置可唯一推定。
+    zh_bare_paragraph: |
+      17 条 —— 中文侧是**裸段落**（连 `#` 都没有），原先被我全部漏掉、
+      误判成「中文版没有」（见上面 zh_bare_paragraph_titles）。已修。
+    reorder: "1 章（第 2 章：2.6.4 排在 2.6.3 前）"
+    en_only_in_chapters: "0 条（更正后）—— 两侧小节一一对应，零删节"
+    en_only_in_appendix: |
+      19 条（A.1–A.5 / B.1–B.9 含 B.5.1–3 / C.1–C.2）—— 中文侧只有附录标题。
+      ⚠ 这条**待复核**：既然正文小节能是裸段落，附录子节也可能同样存在，
+      只是同样没被提取到。需要按同样方法核一遍。
+    zh_only: "2 条（待核）"
+    zh_backmatter_extra: "11 条 —— 中文版自带的后附文章（英文版没有）"
+    front_matter_noise: "EN 6 条 + ZH 5 条（封面/版权/目录页/前言小标题）"
+  对算法的意义: |
+    ① prob 上「编号配对」就是金标准本身（284 条直配 + 6 条无编号靠位置 +
+       17 条裸段落靠提取）= **307/307 = 100%，不需要 LLM**。
+       之前把 match_chains 从主路径拿掉，在这本书上是**降级**。
+    ② 真正需要 LLM 主判的是**没有小节编号的书**（think2 / nexus）——
+       那里标题语义 + 位置是唯一信号。
+    ③ 所以「LLM 主导 vs 确定性主导」应当**按书的编号情况分流**。
+    ④ 本次更正暴露的**最大问题在解析层**：md 里「无编号标题」有
+       `###` 和「裸段落」两种形态，只认 `#` 会漏掉 17/307 = 5.5% 的小节。
+       这很可能就是 prob 段段对齐坏掉的根因。

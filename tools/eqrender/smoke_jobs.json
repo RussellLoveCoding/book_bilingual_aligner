@@ -1,0 +1,10 @@
+[
+  {"id": "e01", "display": true,  "tex": "\\begin{array}{r} {A \\text {真则} B \\text {真}} \\\\ {A \\text {真}} \\\\ \\hline B \\text {真} \\end{array} .\\tag{1.1}"},
+  {"id": "e02", "display": true,  "tex": "A \\equiv \\overline {{{A}}} \\text {   假   },\\tag{1.9}"},
+  {"id": "e03", "display": true,  "tex": "\\begin{array}{r l} f _ {5} (A, B) & = f _ {2} (A, B) + f _ {4} (A, B) \\\\ & = A \\overline {{B}} + \\overline {{A}} \\overline {{B}} \\\\ & = \\overline {{B}}, \\end{array}\\tag{1.18}"},
+  {"id": "e04", "display": true,  "tex": "\\int _ {0} ^ {\\infty} e ^ {-x ^ {2}} d x = \\frac {\\sqrt {\\pi}} {2}"},
+  {"id": "e05", "display": false, "tex": "\\frac {1} {2}"},
+  {"id": "e06", "display": true,  "tex": "P (A | B) = \\frac {P (A B)} {P (B)} \\tag{A_{p}}"},
+  {"id": "e07", "display": true,  "tex": "\\sum _ {n = 1} ^ {\\infty} \\frac {1} {n ^ {2}} = \\frac {\\pi ^ {2}} {6}"},
+  {"id": "e08", "display": true,  "tex": "\\fcac {1}{2}"}
+]

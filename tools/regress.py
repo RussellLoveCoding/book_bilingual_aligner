@@ -32,14 +32,30 @@ BOOKS = [
     ("prob", "prob_en.epub", "prob_zh.md", ["--max-section", "300"], False),
 ]
 
+# 小样章（回归默认只跑这些；key 必须真实存在，写错会被静默跳过）
+SAMPLE_CHAPTERS = {
+    # 用户 2026-09-15 指定：每本一个样章（think2 第5章 / prob 第2章 / ml 一章）
+    "think2": ["chapter5"],
+    "prob": ["chapter8"],          # 第2章（key chapter8）
+    "ml": ["chapter4"],            # 公式/代码密集，历史坏点
+}
+
 SUM_RE = re.compile(r"段落对 (\d+) · 命中中文 (\d+) · AI补译 (\d+) · 待补 (\d+) · 告警 (\d+)")
 
 
-def run_book(key, en, zh, extra):
+def run_book(key, en, zh, extra, chapters=None):
+    """跑一本书的回归。chapters=None → 全书（--all）；否则只跑小样章。
+
+    ⚠ 2026-09-14 深夜定：回归默认小样章。全书跑在缓存冷时单本可达
+    ¥0.3~0.8，只允许 --full 显式触发。"""
     out_dir = DIAG / f"regress_{key}"
     cmd = [sys.executable, str(HERE / "run_book.py"),
            "--en", str(BOOKS_DIR / en), "--zh", str(BOOKS_DIR / zh),
-           "--all", "--build", "--llm", "--out", str(out_dir)] + extra
+           "--build", "--llm", "--out", str(out_dir)] + extra
+    if chapters:
+        cmd += ["--chapters", ",".join(chapters)]
+    else:
+        cmd += ["--all"]
     t0 = time.perf_counter()
     p = subprocess.run(cmd, cwd=str(HERE), capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
@@ -70,20 +86,29 @@ def fig_check(key):
 
 
 def main():
-    only_fast = "--all" not in sys.argv
     save = "--save" in sys.argv
-    books = BOOKS[:1] if only_fast else BOOKS
+    # ⚠ 2026-09-14 深夜定：**默认只跑小样章**（think2 两章）。
+    # 全书跑（--full 或 --all）必须显式指定；改 prompt/解析层后 LLM 缓存
+    # 全失效，全书一次 ¥0.3~0.8。小样章冷缓存也只要几分钱。
+    # 小样与全书用**两套基线**：小样数字 ≠ 全书数字，不能互比。
+    full = ("--full" in sys.argv) or ("--all" in sys.argv)
+    # 小样模式也跑三本书（每本只 1~2 章，成本可控且覆盖面更全）；
+    # 全书模式才跑三本的全书。
+    books = BOOKS
 
+    base = BASE if full else BASE.with_name("regress_baseline_sample.json")
     result = {}
     for key, en, zh, extra, want_fig in books:
-        print(f"[跑] {key} ...", flush=True)
-        r = run_book(key, en, zh, extra)
-        if want_fig and "error" not in r:
+        chapters = None if full else SAMPLE_CHAPTERS.get(key)
+        mode = "全书" if full else f"小样章 {chapters}"
+        print(f"[跑] {key}（{mode}） ...", flush=True)
+        r = run_book(key, en, zh, extra, chapters=chapters)
+        if want_fig and full and "error" not in r:
             r["figs"] = fig_check(key)
         result[key] = r
         print(f"     {r}", flush=True)
 
-    old = json.loads(BASE.read_text(encoding="utf-8")) if BASE.exists() else {}
+    old = json.loads(base.read_text(encoding="utf-8")) if base.exists() else {}
     if old and not save:
         print("\n=== 与基线对比 ===")
         for k, v in result.items():
@@ -95,10 +120,13 @@ def main():
                      ("pairs", "matched", "missing", "warn", "figs")
                      if f in v and v[f] != o.get(f)]
             print(f"  {k}: " + ("；".join(diffs) if diffs else "无变化 ✓"))
+    elif not old and not save:
+        print(f"\n[提示] {base.name} 不存在：本次结果未对比。"
+              f"确认无误后加 --save 建立基线。")
     if save or not old:
-        BASE.write_text(json.dumps(result, ensure_ascii=False, indent=2),
+        base.write_text(json.dumps(result, ensure_ascii=False, indent=2),
                         encoding="utf-8")
-        print(f"\n基线已写入 {BASE}")
+        print(f"\n基线已写入 {base}")
 
 
 if __name__ == "__main__":
