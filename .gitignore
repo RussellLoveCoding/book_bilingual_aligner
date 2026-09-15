@@ -20,7 +20,7 @@ build/
 dist/
 
 # Node 依赖（tools/eqrender 用 npm 装，不入库）
-node_modules/
+node_modules
 
 # 公式渲染的冒烟测试输出（tools/eqrender/_smoke_out/）
 _smoke_out/
