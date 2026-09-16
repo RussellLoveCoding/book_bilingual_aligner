@@ -139,6 +139,9 @@ def load_md(path, lang: str) -> dict[str, list]:
         elif not line.strip():
             flush()
         else:
+            # md 引用标记（minerU 题词用「> / > >」）剥掉——它们是排版
+            # 记号不是内容，留着会原样漏进成品（2026-09-17 ch1 实测）
+            line = re.sub(r"^\s*(?:>\s?)+", "", line)
             buf.append(line)
     flush()
     if cur:

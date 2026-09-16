@@ -109,7 +109,7 @@ class RateLimiter:
 class LLM:
     def __init__(self, base_url=None, api_key=None, model=None,
                  cache_dir=None, temperature=0.0, timeout=180,
-                 workers=8, rpm=2500, max_retry=4, no_thinking=None,
+                 workers=32, rpm=2500, max_retry=4, no_thinking=None,
                  max_tokens=None):
         load_dotenv()
         self.base_url = (base_url or os.environ.get(
@@ -914,10 +914,13 @@ class LLM:
                       else "skew / missing / offset / ok。")
             reqs.append((system,
                          f"书名/章节：{title}\n\n" + "\n\n".join(lines) +
-                         "\n\n只输出 JSON 对象，键为条号，值为二元素数组 "
-                         "[类型, 简短理由]，类型取 " + _kinds +
+                         "\n\n只输出 JSON 对象。⚠ **只列有问题的条目，"
+                         "ok 的条目一律不要输出**（2026-09-17 输出压缩："
+                         "整本 90% 是 ok，全量输出纯属浪费 token 和生成时间）。"
+                         "值为二元素数组 [类型, 理由]，理由 ≤20 字、一句话，"
+                         "类型取 " + _kinds +
                          '例如 {"12":["skew","中文是下一段的内容"],'
-                         '"13":["missing","末句未译"],"14":["ok",""]}。'))
+                         '"13":["missing","末句未译"]}。'))
         for got in self.json_many(reqs):
             if not isinstance(got, dict):
                 continue

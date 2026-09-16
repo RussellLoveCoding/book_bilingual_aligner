@@ -76,8 +76,9 @@ def main():
                     help="单本书 LLM 软上限（元）；超过自动转 mapping-only")
     ap.add_argument("--budget-hard", type=float, default=2.5,
                     help="单本书 LLM 硬上限（元）；超过停用 LLM 走确定性")
-    ap.add_argument("--concurrency", type=int, default=4,
-                    help="并发处理的章节数（LLM 章节级并发，默认 4）")
+    ap.add_argument("--concurrency", type=int, default=16,
+                    help="章级并发数（2026-09-17 用户要求提速：4→16；"
+                         "LLM 池另有 LLM_WORKERS=32，IO 等待型负载吃得满）")
     ap.add_argument("--max-section", type=int, default=60,
                     help="LLM 窗口细化的单节段落上限（技术书代码块多，"
                          "建议 150~200，否则大节全部跳过细化）")

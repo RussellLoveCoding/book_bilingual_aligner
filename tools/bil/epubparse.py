@@ -315,7 +315,10 @@ def _container_ctx(frames: list[dict]) -> tuple[str, bool]:
 
 
 _PAGENUM_RE = re.compile(r"^(?:\d{1,4}|[ivxlcdm]{1,7})$", re.I)
-_ATTR_SRC_RE = re.compile(r"^[^，,。.;；!！?？]{1,40}[,，]?\s*\d{3,4}\s*年?$")
+# 署名两种形态：「——詹姆斯（James Clerk Maxwell，1850）」与英文版
+# 「James Clerk Maxwell (1850)」——年份可在逗号后或括号内（2026-09-17 ch1 实测）
+_ATTR_SRC_RE = re.compile(
+    r"^[^，,。.;；!！?？]{1,40}([,，]\s*\d{3,4}\s*年?|[(（]\s*\d{3,4}\s*[)）])\s*$")
 
 
 def _fold_head_noise(blocks: list[Block]) -> list[Block]:

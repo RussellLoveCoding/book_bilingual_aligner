@@ -791,14 +791,38 @@ def _eq_figure_html(fig, prefix: str, side: str, en_no: str, ztex: str) -> str:
     if side != "zh" or not ztex:
         return ""
     tag = _eq_tag_of(ztex)
-    if tag and _eq_key(tag) in _EN_FIG_BY_NO:
-        return ""      # 英文原版里有同号片段 → 交给英文侧（那边位置准、编号准）
+    if tag:
+        if any(v in _EN_FIG_BY_NO for v in _eq_variants(tag)):
+            return ""      # 英文原版里有同号片段 → 交给英文侧（那边位置准、编号准）
+        # ⚠ 2026-09-17 用户禁令：匹配不上英文原版编号的**带编号**公式一律
+        # 不自渲染。这些几乎全是 minerU 的 OCR 噪音 tag —— (1.32) 丢了小数点
+        # 变 (132)、跨章乱入 (6.7,)/(2.3) —— 自渲染出来就是「章尾公式堆」
+        # （截图实锤：9 张编号重复错乱的表堆在第 2 章标题前）。宁可少一张图
+        # （英文侧照常出正确的），也不堆垃圾。
+        _warned = getattr(_eq_figure_html, "_warned", None)
+        if _warned is None:
+            _warned = _eq_figure_html._warned = set()
+        if tag not in _warned:
+            _warned.add(tag)
+            print(f"    [公式丢弃] zh \\tag{{{tag}}} 匹配不到英文原版编号"
+                  f" → 不自渲染（OCR 噪音 tag，防章尾公式堆）")
+        return ""
     _div = _eq_div_html(ztex)
     if _div:
         return _div
     # 渲染不出来（极端 tex）：给个可读的等宽居中块，别吐 $$ 原文
     import html as _h
     return f'<div class="eq eq-raw">{_h.escape(ztex)}</div>'
+
+
+def _eq_variants(tag: str):
+    """编号变体生成：minerU 常把 (1.32) 的小数点丢成 (132)。
+    无点的纯数字编号按插入位置生成「章号.序号」候选（132→1.32 / 13.2）。"""
+    k = _eq_key(tag)
+    yield k
+    if "." not in k and k.isdigit() and len(k) >= 2:
+        for i in range(1, len(k)):
+            yield _eq_key(f"{k[:i]}.{k[i:]}")
 
 
 def _eq_tag_of(ztex: str) -> str:
