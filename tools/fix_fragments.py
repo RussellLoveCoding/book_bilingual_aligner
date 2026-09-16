@@ -46,6 +46,11 @@ def mergeable(t1: str, t2: str) -> bool:
     if not is_prose(t1) or not is_prose(t2):
         return False
     if LISTMARK.match(t2) or ATTRIBUTION.match(t2):
+        # 列表项开头：仅当 t1 内已有同类列举标号（(1)…(i)）→ 是「同段列举
+        # 被分页拆开」（前言 (1)/(2) 实测），合并；否则是真列表，不动。
+        if re.match(r"^\(\d+\)", t2) and re.search(
+                r"[（(]\d+[)）][^。！？.]*[；;]\s*$", t1c):
+            return True
         return False
     return True
 
