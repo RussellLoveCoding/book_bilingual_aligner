@@ -38,6 +38,17 @@ _SYMS = {
     # 运算/关系
     "times": "×", "cdot": "·", "div": "÷", "pm": "±", "mp": "∓",
     "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠", "ne": "≠",
+    "leqslant": "≤", "geqslant": "≥",   # amsmath 变体（Jaynes 原书高频）
+    "ll": "≪", "gg": "≫",
+    # 逻辑连接词：\vee/\wedge 与 \lor/\land 是同一件事的两种写法
+    "vee": "∨", "wedge": "∧", "oplus": "⊕", "otimes": "⊗",
+    # 函数名（数学排版要求正体，这里保留文字即可）
+    "exp": "exp", "log": "log", "ln": "ln", "lg": "lg",
+    "sin": "sin", "cos": "cos", "tan": "tan", "cot": "cot",
+    "sinh": "sinh", "cosh": "cosh", "tanh": "tanh",
+    "max": "max", "min": "min", "lim": "lim", "sup": "sup", "inf": "inf",
+    "argmax": "argmax", "argmin": "argmin", "det": "det", "dim": "dim",
+    "mod": "mod", "gcd": "gcd", "Pr": "Pr",
     "approx": "≈", "equiv": "≡", "sim": "∼", "simeq": "≃", "propto": "∝",
     "infty": "∞", "sum": "∑", "prod": "∏", "coprod": "∐", "int": "∫",
     "iint": "∬", "oint": "∮", "partial": "∂", "nabla": "∇",
@@ -76,12 +87,19 @@ def _sub_sup_html(t: str) -> str:
 
 
 def _decorate(t: str) -> str:
-    r"""\bar{x} → x̄、\hat{x} → x̂、\tilde{x} → x̃（组合变音符）。"""
-    marks = {"bar": "\u0304", "hat": "\u0302", "tilde": "\u0303",
-             "dot": "\u0307", "ddot": "\u0308", "vec": "\u20D7"}
+    r"""\bar{x} → x̄、\overline{x} → x̅、\hat{x} → x̂（组合变音符）。
+
+    ⚠ `\overline` 是 Jaynes 这类书的最高频装饰（`\overline{A}` 表示取反），
+    漏了它就等于整段数学读不通 —— 2026-09-16 实测成品里残留 22 处。
+    """
+    marks = {"bar": "\u0304", "overline": "\u0305", "hat": "\u0302",
+             "widehat": "\u0302", "tilde": "\u0303", "widetilde": "\u0303",
+             "dot": "\u0307", "ddot": "\u0308", "vec": "\u20D7",
+             "underline": "\u0332"}
     for name, mk in marks.items():
         t = re.sub(r"\\" + name + r"\{([^{}]*)\}", r"\1" + mk, t)
-        t = re.sub(r"\\" + name + r"\s([A-Za-z0-9])\b", r"\1" + mk, t)
+        # \overline\s A / \overlineA（无花括号的紧凑写法）
+        t = re.sub(r"\\" + name + r"\s*([A-Za-z0-9])\b", r"\1" + mk, t)
     return t
 
 
@@ -140,11 +158,32 @@ _ENV_RE = re.compile(r"\\(?:begin|end)\s*\{[a-zA-Z*]+\}")
 _LABEL_RE = re.compile(r"\\label\{[^{}]*\}")
 
 
+def tag_of(tex: str) -> str:
+    """行间公式的编号（`…\\tag{2.67}` → `2.67`）；没有编号返回 ""。
+
+    ⚠ **编号只有这一个来源**（md 侧的 `\\tag{}`）。中文侧的公式编号一律从
+    这里取，不要用「配对到的那条公式的 tag」去顶（配对一偏编号就整体错位）。
+    """
+    m = _TAG_RE.search(tex or "")
+    return m.group(1).strip() if m else ""
+
+
+def eq_no_key(no: str) -> str:
+    """公式编号的**比较键**：去空白 + 去掉数字段的前导零。
+
+    同一条公式两版写法不同：英文原版 id 是零填充的 `eqn02_01`（即 (2.1)），
+    中文 md 写 `\\tag{2.1}` —— 不归一就配不上（实测 (2.1) 配对落空 →
+    中文侧自渲染一份、英文侧出原图 → 同一条公式出现两次）。
+    后缀原样保留（`2.10a` → `2.10a`；`2.100` → `2.100`，不能缩成 `2.1`）。
+    """
+    parts = re.sub(r"\s+", "", no or "").split(".")
+    return ".".join(str(int(p)) if p.isdigit() else p for p in parts)
+
+
 def clean_display(tex: str) -> tuple[str, str]:
     """清洗行间公式：返回 (mathtext, 编号 tag)。"""
     t = tex or ""
-    tag_m = _TAG_RE.search(t)
-    tag = tag_m.group(1).strip() if tag_m else ""
+    tag = tag_of(t)
     t = _TAG_RE.sub(" ", t)
     t = _LABEL_RE.sub(" ", t)
     t = _ENV_RE.sub(" ", t)

@@ -91,6 +91,11 @@ def main():
     ap.add_argument("--ai-repair-censor", action="store_true",
                     help="用 AI 检测并修复「政治/历史/伦理敏感内容审查导致的"
                          "译文改动」（默认关：只有涉华的国外史政社科书才需要）")
+    ap.add_argument("--skip-flag", action="store_true",
+                    help="跳过勘误打标（apply_error_repair 的 censor/skew/"
+                         "missing 逐对体检）。整本快跑用：打标要喂全书"
+                         "正文全文（~90% 输入 token），只要对齐产物时关掉"
+                         "（2026-09-17 用户：审查和补充都不用算）")
     ap.add_argument("--llm-gate", type=float, default=0.15,
                     help="LLM 准入闸门：DP 体检 bad 率低于此值就不调 LLM"
                          "（免费的长度比体检当裁判；简单排版书全程零花费）")
@@ -192,9 +197,12 @@ def main():
             # 漏译 / offset 注释编号偏移 —— 这些是「每个英文段是否落到一个
             # 有正确中文的 pair」的监督信号。censor（审查改动）默认不查：
             # 技术书/科普书不存在，查了只会误判。
-            ec = P.apply_error_repair(res, llm, title=cp.en_title,
-                                      check_censor=args.ai_repair_censor)
-            st["censor"] = ec
+            # --skip-flag → 整本快跑：打标要喂全书正文全文（~90% 输入），
+            # 只要对齐产物时整步跳过（2026-09-17）。
+            if not args.skip_flag:
+                ec = P.apply_error_repair(res, llm, title=cp.en_title,
+                                          check_censor=args.ai_repair_censor)
+                st["censor"] = ec
             res.stats["llm"] = st
         return res
 

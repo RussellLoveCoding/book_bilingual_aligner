@@ -34,9 +34,14 @@ BOOKS = [
 
 # 小样章（回归默认只跑这些；key 必须真实存在，写错会被静默跳过）
 SAMPLE_CHAPTERS = {
-    # 用户 2026-09-15 指定：每本一个样章（think2 第5章 / prob 第2章 / ml 一章）
+    # 用户 2026-09-15 指定：每本一个样章（think2 第5章 / ml 一章）
     "think2": ["chapter5"],
-    "prob": ["chapter8"],          # 第2章（key chapter8）
+    # ⚠ key 对应**英文 spine 序**，且随章映射来源（llm/seq）**漂移**：
+    #   llm 映射把「致谢/第一部分/第二部分」配给英文卷头 → 第2章=chapter6、第4章=chapter8；
+    #   seq 映射留下它们做 zh-only → 整体 +2 → 第2章=chapter8、第4章=chapter10。
+    #   2026-09-17 起章映射回落 seq（LLM 映射编号校验未过，见 HANDOFF §4），
+    #   小样 key 改用 seq 键系。换映射来源时这里必须跟着改。
+    "prob": ["chapter8", "chapter10"],
     "ml": ["chapter4"],            # 公式/代码密集，历史坏点
 }
 

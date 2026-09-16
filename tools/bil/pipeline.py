@@ -15,10 +15,14 @@ _REFINE_WIN = max(10, int(os.environ.get("BIL_REFINE_WIN", "40")))
 # 策略 v2：标题链编号配对小节（关闭用 BIL_NUM_CHAIN=0）
 _NUM_CHAIN = os.environ.get("BIL_NUM_CHAIN", "1") != "0"
 _REFINE_OVERLAP = max(0, int(os.environ.get("BIL_REFINE_OVERLAP", "10")))
+# 整段一次送 LLM 的上限（英文段数）。段落级输出=区间行，几十段也只有几十行，
+# 输出根本不是瓶颈；滑动窗反而会因「按比例猜中文邻域」而错位。
+_REFINE_FULL = max(20, int(os.environ.get("BIL_REFINE_FULL", "80")))
 
 from . import epubparse as E
 from . import align as A
 from . import audit as AU
+from . import latexrender as LR
 from . import notes as NO
 
 # 图注编号：中文「图1-1 看到这个女人的面孔…」（章号-图号）、
@@ -64,6 +68,15 @@ class FigureRef:
     after: int = -1        # 中文图位：位于该小节的第 after 个 pair 之后
     en_after: int = -1     # 英文图位（英文原文里的位置，保持不变）
     zh_missing: bool = False
+    # 英文原版公式的编号（从 `<table id="eqn02_68">` 或右栏 `(2.68)` 抽出）。
+    # ⚠ 编号必须来自**英文原版**：取「配对到的中文公式 tag」会随配对偏移而整体
+    # 错位（实测 (2.71) 那张表里其实是 eqn02_68.jpg，位置对、编号全错）。
+    en_no: str = ""
+    # 公式/插图在**英文段落流**里的原始位置（第 N 段之后，0-based）。
+    # -1 = 未知 → 渲染层退回按 pair 挂载（旧行为）
+    en_para: int = -1
+    # 中文段落流里的原始位置（同上）
+    zh_para: int = -1
     caption_mt: str = ""   # LLM 补译的图注
     en_html: str = ""      # 非图片可视块的原始 HTML（表格/SVG）
     zh_html: str = ""
@@ -392,7 +405,11 @@ def _refine_windowed(llm, s, win: int | None = None, overlap: int | None = None,
     for (ai, aj), (bi, bj) in zip(bounds, bounds[1:]):
         if bi <= ai and bj <= aj:
             continue
-        if bi - ai <= win:          # 小段一次搞定
+        # 整段一次搞定（**不做滑动窗**）：段落级输出是区间行，一章几十段的输出
+        # 只有几十行、几百 token —— 「怕输出太长才分窗」是错误的设计前提
+        # （用户 2026-09-16 纠正）。滑动窗靠 avg 比例猜中文邻域，prob 这种
+        # 两侧块数不等的书必然猜偏（实测 2.6.x 直接无可用结果）。
+        if bi - ai <= _REFINE_FULL:
             _cell(ai, bi, aj, bj)
         else:                       # 大段退回滑动窗（DP 锚点定位邻域）
             a = ai
@@ -427,13 +444,28 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
     # 1) 窗口细化：体检不达标的小节整节重对（分窗，见 _refine_windowed）
     if refine:
         for s in res.sections:
-            if not s.pairs or s.audit.rate <= refine_threshold:
+            if not s.pairs:
+                continue
+            # ⚠ 闸门不能只看 DP 自评的 rate（自证：DP 凑出来的对子长度都挺配，
+            #   体检显示健康，结构性错位永远漏网 —— prob ch2 章首 rate 0.07 实证）。
+            #   改为「结构性疑点」：两侧块数差 / 英文独有段 / 中文独有段 / 多对占比。
+            _sus, _why = _structural_suspicion(s)
+            # DP 只在窄确定性场景单独做主（省 token）；其余一律交 LLM 主导
+            if _narrow_deterministic(s) and s.audit.rate <= refine_threshold:
+                continue
+            if SUSPECT_GATE:
+                if s.audit.rate <= refine_threshold and not _sus:
+                    continue
+            elif s.audit.rate <= refine_threshold:
                 continue
             if not s.zh_paras or len(s.en_paras) > max_section:
                 continue
+            print(f"    [细化] {s.en_title[:24] or '(章首)'} rate={s.audit.rate:.2f}"
+                  f" 疑点={_why or '仅rate'}")
             out = _refine_windowed(llm, s)
             if not out:
                 st["failed"] += 1
+                print("      → 窗口无可用结果（守卫拒收/输出为空）")
                 continue
             new = [A.Pair(en=[i], zh=list(zs)) for i, zs in out]
             for p in new:
@@ -451,13 +483,64 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
             new_zh_prose = _prose_zh(new)
             cov_ok = (new_en_cov >= old_en_cov
                       and new_zh_prose >= 0.9 * old_zh_prose)
-            if na.bad < s.audit.bad and cov_ok:
+            # 用**散文段**长度比比较（公式/代码段不计），相等时取 LLM：
+            # 语义对齐比长度拟合可信（DP 本就是靠拟合长度拿高分的）
+            old_bad = _prose_bad(s.pairs, s.en_paras, s.zh_paras)
+            new_bad = _prose_bad(new, s.en_paras, s.zh_paras)
+            # ⚠⚠ **验收尺子本身未校准 —— 默认不采纳**（2026-09-16）。
+            # 已知事实：`bad` = 长度比（汉字数/英文词数 ∉[1,3]），而长度拟合
+            # 正是 DP 的目标函数 → 这把尺子天然偏袒 DP。用它当主裁 = 用被测
+            # 对象的目标函数给自己打分（自证）。**在拿金标准校准它之前，
+            # 不能用它决定采纳与否** ⇒ 默认关闭（BIL_ACCEPT_LLM=1 才启用），
+            # 校准完成、确认尺子可信后再打开。
+            # 校准结论（tests/gold/prob_ch2_pairs.md）：长度尺子精确率 78%、
+            # 误判 0，但**抓不到「长度正常、内容换话题」的错位**（金标准 9/10）。
+            # 所以验收分两档：
+            #   BIL_ACCEPT_LLM=1 → 长度尺子；=2 → **再加 LLM 校对（skew）**；
+            #   默认 0 = 不采纳（保守）。
+            if not ACCEPT_LLM:
+                print(f"      → 不采纳（BIL_ACCEPT_LLM=0；bad {s.audit.bad}→{na.bad}，"
+                      f"散文bad {old_bad}→{new_bad}）")
+                continue
+            if ACCEPT_LLM >= 2:
+                _sem = _skew_compare(llm, s, new)
+                if _sem is not None:
+                    # 「纯拆分」= 候选每个组都是现状某组的子集（只把 N:M 拆细，
+                    # 不新增/不丢失内容）。拆分会重画边界 → 每半段的长度比天然
+                    # 失真、bad 必然虚增（refine_review_ch2 [1]：全组校对 ok 仍
+                    # 被 bad 2→4 拒收）⇒ 校对 skew 非劣时，bad 闸门对拆分放行。
+                    _refine = _is_refinement(new, s.pairs)
+                    print(f"      → 校对 skew：现 {_sem[0]} → 候选 {_sem[1]}"
+                          + ("（纯拆分）" if _refine else ""))
+                    if (cov_ok and _sem[1] <= _sem[0]
+                            and (na.bad <= s.audit.bad + 2 or _refine)):
+                        s.pairs, s.audit = new, na
+                        s.degrade = na.verdict == "FAIL"
+                        s.note = ("LLM 语义细化（校对验收，纯拆分放行）"
+                                  if _refine else "LLM 语义细化（校对验收）")
+                        st["refined"] += 1
+                    else:
+                        st["failed"] += 1
+                        print("      → 拒收：语义校对未通过（skew 劣化或覆盖下滑）")
+                    # ⚠ 校对跑了就**一锤定音**：不许再掉进下面的长度比路径。
+                    #   旧代码校对不合格还会落到长度比分支被采纳
+                    #   （实测 2.3：skew 2→3 却按 bad 0→0 采纳）——等于 =2 形同虚设。
+                    continue
+            if cov_ok and (na.bad <= s.audit.bad
+                           or (new_bad < old_bad
+                               and na.bad - s.audit.bad <= 2)):
+                _old_bad_shown = s.audit.bad
                 s.pairs, s.audit = new, na
                 s.degrade = na.verdict == "FAIL"
                 s.note = "LLM 分窗细化" if not s.degrade else "细化后仍未通过"
                 st["refined"] += 1
+                print(f"      → 采纳：bad {_old_bad_shown}→{na.bad}")
             else:
                 st["failed"] += 1
+                # 拒收原因必须打出来：静默拒收 = 永远查不到为什么没救回来
+                _why_not = ("覆盖率下滑" if not cov_ok else
+                            f"散文bad 未降({old_bad}→{new_bad})")
+                print(f"      → 拒收：{_why_not}")
 
     # 2) 补译：中文版删减/缺失的段落
     if translate:
@@ -477,11 +560,20 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 texts.append(" ".join(s.en_paras[x].text for x in p.en))
             out = llm.translate(texts, context=ctx, title=f"{res.en_title} / {title}")
             if not out or len(out) != len(chunk):
-                st["failed"] += 1
-                continue
+                # ⚠ 合批失败（常见：模型润色步少返回/多返回一项，且该坏 draft
+                #   已按键进缓存 → 每次重放必败，2.6.4 实测失败 6 段卡死）。
+                #   逐段兜底：单段 prompt 不同 = 不同缓存键，绕开坏缓存。
+                out = []
+                for _t in texts:
+                    _one = llm.translate([_t], context=ctx,
+                                         title=f"{res.en_title} / {title}")
+                    out.append(_one[0] if _one and len(_one) == 1 else None)
             for (si, pi, p), txt in zip(chunk, out):
-                p.mt = txt
-                st["mt"] += 1
+                if txt:
+                    p.mt = txt
+                    st["mt"] += 1
+                else:
+                    st["failed"] += 1
     return st
 
 
@@ -636,6 +728,281 @@ def _chapter_units(llm_map, en_secs, zh_secs, en_off, zh_off):
                 pos = ui + 1
         units.insert(pos, ([], [j]))
     return units
+
+
+_MARK_RE = re.compile(r"^[（(]?\s*([IVXivx]+|\d+(?:\.\d+)?)\s*[)）]")
+
+# 结构性疑点闸门（BIL_REFINE_SUSPECT=0 可退回旧的自证 rate 闸门做 A/B）
+SUSPECT_GATE = os.environ.get("BIL_REFINE_SUSPECT", "1") != "0"
+# 是否采纳 LLM 细化结果。**默认 0**：验收尺子（长度比 bad）尚未用金标准校准，
+# 而它偏偏是 DP 的目标函数 —— 未校准前不许拿它决定采纳（2026-09-16 用户指出）。
+# 2026-09-16 用户拍板「LLM 对齐后要送 LLM 校对」→ 默认 **2**（校对验收：
+# 覆盖率守卫 + skew 语义非劣 + bad 不显著变差，三者全过才采纳；
+# 校对跑了就一锤定音，不回落到长度比路径）。=1 只看长度比；=0 全不采纳。
+# 2026-09-17 尺子改进（diag/refine_review_ch2.md 审后拍板）：
+#   ① 校对只统计 **skew** 类（missing/offset 是忠实度噪音，不参与否决）；
+#   ② 「纯拆分」候选（_is_refinement）在 skew 非劣时放行，不受 bad 闸门约束。
+ACCEPT_LLM = int(os.environ.get("BIL_ACCEPT_LLM", "2") or "2")
+#   0 = 不采纳（默认，保守）
+#   1 = 长度尺子验收（已校准：精确率 78%、误判 0，但漏「长度正常内容错」）
+#   2 = 长度尺子 + **LLM 校对 skew** 双验收（补语义盲区）
+
+
+def _is_refinement(cand, cur) -> bool:
+    """候选是否现状的「纯拆分」：每个候选组 (en,zh) 都是现状某组的子集，
+    且现状每组至少被一个候选组覆盖（只拆细、不丢内容，不混入合并/重排）。
+
+    覆盖检查必须有：否则候选把某组整个丢掉也算「子集」而蒙混过关
+    （覆盖率守卫只看总数，会被拆分重排骗过）。
+    """
+    cur_groups = [(set(p.en), set(p.zh)) for p in cur if p.en and p.zh]
+    cand_es, cand_zs = set(), set()
+    for p in cand:
+        if not (p.en and p.zh):
+            continue
+        es, zs = set(p.en), set(p.zh)
+        cand_es |= es
+        cand_zs |= zs
+        if not any(es <= ce and zs <= cz for ce, cz in cur_groups):
+            return False
+    # 现状每组都必须被候选摸到（覆盖不丢）
+    for ce, cz in cur_groups:
+        if not (ce <= cand_es and cz <= cand_zs):
+            return False
+    return True
+
+
+def _skew_compare(llm, s, cand, batch: int = 20):
+    """用 LLM 校对（flag_errors）比两版方案的 skew 数 → (现方案, 候选) 或 None。
+
+    ⚠ 这是**语义尺子**：长度尺子抓不到「内容换了话题但字数正常」的错位
+    （金标准 9/10 r=0.73 就是这种）。只对「确有差异的 pair」取值，省 token。
+    """
+    if llm is None or not getattr(llm, "enabled", False):
+        return None
+    cur = {tuple(p.en): tuple(p.zh) for p in s.pairs}
+    diff_en = {tuple(p.en) for p in cand if cur.get(tuple(p.en)) != tuple(p.zh)}
+    if not diff_en:
+        return None
+    # ⚠ 2026-09-17 修：候选重画边界（拆分/合并）后，候选的 en 键（"0","1"…）
+    # 与现状的组键（"0,1,2"）**永不相同** → 现状侧 items 恒空 → 恒 0，
+    # 任何拆并候选都会被「候选>0」机械拒掉（2.6.4 实测）。改成按**区域
+    # 交集**取现状对：现状组只要碰到 diff 区域的任一英文段就纳入比较。
+    diff_idx = {i for e in diff_en for i in e}
+
+    def _items(pairs, want=None):
+        out = []
+        for p in pairs:
+            if not (p.en and p.zh):
+                continue
+            if want is not None and not (set(p.en) & want):
+                continue
+            out.append({
+                "i": ",".join(map(str, p.en)),
+                "en": " ".join(s.en_paras[i].text for i in p.en)[:1200],
+                "zh": " ".join(s.zh_paras[j].text for j in p.zh)[:1200],
+            })
+        return out
+
+    def _count(items):
+        if not items:
+            return 0
+        got = llm.flag_errors(items, title=s.en_title or "", batch=batch)
+        if not isinstance(got, dict):
+            return 0
+        # 2026-09-17 尺子改进（refine_review_ch2.md 审后拍板）：只统计 **skew**。
+        # missing/offset 多为译本忠实度/排版截断问题（"漏译一句注释性重述"、
+        # "公式紧随故句子截断"），与对齐无关 —— 拿它们否决对齐候选 = 误杀。
+        # 已知残留误报：编号化引用（"as stated in the syllogism"→"正如 (2.72) 所述"）
+        # 会被判 skew，暂不自动豁免（见 diag/refine_review_ch2.md [3]）。
+        return sum(1 for v in got.values()
+                   if isinstance(v, (list, tuple)) and v and v[0] == "skew")
+
+    _cur_items = _items(s.pairs, want=diff_idx)
+    _new_items = [it for it in _items(cand, want=diff_idx)
+                  if it["i"] in {",".join(map(str, e)) for e in diff_en}]
+    try:
+        return (_count(_cur_items), _count(_new_items))
+    except Exception as e:                       # noqa: BLE001
+        print(f"      [warn] 校对比较失败：{e}")
+        return None
+
+
+_MATHY_RE = re.compile(r"\$[^$]{2,}\$|\\\\[a-zA-Z]{2,}|\\frac|\\sum|\\int|\\tag")
+
+
+def _is_mathy(t: str) -> bool:
+    """公式/LaTeX 占比高的段：字数比在这里没有意义（汉字极少、符号极多）。"""
+    t = t or ""
+    if not t:
+        return False
+    m = sum(len(x) for x in _MATHY_RE.findall(t))
+    return m / max(1, len(t)) > 0.15
+
+
+def _prose_bad(pairs, en_ps, zh_ps) -> int:
+    """只数**散文段**的长度比异常（公式/代码/题注段不计）。
+
+    ⚠ 2026-09-16 关键修正：拿「汉字数/英文词数」这把**纯长度的尺子**去验收
+    LLM 的语义对齐 = 用 DP 的目标函数当裁判 —— DP 天生高分，LLM 在公式密集段
+    天然低分，于是「细化 0 节、全部拒收」（prob 2.1 实测 bad 3→19）。
+    长度比只对**散文段**有意义，公式/代码/题注段必须排除在外。
+    """
+    bad = 0
+    for p in pairs:
+        if not p.en or not p.zh:        # 独有段由覆盖率守卫管，不算 bad
+            continue
+        et = " ".join(en_ps[i].text for i in p.en)
+        zt = " ".join(zh_ps[j].text for j in p.zh)
+        if _is_codeish(et) or _is_codeish(zt) or _is_mathy(et) or _is_mathy(zt):
+            continue
+        w = sum(A.en_words(en_ps[i].text) for i in p.en)
+        c = sum(A.han_chars(zh_ps[j].text) for j in p.zh)
+        r = c / max(1, w)
+        if not (1.0 <= r <= 3.0):
+            bad += 1
+    return bad
+
+
+def _narrow_deterministic(s) -> bool:
+    """DP 可以单独做主的**窄确定性场景**（2026-09-16 用户定调：DP 只适合很窄的
+    确定性场景）：两侧块数相等（±1）、无独有段、无多对、非公式/代码密集。
+    满足 → 不必惊动 LLM（省 token 也没风险）；其余一律交 LLM 主导。
+    """
+    n_en, n_zh = len(s.en_paras), len(s.zh_paras)
+    if not s.pairs or abs(n_en - n_zh) > 1:
+        return False
+    for p in s.pairs:
+        if len(p.en) > 1 or len(p.zh) > 1:
+            return False
+        if (p.en and not p.zh) or (p.zh and not p.en):
+            return False
+    if n_zh and sum(1 for b in s.zh_paras if _is_mathy(b.text)) > 0.3 * n_zh:
+        return False
+    return True
+
+
+_NUM_ITEM_RE = re.compile(
+    r"^\s*[（(]\s*(\d{1,2}\s*[′'’]?|[a-z]\s*[′'’]?|[ivxIVX]{1,4}\s*[′'’]?)\s*[)）]")
+
+
+def _apply_num_anchors(pairs, en_paras, zh_paras) -> int:
+    """**编号锚点**：两侧段落以显式编号开头（`(1)` `(2)` `(1′)` `(III)`…）时按编号配对。
+
+    为什么需要（2026-09-16 用户实测 prob ch2 §2.1）：
+        英文列表：(1) … / (2) … / Or, equally well, / (1′) … / (2′) …
+        中文列表：(1) … / (2) … / 也可以 / (2') … / (1′) …   ← 中文把 (2')(1') 顺序印反了
+    DP 只按长度凑，于是 EN 与 ZH 整体错开一格（EN(1) 落单、后面中文被顶到下一个 pair），
+    成品的观感就是「(2) 的英文后面跟着 (1) 的中文」，读起来完全乱。
+
+    做法（确定性、只在锚点处动手）：
+      ① 两侧各自收集「以编号开头的段」→ 编号 → 段下标；同一编号在本节内出现多次则弃用；
+      ② 取两侧同名的编号组成锚点对，**过滤成单调递增**（乱序的整段丢掉）；
+      ③ 每个锚点：把 ei 与 zj 直接配成一对；其它对里出现 ei / zj 的，从该对移除
+         （保留对里其余段），空对留着让渲染层自然跳过。
+    返回生效的锚点数。
+    """
+    def _marks(paras):
+        out: dict[str, list[int]] = {}
+        for i, b in enumerate(paras):
+            m = _NUM_ITEM_RE.match(b.text or "")
+            if m:
+                # ⚠ 撇号必须归一化：英文排印用 U+2032（′），中文/纯文本常用
+                # ASCII 撇号（'）或 U+2019（’）—— 不归一化，(1′)/(2′) 这类
+                # 带撇号的编号就配不上（prob ch2 §2.1 实测）。
+                key = re.sub(r"\s+", "", m.group(1))
+                for _ch in ("’", "'", "`", "´", "ʹ"):
+                    key = key.replace(_ch, "′")
+                out.setdefault(key, []).append(i)
+        return {k: v[0] for k, v in out.items() if len(v) == 1}
+
+    em, zm = _marks(en_paras), _marks(zh_paras)
+    common = [k for k in em if k in zm]
+    if not common:
+        return 0
+    anchors = sorted(((em[k], zm[k]) for k in common))
+    mono: list[tuple[int, int]] = []      # 单调过滤（乱序锚点整段丢弃）
+    last_e = last_z = -1
+    for e, z in anchors:
+        if e > last_e and z > last_z:
+            mono.append((e, z))
+            last_e, last_z = e, z
+    if not mono:
+        return 0
+    pinned_e = {e for e, _ in mono}
+    pinned_z = {z for _, z in mono}
+    for e, z in mono:
+        for p in pairs:
+            if e in (p.en or []):
+                p.en = [x for x in p.en if x != e]
+            if z in (p.zh or []):
+                p.zh = [x for x in p.zh if x != z]
+    # 插回锚点对：插在「en 里最后一个 < e 的 pair」之后
+    for e, z in sorted(mono):
+        pos = 0
+        for i, p in enumerate(pairs):
+            if p.en and max(p.en) < e:
+                pos = i + 1
+        pairs.insert(pos, A.Pair(en=[e], zh=[z]))
+    return len(mono)
+
+
+def _structural_suspicion(s) -> tuple[bool, str]:
+    """「这一小节的配对可能结构性错了」的信号 —— **不看 DP 自评的 rate**。
+
+    DP 是长度对齐：它凑出来的对子长度往往很配（rate 低 = 体检健康），但关系可以
+    全错（prob ch2 章首实证）。这类错位只能用**两侧不对称**的信号发现：
+      ① 块数差（英文比中文多/少段）；② 英文独有段；③ 中文独有段；
+      ④ 多对占比过高（DP 靠合并凑长度的典型痕迹）。
+    """
+    n_en, n_zh = len(s.en_paras), len(s.zh_paras)
+    only_en = sum(1 for p in s.pairs if p.en and not p.zh)
+    only_zh = sum(1 for p in s.pairs if p.zh and not p.en)
+    multi = sum(1 for p in s.pairs if len(p.en) > 1 or len(p.zh) > 1)
+    n_pairs = max(1, len(s.pairs))
+    why = []
+    if n_en and abs(n_en - n_zh) / max(1, n_en) > 0.08:
+        why.append(f"块数差{n_en}/{n_zh}")
+    if only_en:
+        why.append(f"英文独有{only_en}")
+    if only_zh:
+        why.append(f"中文独有{only_zh}")
+    if multi / n_pairs > 0.25:
+        why.append(f"多对{multi}/{n_pairs}")
+    return (bool(why), "·".join(why))
+
+
+def _split_glued_marker(pairs, en_paras, zh_paras) -> int:
+    """中文段「粘在上一对」的编号开头段 → 归位到下一对的段首。
+
+    场景（2026-09-16 用户点名 prob 第2章）：中文版 (II)、(III) 本来各自独立
+    成段，DP 却把 zh[(II), (III)] 并进了 en[(II)] 那一对 → 成品里 (III) 的
+    译文和 (II) 挤在一起，而英文 (III) 那对只剩正文，读起来对不上。
+    判据**刻意写窄**（三条同时成立才搬，一次只搬一段）：
+      ① 本对中文 ≥2 段；② 末段很短（≤40 字）且以编号开头；
+      ③ 下一对英文首段以**同一个编号**开头。
+    """
+    n = 0
+    for i in range(len(pairs) - 1):
+        a, b = pairs[i], pairs[i + 1]
+        if len(a.zh) < 2 or not b.en or not b.zh:
+            continue
+        zj = a.zh[-1]
+        zt = (zh_paras[zj].text or "").strip()
+        if not zt or len(zt) > 40:
+            continue
+        mz = _MARK_RE.match(zt)
+        if not mz:
+            continue
+        me = _MARK_RE.match((en_paras[b.en[0]].text or "").strip())
+        if not me or me.group(1).lower() != mz.group(1).lower():
+            continue
+        a.zh = list(a.zh[:-1])
+        b.zh = [zj] + list(b.zh)
+        _metrics(a, en_paras, zh_paras)
+        _metrics(b, en_paras, zh_paras)
+        n += 1
+    return n
 
 
 def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off):
@@ -908,15 +1275,30 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                                            _en_off, _zh_off)
                     for p in cand:                  # 同上：先补指标再比
                         _metrics(p, a_paras, b_paras)
+                    # ⚠ **决策用尺必须冻结**（mode="legacy"）：这里是「DP 候选 vs
+                    # LLM 候选谁赢」的判决，若用会随校准变动的新尺子，改一次指标
+                    # 就会悄悄改掉对齐结果本身（实测 ml pairs 287→204、缺中文
+                    # 52→11，抽样里含过合并/脚注错配）。新尺子只用于评价与报告，
+                    # 换新尺子做决策前必须先用金标准验证新结果确实更好。
                     ar_dp = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo,
-                                           r_hi=r_hi, fail_rate=fail_rate)
+                                           r_hi=r_hi, fail_rate=fail_rate,
+                                           mode="legacy")
                     ar_llm = AU.audit_pairs(cand, a_paras, b_paras, r_lo=r_lo,
-                                            r_hi=r_hi, fail_rate=fail_rate)
+                                            r_hi=r_hi, fail_rate=fail_rate,
+                                            mode="legacy")
                     if ar_llm.bad < ar_dp.bad:
                         pairs, n_fix, src = cand, 0, src + "+选LLM"
+            _moved = _split_glued_marker(pairs, a_paras, b_paras)
+            _n_anchor = _apply_num_anchors(pairs, a_paras, b_paras)
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)
+            if _moved:
+                sr.note = ((sr.note + "；" if sr.note else "")
+                           + f"编号段归位 {_moved} 处")
+            if _n_anchor:
+                sr.note = ((sr.note + "；" if sr.note else "")
+                           + f"编号锚点 {_n_anchor} 处")
             if n_fix:
                 sr.note = f"倾斜修正 {n_fix} 处"
             sr.degrade = ar.verdict == "FAIL"
@@ -938,12 +1320,17 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         # 章首）。位置 = 该标题在本单元拼接后段落序列中的下标；章标题
         # （每篇文档的第一个 heading）跳过，它已经作为章名渲染。
         _en_heads_at, _zh_heads_at = [], []
+        # 与章名同文本的原位标题 = 重复章名（精排书的 `p.chapter-title` 常和
+        # 目录章名重复出现），章标题已经渲染过一次，这里不再插回。
+        _dup = {(res.en_title or "").strip(), (res.zh_title or "").strip()}
+        _dup.discard("")
         _off = 0
         for _i in ei:
             _n = 0
             for _b in en_secs[_i].blocks:
                 if _b.type == "heading":
-                    if not (_i == ei[0] and _n == 0 and _off == 0):
+                    if not (_i == ei[0] and _n == 0 and _off == 0) \
+                            and (_b.text or "").strip() not in _dup:
                         _en_heads_at.append((_off + _n, _b.text))
                     continue
                 if not _is_visual(_b):
@@ -954,7 +1341,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             _n = 0
             for _b in zh_secs[_j].blocks:
                 if _b.type == "heading":
-                    if not (_j == zi[0] and _n == 0 and _off == 0):
+                    if not (_j == zi[0] and _n == 0 and _off == 0) \
+                            and (_b.text or "").strip() not in _dup:
                         _zh_heads_at.append((_off + _n, _b.text))
                     continue
                 if not _is_visual(_b):
@@ -969,8 +1357,11 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     if leftover_zh and res.sections:
         tgt = next((s for s in reversed(res.sections) if s.pairs), res.sections[-1])
         for v in leftover_zh:
+            # ⚠ zh_html 必须带上：中文独有公式（$$ 块）没有 src，只带 src 会
+            # 把这条公式整条丢掉（渲染层靠 zh_html 自渲染成 PNG）
             tgt.figures.append(FigureRef(
                 en_src="", zh_src=v.block.src,
+                zh_html=(v.block.html or "") if not v.block.src else "",
                 caption_en="", caption_zh=v.block.caption,
                 after=len(tgt.pairs) - 1))
     # 章节内正文的注释 id 顺序：中文版注区不够长时，用它取英文本原注兜底
@@ -1057,8 +1448,30 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
     claims = zh_claims if zh_claims is not None else [False] * len(zh_vs_all)
     g2l, l2p = para_anchor if para_anchor else ({}, {})
 
+    # 中文图位各自的编号（中文公式块的 `\tag{2.67}`；插图没有 → ""）
+    zh_no = [_zh_eq_no(getattr(v, "block", None)) for v, _g in zh_pos]
+    zh_by_no: dict[str, int] = {}
+    for _i, _n in enumerate(zh_no):
+        if _n and _n not in zh_by_no:
+            zh_by_no[_n] = _i
+
     # matched[i] = (zh_visual, zh_pos 下标, 图注全文, pair 锚) ｜ None
     matched: list = [None] * len(en_figs)
+
+    def _claim_no(v, i):
+        """**第 0 遍 · 编号优先**：英文图位的编号 ↔ 中文公式块的编号。
+
+        为什么必须有这一遍（HANDOFF §2.6）：公式没有图注，原来只能靠
+        邻接/顺序配 —— 英文侧夹着**非公式图位**（装饰横线、无编号公式）时，
+        顺序消费整体错位（实测 en_no=2.67 ↔ zh_tag=2.69，章尾偏到 +7）。
+        编号是跨语言权威锚点，直接对上。
+        """
+        no = _eq_key_no(_eq_no_of(getattr(v, "block", None)))
+        j = zh_by_no.get(no) if no else None
+        if j is None or claims[j]:
+            return
+        claims[j] = True
+        matched[i] = (zh_pos[j][0], j, "", None)
 
     def _claim_cap(v, i):
         fn = getattr(v, "fig_num", None)
@@ -1089,7 +1502,9 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
             return
         best_i, best_d = None, None
         for idx, (_zv, zp) in enumerate(zh_pos):
-            if claims[idx]:
+            if claims[idx] or zh_no[idx]:
+                # 带编号的中文公式只能被「同号」的英文公式认走（第 0 遍），
+                # 邻接匹配不许碰它 —— 否则一条插图/装饰线就吃掉一条真公式
                 continue
             d = abs(zp - gp)
             if best_d is None or d < best_d:
@@ -1098,16 +1513,21 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
             claims[best_i] = True
             matched[i] = (zh_pos[best_i][0], best_i, "", None)
 
+    # 第 0 遍：编号配对（公式的最强信号，免费且精确）
+    for i, v in enumerate(en_figs):
+        _claim_no(v, i)
     # 第一遍：图注编号 + 邻接（强信号），全部跑完再轮到顺序认领
     for i, v in enumerate(en_figs):
         _claim_cap(v, i)
         if matched[i] is None:
             _claim_adj(v, i)
-    # 第二遍：仍无主的图按序顺延（老行为兜底）
+    # 第二遍：仍无主的图按序顺延（老行为兜底）—— ⚠ 只认**无编号**的中文图位：
+    # 带编号的中文公式已被第 0 遍按号认走，顺序顺延绝不能再碰它
+    # （旧实现一条装饰线就能吃掉一条真公式，整章往后错位，实测偏到 +7）。
     for i, v in enumerate(en_figs):
         if matched[i] is not None:
             continue
-        while used < len(zh_vs_all) and claims[used]:
+        while used < len(zh_vs_all) and (claims[used] or zh_no[used]):
             used += 1
         if used < len(zh_vs_all):
             claims[used] = True
@@ -1147,6 +1567,13 @@ def _attach_figures(sr: SectionResult, en_figs, zh_vs_all, zh_i: int,
                 if zh_v else "",
                 after=anchor if anchor is not None
                 else _anchor_pair(v.after, sr),
+                # ⚠ 2026-09-16：**额外保留原始段序**。原来只存 `_anchor_pair()`
+                # 的结果，而它是 `frac=(after+1)/n → round(frac*len(pairs))` 的
+                # **比例插值** —— 公式挂在哪一对是"猜"出来的，这就是行间公式
+                # 相对英文段落漂移的数学来源。en_para 让渲染层能把它精确插在
+                # 「第 N 段英文之后」。
+                en_para=_anchor_para_by_src(v, sr),
+                en_no=_eq_no_of(getattr(v, "block", None)),
                 en_after=_anchor_pair(v.after, sr),
                 zh_missing=zh_v is None)))
     _pending.sort(key=lambda t: t[0])
@@ -1168,6 +1595,73 @@ def _last_used(sr: SectionResult, zh_vs_all, fallback: int) -> int:
     """本小节实际认领到第几个中文图（供下一小节顺延）。"""
     return fallback + sum(1 for f in sr.figures
                           if f.zh_src and not f.zh_missing)
+
+
+# ⚠ 编号允许 a/b 后缀（原书有 (2.10a)/(2.10b)，`id="eqn02_10a"`）——
+# 抽不出来它就配不上中文侧的 2.10a，只能靠邻接抢（一抢就错位）。
+def _eq_key_no(no: str) -> str:
+    """编号比较键 = `LR.eq_no_key`（去空白 + 去前导零，见那边说明）。"""
+    return LR.eq_no_key(no)
+
+
+_EQN_ID_RE = re.compile(r'id="eqn(\d+)_(\d+[a-z]?)"')
+_EQNO_TXT_RE = re.compile(r"\((\d+\.\d+[a-z]?)\)")
+
+
+def _eq_no_of(block) -> str:
+    """从**英文原版**片段里抽公式编号。
+
+    优先右栏文本 `(2.68)` —— 那是原书**印出来**的编号原文；回退
+    `id="eqn02_68"`（id 是零填充的，(2.1) 写作 `eqn02_01`，直接拿来显示
+    会变成 (2.01)，与原书正文不一致）。渲染层还会过一次 `LR.eq_no_key`
+    归一，双保险。
+
+    ⚠ 编号必须来自英文原版自己的片段，不能取「配对到的中文公式的 tag」
+    （配对偏一格编号就整体错位，实测 (2.71) 的表装的是 eqn02_68.jpg）。
+    """
+    h = getattr(block, "html", "") or ""
+    m = _EQNO_TXT_RE.search(h)
+    if m:
+        return m.group(1)
+    m = _EQN_ID_RE.search(h)
+    if m:
+        # group(1)=章号，group(2)=章内序号（可带 a/b 后缀，如 eqn02_10a）
+        return f"{int(m.group(1))}.{m.group(2)}"
+    return ""
+
+
+def _zh_eq_no(block) -> str:
+    """中文公式块的编号（md 里写作 `\\tag{2.67}`）；没有返回 ""。
+
+    与 latexrender 用**同一个**规则（`LR.tag_of`），别再造一把尺子。
+    """
+    t = (getattr(block, "text", "") or "") or (getattr(block, "html", "") or "")
+    if "$$" not in t:
+        return ""
+    return LR.tag_of(t)
+
+
+def _anchor_para_by_src(v, sr) -> int:
+    """用**源文档偏移**定位「这个图位在第几段英文之后」。
+
+    ⚠ 为什么不能用 `v.after`：它是**解析时** `Section.paras` 的下标，而章节后来被
+    `_sections_by_number`/小节切分**重切过** —— 下标不再对应最终 `sr.en_paras`。
+    实测 prob ch2：105 条编号公式里有 **35 条**因此前移约 3 段（用户报「公式往前漂」）。
+    源偏移 `src_a` 是重切不变的不变量，用它能精确落位。
+    """
+    a = getattr(getattr(v, "block", None), "src_a", None)
+    if a is None:
+        return int(getattr(v, "after", -1))
+    best = -1
+    for i, b in enumerate(sr.en_paras):
+        s2 = getattr(b, "src_a", None)
+        if s2 is None:
+            continue
+        if s2 < a:
+            best = i
+        else:
+            break
+    return best
 
 
 def _anchor_pair(after: int, sr: SectionResult) -> int:

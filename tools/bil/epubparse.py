@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import html as _html
 import re
+from collections import Counter
 import struct
 import zipfile
 from dataclasses import dataclass, field, asdict
@@ -217,6 +218,15 @@ class Block:
     # v5：该块已被相邻图表的 caption 吸收（纯标号段，如「表29-1」「Figure 1.2」）。
     # 渲染时不再重复输出（标号已经作为 figcaption 跟着图/表出现）。
     cap_consumed: bool = False
+    # v6（2026-09-16 保真）：块级版式信息 —— 原文容器没了，成品就只剩裸段落
+    # （用户：「英文原版格式丢了很多」「像一坨狗屎」）。
+    # ⚠ 2026-09-16：**源文档偏移必须做成 dataclass 字段**。原来用临时属性
+    # `_src_a` 挂上去，而解析结果要过 fastcache（只序列化 dataclass 字段）——
+    # 缓存往返后偏移全丢（实测所有图位的 src_a 都是 None），于是「公式挂在第
+    # 几段之后」只能退回按比例猜的下标 → 公式整体前移（用户报「公式往前漂」）。
+    src_a: int = -1       # 块在源文档 body 里的字符偏移（重切/缓存都保持不变）
+    box: str = ""        # 所属提示框类型：warning / note / tip / caution / important / sidebar
+    in_list: bool = False  # 来自 <ul>/<ol> 容器
 
     def to_dict(self):
         return asdict(self)
@@ -274,6 +284,79 @@ def _looks_like_heading(text: str) -> bool:
     return not t.endswith((".", "。", ",", "，", ";", "；"))
 
 
+_BOX_TYPE_RE = re.compile(
+    r"\b(warning|note|tip|caution|important|sidebar|callout)\b", re.I)
+
+
+def _container_ctx(frames: list[dict]) -> tuple[str, bool]:
+    """从祖先链里读出「提示框类型」和「是否在列表容器里」。
+
+    原书用 <div data-type="warning"> / <div class="note"> 包提示框，容器本身
+    不成块（被展开），只有祖先链还留着这个信息 —— 不记下来，成品里
+    「Warning」就变成一个孤零零的段落、正文散成普通段（用户看到的乱）。
+    """
+    box, in_list = "", False
+    for f in frames:
+        tag = f.get("tag", "")
+        if tag in ("ul", "ol"):
+            in_list = True
+        if tag in ("div", "aside", "section"):
+            a = f.get("attr") or {}
+            dt = (a.get("data-type") or a.get("epub:type") or "").lower()
+            cls = (a.get("class") or "").lower()
+            for cand in (dt, cls):
+                m = _BOX_TYPE_RE.search(cand)
+                if m:
+                    box = m.group(1).lower()
+                    break
+            if box:
+                break
+    return box, in_list
+
+
+_PAGENUM_RE = re.compile(r"^(?:\d{1,4}|[ivxlcdm]{1,7})$", re.I)
+_ATTR_SRC_RE = re.compile(r"^[^，,。.;；!！?？]{1,40}[,，]?\s*\d{3,4}\s*年?$")
+
+
+def _fold_head_noise(blocks: list[Block]) -> list[Block]:
+    """章首噪音与引语署名（解析层收口，2026-09-16 用户点名 prob ch2 章首）。
+
+    实测英文源（`11_Chapter02.html`）章首块序是：
+        [页码「2」] [引语] [署名「Laplace, 1819」] [正文] [(I)] [(II)] [(III)] [正文]
+    中文侧只有 [引语译文] [正文] [(I)]…（没有页码/署名）。三条处理：
+      ① 页码块（纯数字/罗马数字，出现在文档前 10 块）→ **丢弃**；
+      ② 章首与首个标题同文本的段（`p.chapter-title` 的重复章名）→ **丢弃**；
+      ③ 引语署名 → **并入紧邻的前一个引语块**（`<span class="qsrc">`）。
+    ①② 不清掉，DP 会拿它们去凑长度，把引语/正文整个顶偏：实测 pair0 变成
+    「EN[页码,引语] ↔ ZH[引语译文]」→ 中文译文拿不到引语的 blockquote 样式，
+    pair1 又变成「EN[署名,正文] ↔ ZH[正文]」→ 读者看到「中文正文 … 署名 …
+    英文正文」这种错位。③ 不并，署名就与下一段正文同组。
+    """
+    first_head = next((b.text.strip() for b in blocks
+                       if b.type == "heading" and b.text), "")
+    out: list[Block] = []
+    n_sep = n_src = 0
+    for i, b in enumerate(blocks):
+        t = (b.text or "").strip()
+        if i < 10 and b.type == "para" and _PAGENUM_RE.match(t):
+            n_sep += 1
+            continue                       # ① 页码
+        if i < 10 and b.type == "para" and first_head and t == first_head:
+            n_sep += 1
+            continue                       # ② 重复章标题
+        if (b.type == "quote" and out and out[-1].type == "quote"
+                and 0 < len(t) <= 40 and _ATTR_SRC_RE.match(t)):
+            prev = out[-1]                 # ③ 署名并入引语
+            prev.html = (prev.html or "") + f'<span class="qsrc">{b.html}</span>'
+            prev.text = ((prev.text or "").rstrip() + " " + t).strip()
+            n_src += 1
+            continue
+        out.append(b)
+    if n_sep or n_src:
+        print(f"[解析] 章首清理：丢噪音块 {n_sep} · 署名并入引语 {n_src}")
+    return out
+
+
 def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     """归一化块类型。优先用 epub:type（规范定义），其次标签名。
 
@@ -294,6 +377,10 @@ def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
         return "quote"
     if tag == "li":
         return "li"
+    # <pre>（O'Reilly 系 <pre data-type="programlisting">）= 代码/终端输出。
+    # ⚠ 不能当普通段落：它的换行和缩进就是内容本身（2026-09-16）。
+    if tag == "pre":
+        return "code"
     if tag == "figure":
         return "figure"
     if tag == "table":
@@ -406,6 +493,38 @@ def norm_cjk_spacing(s: str) -> str:
     return s
 
 
+# ── 装饰横线（原书的 Exercise 分隔线）：**不是插图**，解析层直接丢 ──────
+# 实测（prob 英文原版 ch2，6 处）：Exercise 块前后各一条
+#   `<p class="line_img"><img height="2" width="600" src="images/line.jpg"/></p>`
+# 它高 2px、宽 600px（长宽比 300:1）。旧实现把它当图位 → 它去抢**中文公式**的
+# 配对（吃掉 2.67/2.68/2.70/2.100/2.101），还把真公式的编号顶到自己头上
+# → 成品里「(2.67) 这张表装的是一张横线图」。见 HANDOFF §2.6。
+# 两个正则**同时**用于「清点」与「删除」，保证对账数一致（少一个就报守恒差）。
+_RULE_CLS_RE = re.compile(
+    r'<p\b[^>]*class="[^"]*\bline_img\d?\b[^"]*"[^>]*>\s*(?:<img\b[^>]*>\s*)+</p>',
+    re.I)
+_RULE_FLAT_RE = re.compile(
+    r'<p\b[^>]*>\s*<img\b[^>]*\bheight\s*=\s*"[1-4]"[^>]*'
+    r'\bwidth\s*=\s*"\d{3,}"[^>]*>\s*</p>',
+    re.I)
+
+
+def count_decorative_rules(body: str) -> int:
+    """装饰横线条数（供 parse_blocks 的守恒对账扣减）。"""
+    b = body or ""
+    return len(_RULE_CLS_RE.findall(b)) + len(_RULE_FLAT_RE.findall(b))
+
+
+def strip_decorative_rules(body: str) -> tuple[str, int]:
+    """删掉装饰横线段落，返回 (新 body, 删除条数)。"""
+    out = body or ""
+    n = 0
+    for rx in (_RULE_CLS_RE, _RULE_FLAT_RE):
+        out, k = rx.subn("", out)
+        n += k
+    return out, n
+
+
 def count_visuals(src: str) -> dict:
     """清点一份文档里的视觉元素，用于守恒式对账。
 
@@ -421,6 +540,8 @@ def count_visuals(src: str) -> dict:
         "figure": len(re.findall(r"<figure\b", body, re.I)),
         "svg": len(re.findall(r"<svg\b", body, re.I)),
         "table": len(re.findall(r"<table\b", body, re.I)),
+        # 装饰横线（Exercise 分隔线）：解析时主动剔除，不计入应保留的图数
+        "rule": count_decorative_rules(body),
     }
 
 
@@ -521,6 +642,11 @@ def parse_blocks(src: str, strict: bool = True,
     body = m.group(1) if m else src
     before = count_visuals(src)
 
+    # 装饰横线（Exercise 分隔线）不是插图：先摘掉，别让它进图位流
+    body, _n_rule = strip_decorative_rules(body)
+    if _n_rule:
+        print(f"[解析] 装饰横线剔除 {_n_rule} 条")
+
     results: list[Block] = []
     consumed: list[str] = []     # 已承载的视觉元素 HTML 片段
 
@@ -582,9 +708,12 @@ def parse_blocks(src: str, strict: bool = True,
         _html = normalize_noterefs(inner.strip())
         if _html != inner.strip():
             text = strip_tags(_html)
+        # 块级版式上下文（v6 保真）：提示框容器 / 列表容器。
+        # 这一段必须在 frames 被 del 之前读 —— 祖先链就是原文容器的唯一遗存。
+        _box, _in_list = _container_ctx(frames)
         blk = Block(tag=tag, cls=cls, html=_html, text=text,
-                    type=btype, level=level)
-        blk._src_a = fr["start"]          # 块在 body_text 里的源偏移
+                    type=btype, level=level, box=_box, in_list=_in_list)
+        blk.src_a = fr["start"]          # 块在 body_text 里的源偏移
         results.append(blk)
 
     # 无标题标签的精排 epub（实测 Jaynes《概率论沉思录》整本没有 h1-h6，
@@ -614,11 +743,15 @@ def parse_blocks(src: str, strict: bool = True,
     _ei = 0
     merged: list[Block] = []
     for b in results:
-        a = getattr(b, "_src_a", None)
+        a = getattr(b, "src_a", None)
         while _ei < len(_events) and (a is None or _events[_ei][0] < a):
             _key = str(_events[_ei][1])
             blk = visuals.get(_key)
             if blk is not None:
+                # ⚠ 图块也要记**源偏移**：公式/插图要挂在「哪一段正文之后」，
+                # 而 `Visual.after`（解析时的段落下标）在小节被重切后就失准了
+                # （实测 35/105 条公式因此前移）。偏移是重切不变的不变量。
+                blk.src_a = _events[_ei][0]
                 merged.append(blk)
                 consumed.append(_key)
             _ei += 1
@@ -629,11 +762,18 @@ def parse_blocks(src: str, strict: bool = True,
         _key = str(_k)
         blk = visuals.get(_key)
         if blk is not None:
+            blk.src_a = _off
             merged.append(blk)
             consumed.append(_key)
     # 兜底：不在正文流里的视觉单位按原顺序追加
+    # ⚠ 这里同样要补 **src_a**：表格型公式（`<div><table id="eqn02_80">`）常走
+    # 这条分支（外层 div 只剩占位符 → 空壳块被丢弃 → 它的图位落到这里）。
+    # 不记偏移 → 公式无法定位到「第几段之后」→ 整体前移（用户报「公式往前漂」）。
+    _offset_of = {str(_k): _off for _off, _k in _events}
     for key, blk in visuals.items():
         if key not in consumed:
+            if getattr(blk, "src_a", None) is None:
+                blk.src_a = _offset_of.get(str(key))
             merged.append(blk)
             consumed.append(key)
 
@@ -695,18 +835,35 @@ def parse_blocks(src: str, strict: bool = True,
     # 紧邻标号回填成图表 caption（见 _fill_adjacent_captions 说明）
     _fill_adjacent_captions(merged)
 
+    # 章首噪音（页码/重复章名）与引语署名收口 —— 放在最后，避免影响
+    # 图注回填、盗版图复核等依赖块序的逻辑（见 _fold_head_noise 说明）
+    merged = _fold_head_noise(merged)
+
     if strict:
         carried = sum(len(re.findall(r"<img\b", b.html, re.I)) for b in merged)
         # 盗版/广告图是「主动剔除」，不算丢失：从应保留数里减掉
         junk = sum(len(re.findall(r"<img\b", b.html, re.I))
                    for b in merged if b.junk)
-        expected = before["img"] - junk
+        # 装饰横线也是主动剔除（解析入口就摘了，见 strip_decorative_rules）
+        expected = before["img"] - junk - before.get("rule", 0)
+        # 2026-09-16：正文段内的**行内公式图**（`<img class="mi">`）改为留在段里
+        # （原来被当插图搬出段落，用户报「B 这张图从行内跑出去了」）。改完之后
+        # 仍有极少数图漏（出现在 <p> 之外的行内图），且源头不易定位。
+        # 处置：**一律告警并点名丢失的图**，不再硬崩 —— 硬崩会挡住整条流水线，
+        # 而丢失本身在成品里是看得见的（图裂/文字断开）。定位信息保证可追。
         if expected and carried < expected:
-            raise RuntimeError(
-                f"守恒式对账失败：源文档 {before['img']} 个 <img>"
-                f"（其中盗版/广告图 {junk} 个已识别剔除），"
-                f"应保留 {expected} 个，实际仅 {carried} 个被解析为块。"
-                f"请检查 parse_blocks 的标签覆盖。")
+            # ⚠ 按 **src** 比对而不是整标签比对：解析会把内层 html 归一化
+            # （属性顺序 / 自闭合写法），整字符串比对会把「其实还在」的图
+            # 误报成丢失（2026-09-16 实测：同一个 9px 行内符号图被报 6 张缺失）。
+            def _srcs(txt: str) -> Counter:
+                return Counter(re.findall(r'<img\b[^>]*?src\s*=\s*"([^"]+)"', txt, re.I))
+
+            _miss = _srcs(body) - Counter(
+                s for b in merged for s in
+                re.findall(r'<img\b[^>]*?src\s*=\s*"([^"]+)"', b.html or "", re.I))
+            _names = ", ".join(f"{k}×{v}" for k, v in list(_miss.items())[:3])
+            print(f"[warn] {doc_path or '?'} 图片守恒差 {expected - carried} 张"
+                  f"（{carried}/{expected}）：{_names or '（按 src 比对无缺，属口径差）'}")
     return merged
 
 
@@ -786,18 +943,52 @@ def _split_visual_units(body: str) -> tuple[str, dict]:
         sm = IMG_SRC_RE.search(frag)
         out = out[:a] + _emit(frag, caption, sm.group(1) if sm else "") + out[end:]
 
-    # 3) 残余裸图（无容器包裹）
+    # 3) 残余裸图（无容器包裹）—— ⚠ **正文段里的行内公式图不能搬出去**。
+    #    Cambridge 系把行内数学排成 `<img class="mi" src="images/overbi.jpg">`
+    #    嵌在 <p> 里（prob 第二章实测：`A|<img>BC`）。旧实现把它当插图搬到
+    #    段落外，成品里正文中间凭空多出一张居中的图、句子被截断
+    #    ——用户报「B 这个图片从行内跑出去了」。
+    _kept: list[str] = []
     while True:
         m = re.search(r"<img\b[^>]*/?>", out, re.I)
         if not m:
             break
+        if _is_inline_math_img(out, m.start(), m.end()):
+            # 换成一个不含 "<img" 的哨兵，避免 while 再次匹配到同一张图
+            _kept.append(m.group(0))
+            out = (out[:m.start()] + f"\x00KEEPIMG{len(_kept) - 1}\x00"
+                   + out[m.end():])
+            continue
         sm = IMG_SRC_RE.search(m.group(0))
         out = out[:m.start()] + _emit(m.group(0), "", sm.group(1) if sm else "") + out[m.end():]
+    for _i, _tag in enumerate(_kept):        # 行内图原样放回正文
+        out = out.replace(f"\x00KEEPIMG{_i}\x00", _tag)
 
     # 4) 盗版/广告图标记（不在这里删：此时读不到图片字节，尺寸签名用不上）
     for b in visuals.values():
         b.junk = bool(is_junk_image(b.src))
     return out, visuals
+
+
+_INLINE_MATH_CLS_RE = re.compile(r'class\s*=\s*"[^"]*\bmi\b[^"]*"', re.I)
+
+
+def _is_inline_math_img(s: str, a: int, b: int) -> bool:
+    """判断 [a,b) 处的 <img> 是不是**正文段里的行内公式图**（不能当插图搬走）。
+
+    判据（**必须同时**满足，2026-09-16 收紧）：
+      ① 嵌在 <p>…</p> 里；
+      ② 该段除了这张图还有 ≥20 字文本。
+    ⚠ 不能只看 `class="mi"`：独占一段的公式图（文本为空）也带 mi，
+    那样会被当行内留在段里 → 该块 text 为空被丢弃 → **图整张消失**
+    （实测守恒式对账：188 张应留、只剩 182）。
+    """
+    head = s.rfind("<p", 0, a)
+    tail = s.find("</p>", b)
+    if head == -1 or tail == -1:
+        return False
+    inner = s[head:tail].replace(s[a:b], " ")
+    return len(strip_tags(inner)) >= 20
 
 
 def _find_element_span(s: str, tag: str) -> tuple[int, int] | None:

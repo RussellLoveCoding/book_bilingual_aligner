@@ -200,16 +200,25 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     #    确定性顺序兜底只在 LLM 不可用/失败时才跑 —— 2026-09-14 起调换了
     #    顺序：旧实现先跑 130s 的文档级 DP，再问 LLM，纯浪费。
     if llm is not None and getattr(llm, "enabled", False):
-        llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm)
-        if llm_pairs:
+        # ⚠ temp=0 也有服务端非确定性（2026-09-17 实测：prob 章映射一次返回
+        #   [26,27],[27,28],[28,29] 整体差一位，编号校验正确拒掉 → 回退 seq
+        #   → seq 又把卷头配错 → 整章 0 对）。所以校验失败**先重试一次**，
+        #   两次都不行才退 seq，并大声报出来（静默降级 = 查不到为什么空了）。
+        for _attempt in (1, 2):
+            llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys,
+                                          llm, refresh=(_attempt > 1))
+            if not llm_pairs:
+                continue
             # ⚠ 必须先 _apply_toc 再校验：正文标题常常**没有章号**（章号在
             # 独立的 chapter-number 段落里，或正文只写「第2章」），只有目录
             # 标题才带完整编号 → 不补目录就抽不到编号，校验形同虚设。
             cand = _apply_toc(llm_pairs, en_toc, zh_toc)
             if _llm_map_number_ok(cand):
                 return cand
-            # 编号校验不过：LLM 的章映射不可信（实测 qwen3.7-flash 把
-            # EN 第4章 配到 ZH 第5章，整体差一位）→ 丢掉，退回顺序兜底。
+            print(f"[章映射] LLM 映射编号校验未过（第 {_attempt} 次尝试）"
+                  f" → " + ("重试" if _attempt == 1 else "丢弃，退回顺序映射"))
+        # 编号校验不过：LLM 的章映射不可信（实测 qwen3.7-flash 把
+        # EN 第4章 配到 ZH 第5章，整体差一位）→ 丢掉，退回顺序兜底。
     seq = _map_chapters_sequential(en_docs, zh_docs, en_keys, zh_keys, pairs)
     if seq:
         for cp in seq:
@@ -278,7 +287,8 @@ def _valid_chapter_map(mapping, n: int, m: int, min_cov: float = 0.60) -> bool:
             and len(zs) >= max(1, _math.ceil(min_cov * m)))
 
 
-def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None):
+def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None,
+                      refresh: bool = False):
     """用 LLM 只吃「目录标题 + 段数」做章级配对。失败/不合规返回 []（调用方回退）。"""
     if llm is None:
         return []
@@ -303,7 +313,8 @@ def _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys, llm=None):
         mapping = llm.map_titles(_titles(en_seq, en_docs),
                                  _titles(zh_seq, zh_docs),
                                  _counts(en_seq, en_docs),
-                                 _counts(zh_seq, zh_docs))
+                                 _counts(zh_seq, zh_docs),
+                                 refresh=refresh)
     except Exception:                                              # noqa: BLE001
         return []
     if not mapping or not _valid_chapter_map(mapping, len(en_seq), len(zh_seq)):

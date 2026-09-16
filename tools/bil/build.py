@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import copy
+import os
 import re
 import time
 import zipfile
@@ -18,39 +20,138 @@ from pathlib import Path
 from . import bookmeta as BM
 from . import epubparse as E
 from . import notes as NO
+from . import latexrender as LR
 
 OUT_DIR = Path("build")
 
+# ── 公式渲染（2026-09-16 接进成品；用户定调：行内=纯 HTML 标签、行间=PNG）──
+_EQ_RECS: dict[str, dict] = {}   # 行间公式原文(剥$$后) → EQ 渲染记录
+_EQ_FILES: dict[str, str] = {}   # epub 内文件名 eq_xxx.png → 缓存 png 绝对路径
+_INLINE_IMGS: dict[str, bytes] = {}   # 正文行内图（行内公式图）字节，打包时写入
+_EQ_TAGS: dict[str, str] = {}    # 公式编号(tag) → 锚点 id（交叉引用用）
+
+# 行间公式块：txtimport 存的是整段转义文本 "$$...$$"（含 \tag 也无妨）
+_DISPLAY_TEX_RE = re.compile(r"^\$\$(.*)\$\$$", re.S)
+# 行内公式：$...$（不含换行；$$ 已在导入时拆成独立块，不会进正文段）
+_INLINE_TEX_RE = re.compile(r"\$([^$\n]+?)\$")
+# 公式交叉引用：中文正文里的 「(2.15)」/「(2.15）」（括号全半角混用是 md 常态）。
+# 只链接「编号确实存在于本章公式 tag 里」的 —— 没有对应公式就不动（零误伤）。
+_EQ_REF_RE = re.compile(r"[(（]\s*(\d+(?:\.\d+)?)\s*[)）]")
+
 CSS = """
-body { margin: 0 5%; line-height: 1.6; }
-.pair { margin: 0 0 1.1em; }
+body { margin: 0 5%; line-height: 1.5; }
+/* 中文：加粗一点点（用户 2026-09-16：正文中文比英文看着轻，不利于阅读）。
+   500 = medium，比 regular 略重、比 bold 轻；连 <b> 一起压平到 500，
+   中文内部不再有更粗层级。 */
+.zh, .zh b, .zh strong, .zh i, .zh em { font-weight: 500 !important; }
+/* 间距（2026-09-16 用户第二轮反馈：「对齐的两个段落间距太宽」）：
+   一组内部（中↔英）贴紧 —— 英 .12em；组与组之间 .75em 做区分。 */
+.pair { margin: 0 0 .75em; }
 .en { font-family: Georgia, "Times New Roman", serif; font-size: 1em;
-      margin: 0 0 .35em; text-align: justify; }
-.zh { font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", serif;
-      font-size: .95em; margin: 0 0 .85em; text-align: justify;
-      line-height: 1.75; text-indent: 0; }
-h2.ct { font-size: 1.5em; line-height: 1.35; }
+      margin: 0 0 .12em; text-align: justify; line-height: 1.35; }
+/* ⚠ 顺序陷阱：同优先级的规则**后出现的赢**——字体栈必须写在这条本体里，
+   单独再写一条放前面等于没写（2026-09-16 实测踩过）。
+   宋体优先：阅读器没有 Noto/Source Han 时会回退到无衬线 CJK（黑体观感），
+   用户两次报「中文还是加粗黑体」。 */
+.zh { font-family: "Songti SC", "SimSun", "Source Han Serif SC", "Noto Serif CJK SC", serif;
+      font-size: 1em; margin: 0 0 .12em; text-align: left;
+      line-height: 1.65; text-indent: 0; }
+/* 字距（用户 2026-09-16：中文行内疏密不匀）——两端对齐（justify）遇到
+   不可断行的行内公式/长数字串时会把空隙全挤到字间，观感就是「字距疏」。
+   改左对齐：纯中文行观感不变，含公式的行不再被拉稀。 */
+/* 练习块（Exercise/练习 N.M）：照原版 —— 块上下各一条细线（原书用
+   line_img 装饰图，解析层已摘掉，这里用 border 还原观感）；
+   同一 pair 里中文在前英文在后，`.exercise + .exercise` 命中英文那条。 */
+.pair > .exercise { border-top: 1px solid rgba(128,128,128,.45);
+                    padding-top: .45em; }
+.pair > .exercise + .exercise { border-top: none;
+                    border-bottom: 1px solid rgba(128,128,128,.45);
+                    padding-bottom: .45em; }
+/* 未被配对覆盖、兜底渲染的中文段：左细线标出，便于人工挑错 */
+.zh-orphan { border-left: 2px solid rgba(255,183,77,.5); padding-left: .5em; }
+h2.ct { line-height: 1.35; }
 /* 引用块（英文原书用 blockquote 排格言/诗歌，中文侧跟随同格式） */
 blockquote { margin: .9em 0 .9em 1.2em; padding-left: .9em;
   border-left: 3px solid rgba(128,128,128,.45); font-style: italic; }
 blockquote.zh { font-style: normal; }
+/* 章首题词（epigraph，英文原版居中、无边线）：只认「首小节前两个 pair
+   且英文侧是 quote」的保守判据，正文里真正的引用块保持原样式 */
+blockquote.epigraph { border: none; text-align: center;
+  margin: 1.4em auto; max-width: 34em; padding-left: 0; }
+/* 引语出处（原版 p.disp-source）：跟在引语同一块里，单独一行、不斜体 */
+.qsrc { display: block; margin-top: .4em; font-style: normal; opacity: .9;
+  font-size: .95em; }
+/* 行间公式（MathJax PNG）：居中、不跨页断开；尺寸用 em（随字号缩放） */
+.eq { text-align: center; margin: .28em 0; page-break-inside: avoid; }
+.eq img { max-width: 100%; height: auto; }
+/* 行间公式图（多为英文原版 eqn*.jpg）：前后留白收紧 —— 用户反馈「行间公式
+   图片的前后行间距太大」；原版公式图本身就是紧凑排印的 */
+figure.fig.eqn { margin: .25em 0; }
+figure.fig { margin: .5em 0; }
+/* 行间公式：照原版两列表格 —— 公式居中、编号贴右（v = S(u).     (2.36)） */
+table.eqtable { width: 100%; border-collapse: collapse; margin: .28em 0; }
+table.eqtable td { border: none; padding: 0; vertical-align: middle; }
+td.eqcell { text-align: center; }
+td.eqno { text-align: right; font-size: .95em; white-space: nowrap; }
+.eq-tag { margin-left: 1em; font-size: .9em; opacity: .85; }
+/* 渲染失败的公式：等宽原文兜底（可读、可搜，不吐 $$ 符号） */
+.eq-raw { font-family: ui-monospace, Consolas, monospace; font-size: .82em;
+  white-space: pre-wrap; color: inherit; opacity: .85; }
+/* 公式交叉引用：跟正文同色，不加下划线（原版就是普通编号文本） */
+/* 交叉引用照原版：链接蓝、无下划线（原书里 (2.66) 这类引用是蓝色的） */
+a.eqref { text-decoration: none; color: #3b6fd4; }
+.eq-anchor { display: block; height: 0; overflow: hidden; }
+/* 代码块（原版 <pre>）：保留缩进与换行，等宽小字，不加淡出（代码要看清） */
+pre.en { white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, Consolas, "Courier New", monospace;
+  font-size: .84em; line-height: 1.45; text-align: left;
+  background: rgba(128,128,128,.10); padding: .55em .7em;
+  border-radius: 4px; margin: .4em 0; }
+/* 列表项：还原原版的项目符号/编号位置 */
+li.en { display: list-item; list-style: disc outside; margin: 0 0 .3em 1.5em; }
+/* 提示框（原版 <div data-type="warning|note|tip">）：左色条 + 淡底 */
+.boxed { border-left: 3px solid rgba(255,183,77,.6);
+  background: rgba(255,183,77,.07); padding: .45em .7em;
+  margin: .45em 0; border-radius: 0 3px 3px 0; }
 /* 图表题注：居中、小字、跟随其图表 */
 p.caption, blockquote.caption { text-align: center; font-size: .92em;
   opacity: .85; margin: .3em 0 1em; }
-h3.st { font-size: 1.14em; line-height: 1.4; }
-h2.ct, h3.st { font-weight: 600; margin: 1.6em 0 .8em; }
+/* 脚注段（原版 <p class="fn">）：照抄原版 9780521592710.css —— 80% 字号 +
+   悬挂缩进（编号突出去）。中文补译的脚注段同口径（.zh.fn 只调字号缩进，
+   对齐保留我们自己的 left）。⚠ CSS 顺序陷阱：必须放在 .zh 基础规则之后。 */
+p.fn { font-size: 80%; margin-left: .85em; text-indent: -.85em;
+  text-align: justify; margin-top: 0em; margin-bottom: 0em; }
+p.zh.fn { text-align: left; }
+/* ⚠ 2026-09-16 照抄英文原版 CSS（prob `9780521592710.css`）：
+   .h1/.h2 { font-size:100%; font-weight:bold; text-align:center }
+   —— 原版**小节标题居中、字号=正文**；我们之前做成 1.14em 左对齐、中文再缩到
+   0.86 全是自己发明的（用户两轮都报「标题不居中」「中文标题比英文小」）。
+   ⚠ 章标题另算：原版 `.chapter-number/.chapter-title` 是 **160% 居中**，
+   别跟着小节标题一起压成 1em —— 用户实测「章标题 The quantitative rules
+   变小了」（2026-09-16）。 */
+h3.st { font-size: 1em; line-height: 1.4; text-align: center; }
+/* 章标题：160% 居中（照原版 chapter-title 160% / chapter-number 160% bold） */
+h2.ct { font-size: 1.6em; font-weight: bold; text-align: center;
+        margin: 1.6em 0 .5em; }
+h2.ct.zh-h { font-size: 1.6em; font-weight: bold; }
+h3.st { font-weight: bold; margin: 1.5em 0 .5em; }
+/* ⚠ 原版小节标题用的是 `p.h1`（不是 .h2！）：`.h1 { 100%; bold; 居中; **无斜体** }`
+   —— 我上一轮按 .h2 加了斜体，是错的（用户指出「小节标题不能是斜体」）。 */
+h3.st.en-h { font-style: normal; }
 /* 章/节标题：英文、中文是两个独立标题元素（不是 span 套在一个里），
    上下紧挨着、视觉上仍是一组。中文字号给足，别缩成看不清的小字。
    ⚠ 拆成兄弟元素后 em 相对父级 body（=1em）解析，不再相对前面的英文标题！
    要维持「中文 ≈ 英文标题的 80%」就得换算回 body 基准：
    英文 h2=1.5em → 中文 0.8×1.5=1.2em；英文 h3=1.14em → 中文 0.86×1.14≈0.98em。 */
 h2.ct.en-h, h3.st.en-h { margin-bottom: .22em; }
-h2.ct.zh-h { font-size: 1.2em; font-weight: 500; margin: 0 0 .8em;
-             line-height: 1.5; }
-h3.st.zh-h { font-size: .98em; font-weight: 400; opacity: .92;
-             margin: 0 0 .8em; }
-p.ch-num { font: .82em/1.4 ui-sans-serif, system-ui, sans-serif; letter-spacing: .16em;
-           text-transform: uppercase; margin: 2em 0 -1em; opacity: .75; }
+h2.ct.zh-h { margin: 0 0 .35em; line-height: 1.5; }
+h3.st.zh-h { font-size: 1em; font-weight: normal; margin: 0 0 .3em;
+             line-height: 1.5; text-align: center; }
+/* 中文小标题：字号 = 英文（用户两轮都报「中文标题比英文小」，别再缩） */
+h3.st.zh-h { opacity: .95; }
+/* 章号（原版 chapter-number：160% 加粗居中） */
+p.ch-num { font-size: 1.6em; font-weight: bold; text-align: center;
+           margin: 2em 0 -1em; }
 .noteref { text-decoration: none; }
 .notes { margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em; }
 .notes h3 { font-size: 1.1em; }
@@ -117,18 +218,26 @@ img.censor-note { display: inline-block; }
   .note b { color: #d7dbe2; }
   .notes { border-color: #3a3f48; }
 }
-/* ── 对照样式：顺序 + 弱化侧（用户 2026-09-14 定策）────────────────────
-   顺序 = flex 的 order（DOM 里恒为「英文在前、中文在后」，只改排布）；
-   弱化 = **只改颜色、不改字号**（用户明确要求：字号一致，用颜色区分）。
-   阅读器若不支持 flex，退化成英文在前 —— 内容一字不丢，只是顺序不同。 */
+/* ── 对照样式：弱化侧（用户 2026-09-14 定策）──────────────────────────
+   只改颜色、不改字号。⚠ 顺序规则（flex order）**已从 epub 撤掉**：
+   DOM 由 _reorder_pairs 物理前置（中文在前），阅读器顺序 = DOM 顺序。
+   旧版把 order 规则也发给了 epub，且元素清单漏了 <table>（公式表）——
+   order=0 的它浮到整组最前面，读者看到「公式A / 中文 / 英文」
+   （2026-09-16 用户截图实测，HTML 预览同样中招）。 */
+.dim-en .en { color: #8b9099; }
+.dim-zh .zh { color: #8b9099; }
+"""
+
+# 顺序规则：**仅 HTML 预览**（浏览器 flex 全支持，且要给「中英切换」用）。
+# 选择器用通配 `.pair > *` —— 任何元素类型（公式表/插图/题注/兜底段…）
+# 都排在本组中英之后，不会再有"没列进清单就跳到组首"的事故。
+ORDER_CSS = """
 .pair { display: flex; flex-direction: column; }
-.pair > .en, .pair > .zh, .pair > blockquote, .pair > figure { order: 3; }
+.pair > * { order: 4; }
 .ord-zh .pair > .zh { order: 1; }
 .ord-zh .pair > .en { order: 2; }
 .ord-en .pair > .en { order: 1; }
 .ord-en .pair > .zh { order: 2; }
-.dim-en .en { color: #8b9099; }
-.dim-zh .zh { color: #8b9099; }
 """
 
 PREVIEW_EXTRA = """
@@ -206,7 +315,11 @@ def pair_style_class(style: dict | None = None, **kw) -> str:
     return f"ord-{s['order']} dim-{s['dim']}"
 
 
-DEGRADE_ON_FAIL = True
+# ⚠ 2026-09-16 默认关闭（BIL_DEGRADE=1 可打开）。
+# 原设计：体检 FAIL 的小节「中文整段附于小节末尾」。实测它就是用户看到的
+# 「英文列表 + 一大坨中文 + 又英文」乱序的元凶，而且与「一段一段并排」的
+# 目标直接冲突。降级只在极端情况下才有意义，留着开关但默认不用。
+DEGRADE_ON_FAIL = os.environ.get("BIL_DEGRADE", "0") != "0"
 
 # 预览页的对照样式切换脚本。⚠ 必须放在**普通字符串**里：直接写进下面的
 # f-string 会被当成占位符，JS 的 `{` 会触发 SyntaxError（踩过）。
@@ -335,6 +448,217 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _disp_tex(html_str: str) -> str:
+    """公式块 html → LaTeX 原文（**必须还原 HTML 实体**）。
+
+    ⚠ 2026-09-16 实测：md 导入时正文被 `_esc()` 转义，`>`/`<` 变成
+    `&gt;`/`&lt;`，直接喂 MathJax → 生成的 SVG 里实体没定义 → librsvg 报
+    「corrupt header: xmlParseEntityRef」→ 整条公式渲染失败（prob ch2 挂 8 条）。
+    """
+    m = _DISPLAY_TEX_RE.match((html_str or "").strip())
+    if not m:
+        return ""
+    import html as _h
+    return _h.unescape(m.group(1)).strip()
+
+
+def _collect_eqs(results) -> None:
+    """预渲染全书行间公式（一个 node 批量进程；磁盘缓存命中秒回）。
+
+    必须在 render_chapter 之前调：_figure_html 渲染公式块时查 _EQ_RECS。
+    顺带建 _EQ_TAGS（公式编号 → 锚点），供正文交叉引用加超链接。
+    """
+    global _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS
+    _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS = {}, {}, {}, {}
+    texes = []
+    for r in results:
+        for sec in r.sections:
+            for f in getattr(sec, "figures", None) or []:
+                for h in (f.zh_html, f.en_html):
+                    t = _disp_tex(h)
+                    if t:
+                        texes.append(t)
+    texes = list(dict.fromkeys(texes))
+    if not texes:
+        return
+    try:
+        from . import eqrender as EQ
+        ok, why = EQ.available()
+        if not ok:
+            print(f"[公式] MathJax 不可用（{why}）→ 行间公式暂以原文展示")
+            return
+        recs = EQ.render_many(texes, display=True)
+        for tex, rec in zip(texes, recs):
+            _EQ_RECS[tex] = rec
+            tag = (rec.get("tag") or "").strip()
+            if tag:
+                # 同编号多见于改写重排：第一个出现的赢（编号本来就该唯一）
+                # ⚠ id 必须与「渲染时用的键」一致：公式表用**编号**算 id
+                # （`eq-<hash(tag)>`），而这里原来用 tex 算 → 正文链接指向另一个
+                # id，只能落到兜底的**隐形锚点**（点了等于没跳，实测 2.6.3）。
+                _key = re.sub(r"\s+", "", tag)
+                _EQ_TAGS.setdefault(_key, _eq_id(_key))
+        n_fail = sum(1 for rec in recs if not rec.get("ok"))
+        print(f"[公式] 行间公式 {len(recs)} 条渲染完成"
+              f"（编号索引 {len(_EQ_TAGS)} 条）"
+              + (f"，{n_fail} 条失败（已出错误框占位）" if n_fail else ""))
+    except Exception as e:                       # noqa: BLE001
+        print(f"[公式] 渲染失败，行间公式暂以原文展示：{e}")
+
+
+_EN_FIG_BY_NO: dict = {}          # 编号 → 英文原版公式图位（章节级，渲染前建好）
+_EMITTED_EQ_IDS: set = set()      # 每个公式只允许一个 id（重复 id 非法）
+_EMITTED_EQ_NO: set = set()       # 已发射的**公式编号**（一个编号只出一张表）
+
+
+def _eq_id(tex: str) -> str:
+    import hashlib
+    return "eq-" + hashlib.sha1(tex.encode("utf-8")).hexdigest()[:12]
+
+
+def _eq_id_once(tex: str) -> str:
+    """返回可用的 id：同一公式只给第一个发射者，后来者拿空串（不带 id）。"""
+    _eid = _eq_id(tex)
+    if _eid in _EMITTED_EQ_IDS:
+        return ""
+    _EMITTED_EQ_IDS.add(_eid)
+    return _eid
+
+
+def _eq_key(no: str) -> str:
+    """公式编号比较键 = `LR.eq_no_key`（去空白 + 去前导零，见那边说明）。"""
+    return LR.eq_no_key(no)
+
+
+def _eq_div_html(tex: str) -> str:
+    """行间公式 → 居中 <div class="eq">（带锚点，供交叉引用跳转）。
+
+    epub 用 images/ 文件（_EQ_FILES 登记，打包时写入），HTML 预览内联。
+    """
+    rec = _EQ_RECS.get(tex)
+    if not rec or not rec.get("png"):
+        return ""
+    try:
+        if _INLINE:
+            href = _data_uri(f"{_eq_id(tex)}.png", Path(rec["png"]).read_bytes())
+        else:
+            _EQ_FILES[f"{_eq_id(tex)}.png"] = rec["png"]
+            href = f"images/{_eq_id(tex)}.png"
+    except OSError:
+        return ""
+    style = ""
+    if rec.get("height_em"):
+        style = (f' style="height:{rec["height_em"]:.2f}em;'
+                 f'vertical-align:-{(rec.get("depth_em") or 0):.2f}em;"')
+    _tag = (rec.get("tag") or "").strip()
+    _img = f'<img class="eqimg" src="{href}" alt="公式"{style}/>'
+    if not _tag:
+        # 无编号公式：居中图即可（旧实现走到这里会 NameError——不可达的死代码）
+        return f'<div class="eq">{_img}</div>'
+    _eid = _eq_id_once(tex)
+    _idattr = f' id="{_eid}"' if _eid else ""
+    return (f'<table class="eqtable"{_idattr}><colgroup>'
+            f'<col width="88%"/><col width="12%"/></colgroup><tr>'
+            f'<td class="eqcell">{_img}</td>'
+            f'<td class="eqno">({_esc(_tag)})</td></tr></table>')
+
+
+def _link_eq_refs(html_str: str) -> str:
+    """正文里的公式编号引用 → 指向对应公式锚点的超链接（确定性零误伤）。
+
+    只在「纯文本段」里替换（按标签切开，不碰属性/已生成的元素）；
+    编号必须在 _EQ_TAGS 里（本章确实有这条公式）才加链接。
+    """
+    if not _EQ_TAGS:
+        return html_str
+    parts = re.split(r"(<[^>]+>)", html_str)
+    hit = False
+    for i, seg in enumerate(parts):
+        if seg.startswith("<"):
+            continue
+
+        def sub(m):
+            nonlocal hit
+            aid = _EQ_TAGS.get(m.group(1))
+            if not aid:
+                return m.group(0)
+            hit = True
+            return f'<a class="eqref" href="#{aid}">{m.group(0)}</a>'
+
+        parts[i] = _EQ_REF_RE.sub(sub, seg)
+    return "".join(parts) if hit else html_str
+
+
+def _en_math(html_str: str) -> str:
+    """英文段里的行内 LaTeX 也编译（ml 英文原书的公式是 LaTeX 字面量）。
+
+    ⚠ 代码块绝不能过这一步：shell 的 `$PATH`/`$x` 会被当成行内公式。
+    """
+    if "$" not in html_str:
+        return html_str
+    import html as _h
+
+    def sub(m):
+        return LR.inline_html(_h.unescape(m.group(1)))
+
+    return _INLINE_TEX_RE.sub(sub, html_str)
+
+
+def _zh_math(html_str: str) -> str:
+    """中文段里的行内 $...$ → 纯 HTML 标签（<i>/<sup>/<sub>+Unicode）。
+
+    段落 html 是转义过的：公式片段先 unescape 再交给 latexrender，
+    输出的标签保持原样（正文其余部分不动）。
+    """
+    if "$" in html_str:
+        import html as _h
+
+        def sub(m):
+            return LR.inline_html(_h.unescape(m.group(1)))
+
+        html_str = _INLINE_TEX_RE.sub(sub, html_str)
+    return _link_eq_refs(html_str)
+
+
+def _en_elem(b, epigraph: bool = False) -> tuple[str, str]:
+    """英文块 → (元素名, class)：**照原版的块类型出标签**，别一律 <p>。
+
+    pre=代码块（缩进/换行是内容）、li=列表项、blockquote=引文/题词。
+    提示框（warning/note/tip）给 boxed 类，还原原书的框。
+    """
+    if b.type == "code":
+        return "pre", "en en_original code"
+    if b.type == "li" or b.in_list:
+        return "li", "en en_original li"
+    if b.type == "quote":
+        return "blockquote", ("en en_original epigraph" if epigraph
+                              else "en en_original quote")
+    cls = "en en_original"
+    if epigraph:
+        cls += " epigraph"
+    if b.box:
+        cls += " boxed"
+    # 原版脚注段 <p class="fn">：透传原版 class → CSS 80% 小字 + 悬挂缩进
+    # （照抄原版 .fn 口径；用户 2026-09-17 报「2.6.4 末尾脚注没按原版小字」）
+    if "fn" in (getattr(b, "cls", "") or "").lower().split():
+        cls += " fn"
+    return "p", cls
+
+
+def _multi_paras(joined: str, tag: str, cls: str) -> str:
+    """把以 \\x01 为段界的 html 拼回**逐段独立**的元素。
+
+    用户 2026-09-16：不许把两段合成一段 —— pair 里多段时每段自己一个
+    <p>，保住原文段落结构（(II)/(III)、(1)/(2) 列表不再被压平）。
+    """
+    out = []
+    for seg in joined.split("\x01"):
+        seg = seg.strip()
+        if seg:
+            out.append(f'<{tag} class="{cls}">{seg}</{tag}>')
+    return "\n".join(out)
+
+
 def _plain_text(html_str: str) -> str:
     """HTML 字符串 → 纯文本（去标签 + 实体还原），供 alt 属性等场景用。
 
@@ -394,6 +718,95 @@ def _looks_like_title(zh: str, en: str) -> bool:
     return bool(letters) and sum(1 for c in letters if c.isupper()) / len(letters) > 0.7
 
 
+def _img_href(src: str) -> str:
+    """图片资源 → 成品里的 href（HTML 预览内联 data URI；epub 走 images/ 平铺名）。"""
+    if not src:
+        return ""
+    if _INLINE:
+        return IMG_CACHE.get(src) or ""
+    return "images/" + src.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+# 练习块（原书 Exercise/练习 N.M）：标签粗体、块上下各一条分隔线。
+# 原书的横线是装饰图（line.jpg，解析层已摘），这里用 border 还原观感。
+_EXER_RE = re.compile(r"^\s*(?:Exercise|练习)\s*\d+(?:\.\d+)?", re.I)
+
+
+def _exercise_cls(text: str) -> str:
+    """练习段追加 ` exercise` 类（配 CSS `.pair > .exercise`）。"""
+    return " exercise" if _EXER_RE.match(text or "") else ""
+
+
+def _eq_figure_html(fig, prefix: str, side: str, en_no: str, ztex: str) -> str:
+    """行间公式图位。返回 "" 表示「本侧不出图」（另一侧会出）。
+
+    ⚠⚠ **同一条公式只允许出一张表，位置只由英文侧的 `en_para`（源偏移）决定。**
+    旧实现两条路径都发（英文侧按源偏移发一次 + 中文侧"按编号借用原版"再发一次），
+    守卫 `_EMITTED_EQ_SRC` 按 `(图 src, 中文 tex)` 去重 → 中文侧借用先占键 →
+    英文侧**在正确位置**的那次发射被静默吞掉（实测 13 条）→ 公式"漂"到中文
+    pair 锚（比例插值）上；另有 6 个编号两处都出（116 张表 vs 105 个编号）。
+    详见 HANDOFF §2.6。现在：
+
+    * **有编号**（A 类，`en_no` 来自英文原版自己的片段）：只由**英文侧**出，
+      按**编号**认领唯一（`_EMITTED_EQ_NO`），中文侧一律 ""。
+    * **无编号**（B 类，英文版没收这一条）：中文侧自渲染一份（按 tex 认领唯一）。
+    """
+    # ① A 类：英文原版那一份 —— 只由英文侧发射
+    if en_no:
+        if side != "en":
+            return ""
+        key = _eq_key(en_no)           # 比较/显示都用归一形（2.01 → 2.1）
+        if key in _EMITTED_EQ_NO:      # 同号只出一张表
+            return ""
+        # 锚点跟着**实际渲染的那一份**走（正文里 `(2.2)` 的交叉引用要用它）
+        _anchor = (f'<span class="eq-anchor" id="{_eq_id(ztex)}"></span>'
+                   if ztex else "")
+        # 表格型公式（`<div><table id="eqn02_80">`）：没有图片，原样渲染原块
+        # （原块右栏自带编号，排版天然正确）
+        if fig.en_html and not fig.en_src:
+            _EMITTED_EQ_NO.add(key)
+            return (f'<figure class="fig tbl" id="{_eq_id(key)}">'
+                    f'{_anchor}{fig.en_html}</figure>')
+        href = _img_href(fig.en_src)
+        if not href:
+            # 编号在、图不在（极少）：有中文 tex 就用我们的图兜底，总比丢一条强
+            _div = _eq_div_html(ztex) if ztex else ""
+            if not _div:
+                return ""
+            _EMITTED_EQ_NO.add(key)
+            return _div
+        _EMITTED_EQ_NO.add(key)
+        _img = f'<img class="eqimg" src="{href}" alt="公式 {_esc(key)}"/>'
+        # ⚠ 英文原版的公式图**只有公式、没有编号**（原书的 `(2.36)` 是右侧独立
+        # 文本），所以编号必须以文本补回。排法照抄原版：两列表格（88%/12%）、
+        # 编号贴版心右边，不是紧贴公式。
+        # id 用归一后的编号 → 与 `_EQ_TAGS`（键 = 中文侧 tag）一致，正文引用
+        # 才能直接命中表格本体，而不是落到隐形锚点。
+        return (f'<table class="eqtable" id="{_eq_id(key)}"><colgroup>'
+                f'<col width="88%"/><col width="12%"/></colgroup><tr>'
+                f'<td class="eqcell">{_anchor}{_img}</td>'
+                f'<td class="eqno">({_esc(key)})</td></tr></table>')
+
+    # ② B 类：英文版没有这一条（只有中文 md 的 $$ 块）
+    if side != "zh" or not ztex:
+        return ""
+    tag = _eq_tag_of(ztex)
+    if tag and _eq_key(tag) in _EN_FIG_BY_NO:
+        return ""      # 英文原版里有同号片段 → 交给英文侧（那边位置准、编号准）
+    _div = _eq_div_html(ztex)
+    if _div:
+        return _div
+    # 渲染不出来（极端 tex）：给个可读的等宽居中块，别吐 $$ 原文
+    import html as _h
+    return f'<div class="eq eq-raw">{_h.escape(ztex)}</div>'
+
+
+def _eq_tag_of(ztex: str) -> str:
+    """中文公式块的编号（md 的 `\\tag{2.67}`）；没有返回 ""。"""
+    rec = _EQ_RECS.get(ztex) or {}
+    return (rec.get("tag") or "").strip()
+
+
 def _figure_html(fig, prefix: str, side: str = "zh") -> str:
     """渲染一个图位。
 
@@ -404,37 +817,41 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
     没有 src —— 旧实现只看 `src`，`src` 为空就 `return ""`，整张表被
     **静默丢弃**（实测《思考快与慢》12 张表全没了，读者只看到孤立的
     「Table 1」标号）。这类块直接把原始 HTML 渲染出来。
+
+    ⚠ 2026-09-16 深夜：**「是不是公式」只看一件事 —— 这一份有没有自己的编号**
+    （`FigureRef.en_no`，从英文原版自己的片段里抽）。原判据是「配对到公式块
+    or 文件名像 eqn*」，于是装饰横线（`images/line.jpg`）和无编号公式
+    （`images/equ02_01.jpg`）都冒名顶替了真公式的编号（见 HANDOFF §2.6）。
     """
     # 标号跟侧走：英文图优先英文标号（Figure 28），中文图优先中文标号
     # （图28-1）；本侧没有就用另一侧兜底（旧实现恒取中文，英文图上挂中文标号）
     cap = ((fig.caption_en or fig.caption_zh) if side == "en"
            else (fig.caption_zh or fig.caption_en)) or fig.caption_mt or ""
+    en_no = (getattr(fig, "en_no", "") or "").strip()
+    ztex = _disp_tex(fig.zh_html or "")
+    # 行间公式两分类（A 有编号 / B 只有中文侧有）—— 见 _eq_figure_html
+    if en_no or (ztex and not (fig.en_src or fig.en_html)):
+        return _eq_figure_html(fig, prefix, side, en_no, ztex)
     # ① 非图片可视块：渲染块自身 HTML（表格/SVG）
     _blk = ((fig.zh_html if side == "zh" else fig.en_html) or "").strip()
     if _blk:
+        if _disp_tex(_blk):
+            # 中文 `$$` 块，而英文侧另有一张（无编号的）原图 → 中文这份不出，
+            # 免得同一公式出两次（英文侧按原样出那张图，见下面的图片链路）
+            return ""
         out = ['<figure class="fig tbl">', _blk]
         if cap:
             out.append(f"<figcaption>{_esc(cap)}</figcaption>")
         out.append("</figure>")
         return "\n".join(out)
     # ② 图片：走原来的图片链路
-    src = (fig.zh_src if side == "zh" else fig.en_src) or (
-        fig.en_src if side == "zh" and not fig.zh_src else "")
-    if side == "en":
-        src = fig.en_src
-    elif not fig.zh_src:
-        src = ""
+    src = fig.zh_src if side == "zh" else fig.en_src
     if not src:
         return ""
+    href = _img_href(src)
+    if not href:
+        return ""
     name = src.replace("\\", "/").rsplit("/", 1)[-1]
-    if _INLINE:
-        uri = IMG_CACHE.get(src) or IMG_CACHE.get(fig.en_src or "")
-        href = uri or ""
-        if not href:
-            return ""
-    else:
-        # EPUB 内资源统一平铺到 images/ 下
-        href = f"images/{name}"
     out = [f'<figure class="fig" id="{prefix}-{name}">',
            f'<img src="{href}" alt="{_esc(cap[:80])}"/>']
     if cap:
@@ -452,9 +869,16 @@ def _looks_like_zh_title(z: str) -> bool:
     判据保守：短、无句读/冒号、无等号运算符、汉字占比高。
     """
     s = (z or "").strip()
-    if not (0 < len(s) <= 20):
+    # 下限 6 字（2026-09-16 实测：3 字的过渡语「也可以」被提升成了 <h4> 小标题，
+    # 在成品里是一行突兀的粗体 —— 它就是 prob ch2 §2.1 里那句
+    # 「Or, equally well,」的中文，本该是普通段落）
+    if not (6 <= len(s) <= 20):
         return False
     if re.search(r"[。！？；：，、.!?;:,]", s):
+        return False
+    # 连接词/过渡语黑名单：这类短句是正文的一部分，永远不是标题
+    if s in ("也可以", "或者", "因此", "于是", "同样", "反之", "此外", "但是",
+             "然而", "例如", "所以", "于是乎", "也就是说"):
         return False
     if re.search(r"[=+×÷<>%/]", s):
         return False
@@ -487,6 +911,21 @@ def _iter_figures(sec):
     return by_anchor
 
 
+def _iter_figures_en_by_para(sec):
+    """英文侧图位：**按英文段序**（en_para）分组 —— 精确插在「第 N 段英文之后」。
+
+    为什么不用 pair 序：`pipeline._anchor_pair()` 是用**比例插值**
+    （`frac=(after+1)/n → round(frac*len(pairs))`）把段序换算成 pair 序的，
+    公式因此被"猜"到某一对里 → 用户看到的「行间公式相对英文段落漂移」。
+    """
+    by_para: dict = {}
+    for f in getattr(sec, "figures", None) or []:
+        k = getattr(f, "en_para", -1)
+        if isinstance(k, int) and k >= 0:
+            by_para.setdefault(k, []).append(f)
+    return by_para
+
+
 def _iter_figures_en(sec):
     """英文侧图位：按 en_after（英文原文里的位置）分组。
 
@@ -505,6 +944,17 @@ def _iter_figures_en(sec):
 
 def render_chapter(res, prefix=""):
     """res: pipeline.ChapterResult → xhtml 片段。"""
+    _EMITTED_EQ_IDS.clear()
+    _EMITTED_EQ_NO.clear()
+    # ⚠ **编号是跨语言/跨配对的权威锚点**：只要中文公式带编号，就直接去英文侧按编号
+    # 找那张原版公式图来渲染 —— 不再依赖「位置配对」（配对一偏就会拿我们自渲染的
+    # PNG 顶上，用户实测 (2.100)/(2.101) 就是这样）。
+    _EN_FIG_BY_NO.clear()
+    for _s in res.sections:            # 本章范围内的索引即可
+        for _f in (getattr(_s, "figures", None) or []):
+            _no = _eq_key(getattr(_f, "en_no", ""))
+            if _no and _no not in _EN_FIG_BY_NO:
+                _EN_FIG_BY_NO[_no] = _f
     parts = []
     heads = list(getattr(res, "en_heads", None) or [])
     zh_t = (res.zh_title or "").strip()
@@ -553,7 +1003,24 @@ def render_chapter(res, prefix=""):
             h = _figure_html(f, prefix, side="zh")
             if h:
                 parts.append(h)
-        for pi, p in enumerate(sec.pairs):
+        # 同一 pair 内两侧段数相等且 >1（如 2:2）→ **拆开逐段交错渲染**：
+        # 读者要看的是「一段中文紧贴它那一段英文」，而不是「中文两段 +
+        # 英文两段」两个色块（用户 2026-09-16 反复点名）。只在渲染层做，
+        # 上游配对与指标一格不动（决策中性）。
+        _wl: list = []
+        for _pi, _p in enumerate(sec.pairs):
+            if len(_p.en) == len(_p.zh) > 1:
+                for _k in range(len(_p.en)):
+                    _q = copy.copy(_p)
+                    _q.en, _q.zh = [_p.en[_k]], [_p.zh[_k]]
+                    _wl.append((_pi, _q, _k == len(_p.en) - 1))
+            else:
+                _wl.append((_pi, _p, True))
+        _figs_en_para = _iter_figures_en_by_para(sec)   # 段序 → 图位
+        _emitted_zh: set = set()      # 自检用：本小节实际渲染出去的中文段下标
+        _emitted_en: set = set()      # 自检用：本小节实际渲染出去的英文段下标
+        _claimed_en = {x for _p in sec.pairs for x in (_p.en or [])}
+        for pi, p, _last in _wl:
             if not p.en:
                 # ── 英文为空的 pair = **中文独有段**（中文小标题 / 表格图题注 /
                 # 列表项 / 参考文献条目）。旧实现直接 continue 整对跳过 →
@@ -572,15 +1039,18 @@ def render_chapter(res, prefix=""):
                     _zplain = " ".join(sec.zh_paras[x].text
                                        for x in p.zh).strip()
                     zh_html = _put_notes(
-                        " ".join(sec.zh_paras[x].html for x in p.zh),
+                        _zh_math("\x01".join(sec.zh_paras[x].html
+                                             for x in p.zh)),
                         p, prefix, note_texts)
+                    _emitted_zh.update(p.zh)
                     if _looks_like_zh_title(_zplain):
                         parts.append(_head_block(
                             "h4", "st", "", E.norm_cjk_spacing(_zplain)))
                     else:
                         _cls = ("caption" if _is_caption_text(_zplain)
-                                else "zh zh_transed")
-                        parts.append(f'<p class="{_cls}">{zh_html}</p>')
+                                else "zh zh_transed") + _exercise_cls(_zplain)
+                        _emitted_zh.update(p.zh)
+                        parts.append(_multi_paras(zh_html, "p", _cls))
                 # 挂在中文独有段上的中文图必须照常渲染（否则整张图丢失）
                 for f in figs.get(pi, []):
                     h = _figure_html(f, prefix, side="zh")
@@ -599,56 +1069,107 @@ def render_chapter(res, prefix=""):
                 # Figure 1.2）：标号已经跟着表/图出现，这里不再重复输出。
                 parts.append('<div class="pair">')
             else:
-                en_html = " ".join(_rewrite(sec.en_paras[x].html, n_notes,
-                                            prefix, note_texts)
-                                   for x in p.en)
-                parts.append(f'<div class="pair"><{tag} class="en en_original">'
-                             f'{en_html}</{tag}>')
-            # 英文图：落在英文原文的位置（不动、不删）
-            for f in figs_en.get(pi, []):
-                h = _figure_html(f, prefix, side="en")
-                if h:
-                    parts.append(h)
+                # 逐段渲染（不并段）：pair 里多个英文段时每段自己一个元素，
+                # 保住英文原版的段落结构（用户 2026-09-16）。
+                # 章首前几个 pair 里的第一个 quote = 题词（原版居中）。
+                # ⚠ 别卡 pi<=1：章首常有页码/书名等零碎段，题词会落到 pi=1~3。
+                _first_sec = sec is res.sections[0]
+                _epi = (_first_sec and pi <= 3
+                        and sec.en_paras[p.en[0]].type == "quote")
+                _segs = []
+                for x in p.en:
+                    _b = sec.en_paras[x]
+                    _t, _c = _en_elem(_b, _epi)
+                    _c += _exercise_cls(getattr(_b, "text", ""))
+                    _h = _rewrite(_b.html, n_notes, prefix, note_texts)
+                    if _b.type != "code":       # 代码里的 $ 不是公式
+                        _h = _en_math(_h)
+                    _h = _inline_img_src(_h, res, prefix)   # 行内公式图走内联/打包
+                    _segs.append(f'<{_t} class="{_c}">{_h}</{_t}>')
+                    # 该段之后的公式图/插图：**按段序精确插入**（精确到段）
+                    for _f in _figs_en_para.pop(x, []):
+                        _fh = _figure_html(_f, prefix, side="en")
+                        if _fh:
+                            _segs.append(_fh)
+                parts.append('<div class="pair">' + "\n".join(_segs))
+                _emitted_en.update(p.en)
+            # 英文图：落在英文原文的位置（不动、不删）；拆段时只挂在最后一段后
+            if _last:
+                for f in figs_en.get(pi, []):
+                    if getattr(f, "en_para", -1) >= 0:
+                        continue          # 已按段序精确插过，别再重复出
+                    h = _figure_html(f, prefix, side="en")
+                    if h:
+                        parts.append(h)
+            # 收尾：本小节没落地（段序越界）的图，按对挂载兜底
+            for _k in list(_figs_en_para):
+                if _k <= (p.en[-1] if p.en else -1):
+                    for f in _figs_en_para.pop(_k, []):
+                        h = _figure_html(f, prefix, side="en")
+                        if h:
+                            parts.append(h)
             if getattr(p, "censored", False) and p.zh_fix:
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
                 parts.append(f'<p class="zh censorship_fix">'
                              f'{censor_note()}{_esc(p.zh_fix)}</p>')
-            elif p.zh and not _cap_consumed(sec, p) \
-                    and not E.no_translate_reason(
-                        " ".join(sec.en_paras[x].text for x in p.en)):
+            elif p.zh and not _cap_consumed(sec, p):
+                # ⚠ 2026-09-16 修：这里原来还有 `and not E.no_translate_reason(...)`，
+                # 而那个启发式把「≤3 个英文词且 ≤16 字母」的段判成 symbolic（如
+                # 「(III) Consistency.」）→ **已经配对好的中文被整段丢掉**
+                # （用户报「(III) 具有一致性. 不见了」就是这个）。有中文就必须渲染，
+                # 「无需翻译」只该用来省掉占位符，不该用来删真实内容。
                 _j = p.zh[0]
                 while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
                     _hiz += 1
-                zh_html = " ".join(sec.zh_paras[x].html for x in p.zh)
-                zh_html = _put_notes(zh_html, p, prefix, note_texts)
+                zh_html = _put_notes(
+                    _zh_math("\x01".join(sec.zh_paras[x].html for x in p.zh)),
+                    p, prefix, note_texts)
                 _zplain = " ".join(sec.zh_paras[x].text for x in p.zh).strip()
                 _eplain = " ".join(sec.en_paras[x].text for x in p.en).strip()
                 # 渲染时提升（决策中性）：中文小标题在源文件里常是普通段
                 # （不是 heading），位置与英文小标题对应 → 渲染成标题
                 if _looks_like_title(_zplain, _eplain):
+                    _emitted_zh.update(p.zh)
                     parts.append(_head_block("h4", "st", "", _zplain))
                 else:
-                    # 图表题注：居中、小字（用户要求：题注放图表下面居中）
-                    _cls = ("caption" if _is_caption_text(_zplain) else
-                            "zh zh_transed")
-                    parts.append(f'<{tag} class="{_cls}">{zh_html}</{tag}>')
+                    # 图表题注：居中、小字（用户要求：题注放图表下面居中）；
+                    # 其余逐段独立成元素（不并段，2026-09-16）
+                    _emitted_zh.update(p.zh)
+                    if _is_caption_text(_zplain):
+                        parts.append(_multi_paras(zh_html, tag, "caption"))
+                    else:
+                        _zc = ("zh zh_transed epigraph"
+                               if sec is res.sections[0] and pi <= 3
+                               and sec.en_paras[p.en[0]].type == "quote"
+                               else "zh zh_transed")
+                        _zc += _exercise_cls(_zplain)
+                        # 英文侧是提示框 → 中文跟着进同一个框（视觉上是一块）
+                        if sec.en_paras[p.en[0]].box:
+                            _zc += " boxed"
+                        parts.append(_multi_paras(zh_html, tag, _zc))
             elif p.mt:
-                zh_html = _put_notes(_esc(p.mt), p, prefix, note_texts)
+                zh_html = _put_notes(_zh_math(_esc(p.mt)), p, prefix,
+                                     note_texts)
+                # 英文侧是原版脚注段（class=fn）→ 中文补译同口径小字（原版格式）
+                _fn = any("fn" in (getattr(sec.en_paras[x], "cls", "")
+                                   or "").lower().split() for x in p.en)
                 # ⚠ 0395b1f 误删了这里的 mt_flag()（那条「不再输出 AI 翻译图标」
                 # 的注释本是讲 p.zh 分支的引用格式）—— 但 mt 段就是要靠它区分
                 # 「AI 补译」与「纸书原译文」，docs/使用说明.md:457/480 与
                 # test_mock_llm.py 都按它断言，图例与单语版 _drop 也依赖它。
-                parts.append(f'<p class="zh">{mt_flag()}{zh_html}</p>')
+                parts.append(f'<p class="zh{" fn" if _fn else ""}">'
+                             f'{mt_flag()}{zh_html}</p>')
             else:
                 # 中文缺失时**什么都不输出**（用户要求：不要「〔中文版未收录，
                 # 待补译〕」占位符）。缺就是缺，英文段照样单独成对。
                 pass
-            # 中文图：跟着对应中文段落的相对位置
-            for f in figs.get(pi, []):
-                h = _figure_html(f, prefix, side="zh")
-                if h:
-                    parts.append(h)
+            # 中文图：跟着对应中文段落的相对位置（拆段时只挂在最后一段后）
+            if _last:
+                for f in figs.get(pi, []):
+                    h = _figure_html(f, prefix, side="zh")
+                    if h:
+                        parts.append(h)
             parts.append("</div>")
         # anchor 超出范围（挂在小节末尾）
         for k in sorted(figs):
@@ -663,11 +1184,86 @@ def render_chapter(res, prefix=""):
                     h = _figure_html(f, prefix, side="en")
                     if h:
                         parts.append(h)
+        # ── 编号守恒（硬保证）：本小节里「有英文原版编号、却一张都没发出去」的
+        #    公式，补发在小节末尾。宁可位置糙一点，也绝不允许编号缺席 ——
+        #    旧实现两条发射路径互相不知情，会静默吞掉正确位置的那一次
+        #    （实测 prob ch2 被吞 13 条，HANDOFF §2.6）。
+        for f in (getattr(sec, "figures", None) or []):
+            _no = (getattr(f, "en_no", "") or "").strip()
+            if _no and _eq_key(_no) not in _EMITTED_EQ_NO:
+                h = _figure_html(f, prefix, side="en")
+                if h:
+                    parts.append(h)
+                    print(f"    [公式兜底] {res.key} ({_no}) 未按源位落出"
+                          f" → 补在本小节末尾")
+        # ── 兜底：**没被任何 pair 覆盖的中文段必须照常渲染**。
+        # 用户实测：「(III) 具有一致性.」在成品里整句消失 —— 它悬在配对之外，
+        # 渲染层谁也没管它。宁可多一段（看得见、可挑错），也不能静默丢内容。
+        _claimed = {j for _p in sec.pairs for j in (_p.zh or [])}
+        _orphan = [j for j in range(len(sec.zh_paras)) if j not in _claimed]
+        if _orphan:
+            print(f"    [渲染] {res.key} 小节「{(sec.en_title or '章首')[:20]}」"
+                  f"有 {len(_orphan)} 段中文未被配对覆盖 → 兜底渲染")
+            for j in _orphan:
+                bp = sec.zh_paras[j]
+                if not (bp.text or "").strip():
+                    continue
+                _emitted_zh.add(j)
+                parts.append(f'<p class="zh zh_transed zh-orphan">'
+                             f'{_zh_math(bp.html)}</p>')
         if sec.degrade and DEGRADE_ON_FAIL and sec.zh_paras:
+            _emitted_zh.update(range(len(sec.zh_paras)))
             parts.append('<div class="zh-fallback">')
             for bp in sec.zh_paras:
-                parts.append(f'<p class="zh">{bp.html}</p>')
+                parts.append(f'<p class="zh">{_zh_math(bp.html)}</p>')
             parts.append("</div>")
+
+        # ── 自检：本小节的中文段是否**全部**渲染出去了（用户 2026-09-16：
+        #    「(III) 具有一致性.」整句消失，而没有任何报警）。cap_consumed 的
+        #    标号段由图表注承载，不算丢。
+        _cons = {j for j in range(len(sec.zh_paras))
+                 if getattr(sec.zh_paras[j], "cap_consumed", False)}
+        _lost = [j for j in range(len(sec.zh_paras))
+                 if j not in _emitted_zh and j not in _cons]
+        if _lost:
+            _txts = " / ".join((sec.zh_paras[j].text or "")[:16] for j in _lost[:4])
+            print(f"    [自检!] {res.key} 小节「{(sec.en_title or '章首')[:18]}」"
+                  f"中文段未渲染 {len(_lost)} 段 → {_txts}")
+
+        # ── EN 段守恒自检（用户问「怎么保证英文内容全保留」的硬对账，
+        #    HANDOFF §2.5 ⭐）：英文原版的每一段必须**恰好被渲染一次**。
+        #    两个不变式：
+        #    ① 覆盖 —— 不被任何 pair 认领的英文段 = 静默消失（cap_consumed
+        #       的标号段由图表注承载，不算丢）；
+        #    ② 恰好一次 —— 同一段被两个 pair 认领 = 成品里出现两遍。
+        _en_cons = {x for x in range(len(sec.en_paras))
+                    if getattr(sec.en_paras[x], "cap_consumed", False)}
+        _en_unclaimed = [x for x in range(len(sec.en_paras))
+                         if x not in _claimed_en and x not in _en_cons]
+        if _en_unclaimed:
+            _etxts = " / ".join((sec.en_paras[x].text or "")[:24]
+                                for x in _en_unclaimed[:3])
+            print(f"    [EN自检!] {res.key} 小节「{(sec.en_title or '章首')[:18]}」"
+                  f"{len(_en_unclaimed)} 段英文未被任何 pair 覆盖（将丢失）"
+                  f" → {_etxts}")
+        _en_total = sum(len(p.en) for p in sec.pairs if p.en)
+        if _en_total != len(_claimed_en):
+            print(f"    [EN自检!] {res.key} 小节「{(sec.en_title or '章首')[:18]}」"
+                  f"pair 覆盖 {_en_total} 段次 > 实际 {len(_claimed_en)} 段"
+                  f" → 有英文段被多个 pair 重复认领（成品重复渲染）")
+        if _claimed_en - _emitted_en:
+            _miss = sorted(_claimed_en - _emitted_en)
+            _etxts = " / ".join((sec.en_paras[x].text or "")[:24] for x in _miss[:3])
+            print(f"    [EN自检!] {res.key} 小节「{(sec.en_title or '章首')[:18]}」"
+                  f"{len(_miss)} 段英文被 pair 认领却未渲染 → {_etxts}")
+
+    # ── 编号守恒断言：本章每条「英文原版带编号的公式」必须恰好发射一次 ──
+    # 英文原版有编号 ≠ 我们一定发射成功（图丢了/名字怪），所以只对
+    # 「_EN_FIG_BY_NO 里登记过的」对账；缺席要大声报出来，不许静默。
+    _missing_no = sorted(_EN_FIG_BY_NO.keys() - _EMITTED_EQ_NO)
+    if _missing_no:
+        print(f"    [公式自检!] {res.key} 有 {len(_missing_no)} 个编号没发射出来"
+              f" → {_missing_no[:10]}")
 
     if res.notes:
         # 注释区容器；duokan-footnote-content 挂在每个 aside 内的 ol 上
@@ -782,6 +1378,7 @@ def build_html(results, out: Path, title="Nexus 中英双语版", meta=None,
     tot, matched, mt, miss, bad = _stats_of(results)
     # 预览页是单文件 HTML：图片以 data URI 内联，否则脱离 epub 打不开
     global _INLINE
+    _collect_eqs(results)                     # 行间公式批量预渲染（磁盘缓存）
     IMG_CACHE.clear()
     for r in results:
         for sec in r.sections:
@@ -793,8 +1390,10 @@ def build_html(results, out: Path, title="Nexus 中英双语版", meta=None,
                             IMG_CACHE[src] = _data_uri(
                                 src, data)
     _INLINE = True
-    body = "\n".join(render_chapter(r, prefix=f"ch{i}")
-                     for i, r in enumerate(results))
+    body = _ensure_eq_anchors(_link_refs_by_eqno("\n".join(
+        _reorder_pairs(render_chapter(r, prefix=f"ch{i}"),
+                       zh_first=(style.get("order", "zh") != "en"))
+        for i, r in enumerate(results))))
     _INLINE = False
     stats = (f"章节 <b>{len(results)}</b> · 段落对 <b>{tot}</b> · "
              f"命中中文 <b>{matched}</b> · AI 补译 <b>{mt}</b> · "
@@ -818,7 +1417,7 @@ def build_html(results, out: Path, title="Nexus 中英双语版", meta=None,
     doc = f"""<!DOCTYPE html>
 <html lang="zh-CN" class="{pair_style_class(style)}"><head><meta charset="utf-8"/>
 <title>{title}</title>
-<style>{CSS}{PREVIEW_EXTRA}</style></head>
+<style>{CSS}{ORDER_CSS}{PREVIEW_EXTRA}</style></head>
 <body>
 <div class="banner"><div class="bt">{title}</div><div class="bs">{subtitle or stats}</div></div>
 <input type="radio" name="mode" id="mode-bi" checked/>
@@ -1334,11 +1933,14 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
     没有就回落默认值。
     """
     docs, manifest, spine = [], [], []
+    _collect_eqs(results)          # 行间公式批量预渲染（render_chapter 要查表）
     # (href, 标签, 子条目[(href, 标签)])——nav 和 NCX 共用一棵树
     toc_entries: list[tuple[str, str, list]] = []
     for i, r in enumerate(results):
         name = f"ch{i:02d}.xhtml"
-        body = render_chapter(r, prefix=f"ch{i}")
+        body = _ensure_eq_anchors(_link_refs_by_eqno(_reorder_pairs(
+            render_chapter(r, prefix=f"ch{i}"),
+            zh_first=((style or {}).get("order", "zh") != "en"))))
         if lang != "bi":
             body = _only_lang(body, lang)
             if not body.strip():
@@ -1349,7 +1951,9 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
         # 标签退化成文件 <title>（Chapter 4×3 那种垃圾条目，2026-09 实测）；
         # 明确登记后它才按我们给的标签显示。注释跟着引用走进各自分片
         # （微信弹窗要求同文件）
-        pieces = _split_chapter_body(body, lang)
+        # ⚠ 锚点兜底必须**在切分之后**再跑一次：章节被切成 ch00/ch00_1 后，
+        # 原锚点可能落在另一片里 → 片内链接变死链（实测 epub 里 4 条）。
+        pieces = [_ensure_eq_anchors(p) for p in _split_chapter_body(body, lang)]
         subs: list[tuple[str, str]] = []
         for k, piece in enumerate(pieces):
             pname = name if k == 0 else f"ch{i:02d}_{k}.xhtml"
@@ -1382,6 +1986,17 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
             if data:
                 images[name] = data
                 break
+    # 正文行内图（行内公式图）：字节已在渲染时登记
+    for name, data in _INLINE_IMGS.items():
+        images.setdefault(name, data)
+    # 行间公式 PNG（_collect_eqs 渲染、render_chapter 登记）：进包 + 登记
+    for name, path in sorted(_EQ_FILES.items()):
+        if not path:
+            continue
+        try:
+            images[name] = Path(path).read_bytes()
+        except OSError:
+            pass
     img_items, img_spine = [], []
     for name, data in images.items():
         ext = name.rsplit(".", 1)[-1].lower()
@@ -1482,6 +2097,174 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
             z.writestr(f"OEBPS/images/{_fn}",
                        _b64.b64decode(_ICON_B64[_key]))
     return out
+
+
+_INLINE_IMG_RE = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*")([^"]+)(")', re.I)
+
+
+_PAIR_OPEN_RE = re.compile(r'<div class="pair">', re.I)
+_VOID = {"img", "br", "hr", "hr/", "meta", "link", "input", "col"}
+
+
+def _split_top_level(inner: str) -> list[str]:
+    """把 pair 的内层 HTML 按**顶层元素**切开（保持原顺序）。"""
+    out, depth, start = [], 0, None
+    i = 0
+    for m in re.finditer(r"<(/)?([a-zA-Z][\w:-]*)([^>]*?)(/?)>", inner):
+        tag = m.group(2).lower()
+        closing, selfclose = bool(m.group(1)), bool(m.group(4))
+        if closing:
+            depth -= 1
+            if depth == 0 and start is not None:
+                out.append(inner[start:m.end()])
+                start = None
+            continue
+        if tag in _VOID or selfclose:
+            if depth == 0:
+                out.append(m.group(0))
+            continue
+        if depth == 0:
+            start = m.start()
+        depth += 1
+    if start is not None:                      # 收尾兜底（未闭合）
+        out.append(inner[start:])
+    return [s for s in out if s.strip()]
+
+
+def _reorder_pairs(html_str: str, zh_first: bool = True) -> str:
+    """把每个 `.pair` 里**中文元素物理前置**（默认中文在前）。
+
+    ⚠ 为什么必须写进 DOM 而不是只靠 CSS：现在是靠 `.ord-zh .pair > .zh
+    { order: 1 }` + `display:flex` 翻顺序 —— **阅读器不支持 flex `order`
+    时就会退化成 DOM 顺序（英文在前）**。用户实测 prob §2.1 有一段在
+    阅读器里就是英文在前、别处却是中文在前（同一本书里不一致）。
+    物理重排后，任何阅读器都得到正确顺序；CSS 的 order 只留给预览页的
+    中英切换用（那时它两边都要能翻）。
+    """
+    if not zh_first:
+        return html_str
+    out, pos = [], 0
+    while True:
+        m = _PAIR_OPEN_RE.search(html_str, pos)
+        if not m:
+            out.append(html_str[pos:])
+            break
+        # 找配对的 </div>
+        depth, i = 1, m.end()
+        for t in re.finditer(r"<(/?)div\b[^>]*>", html_str[m.end():], re.I):
+            depth += -1 if t.group(1) else 1
+            if depth == 0:
+                i = m.end() + t.start()
+                break
+        inner = html_str[m.end():i]
+        kids = _split_top_level(inner)
+        zh_k = [k for k in kids if re.search(r'class="[^"]*\bzh\b', k)]
+        rest = [k for k in kids if k not in zh_k]
+        out.append(html_str[pos:m.start()])
+        out.append('<div class="pair">' + "".join(zh_k + rest) + "</div>")
+        pos = i + len("</div>")
+    return "".join(out)
+
+
+_EQNO_TD_RE = re.compile(r'<td class="eqno">\(([^)<]+)\)</td>')
+_TABLE_ID_RE = re.compile(r'<table class="eqtable" id="(eq-[\w-]+)"')
+
+
+def _link_refs_by_eqno(html_str: str) -> str:
+    """按**成品里真实渲染出的公式编号**给正文引用补超链接（最后一道）。
+
+    为什么需要：`_link_eq_refs` 用的是「md 的 `\tag` 索引」，而有序号公式现在改用
+    **英文原版图**（编号是我们从 md 的 tag 补的文本），总有个别公式的 tag 没进索引
+    → 中文正文里的 `(2.10)` 就没有链接（实测 147 处引用里 18 处未链，其中同章的
+    就是这种）。这里改成**以渲染结果为准**：扫描 `td.eqno` 与它所在表格的 id，
+    建立「编号 → 锚点」映射，再补链。
+    """
+    pairs = []
+    for m in re.finditer(r'<table class="eqtable"([^>]*)>(.*?)</table>', html_str, re.S):
+        attrs, inner = m.group(1), m.group(2)
+        idm = re.search(r'id="(eq-[\w-]+)"', attrs)
+        num = _EQNO_TD_RE.search(inner)
+        if idm and num:
+            pairs.append((num.group(1).strip(), idm.group(1)))
+    if not pairs:
+        return html_str
+    index = dict(pairs)
+
+    out, pos = [], 0
+    for m in re.finditer(r'<p class="zh[^"]*">(.*?)</p>', html_str, re.S):
+        seg = m.group(1)
+        if "(" not in seg and "（" not in seg:
+            continue
+        # ⚠ 不能「整段有链接就跳过」：一段里往往多个引用，跳过一个就漏一片
+        # （实测 2.6.3 那段的 (2.104) 就没链上）。按标签切开，只处理纯文本片段。
+        parts = re.split(r'(<a\b[^>]*>.*?</a>|<[^>]+>)', seg, flags=re.S)
+        changed = False
+
+        def _sub(mm):
+            nonlocal changed
+            aid = index.get(mm.group(1))
+            if not aid:
+                return mm.group(0)
+            changed = True
+            return f'<a class="eqref" href="#{aid}">{mm.group(0)}</a>'
+
+        for k, piece in enumerate(parts):
+            if piece.startswith("<"):
+                continue
+            parts[k] = re.sub(r'[(（]\s*(\d+\.\d+)\s*[)）]', _sub, piece)
+        if changed:
+            out.append(html_str[pos:m.start(1)])
+            out.append("".join(parts))
+            pos = m.end(1)
+    if not out:
+        return html_str
+    out.append(html_str[pos:])
+    return "".join(out)
+
+
+def _ensure_eq_anchors(html_str: str) -> str:
+    """给「被引用但没有实体锚点」的公式引用补一个隐形锚点（防空链）。
+
+    有序号公式改用英文原版出图后，锚点挂在英文图上；若某条公式两边都没配到
+    图位（英文侧没这张图），正文里的 (2.x) 就会指向不存在的 id。宁可多一个
+    不可见锚点，也不能留死链（用户明确要求「把所有行内公式序号引用加上超链接」）。
+    """
+    targets = set(re.findall(r'class="eqref" href="#([^"]+)"', html_str))
+    have = set(re.findall(r'id="([^"]+)"', html_str))
+    miss = sorted(targets - have)
+    if not miss:
+        return html_str
+    print(f"    [渲染] 补 {len(miss)} 个公式隐形锚点（原锚点缺失，防空链）")
+    return html_str + "".join(
+        f'<span class="eq-anchor" id="{m}"></span>' for m in miss)
+
+
+def _inline_img_src(html_str: str, res, prefix: str = "") -> str:
+    """正文段里的**行内图片**（多为 Cambridge 系的行内公式图 `<img class="mi">`）：
+    HTML 预览内联成 data URI，epub 打包进 images/ 并改成相对路径。
+
+    ⚠ 不处理的话：预览页里 src 指向源 epub 内的相对路径 → 图全部裂开
+    （用户实测「B 这张图从行内跑出去了」的另一半）。
+    """
+    if "<img" not in (html_str or ""):
+        return html_str
+
+    def _sub(m):
+        src = m.group(2)
+        if src.startswith(("data:", "http:", "https:")):
+            return m.group(0)
+        data = _read_asset(res, src)
+        if not data:
+            return m.group(0)
+        name = src.replace("\\", "/").rsplit("/", 1)[-1]
+        name = (prefix + "_" if prefix else "") + name
+        if _INLINE:
+            return m.group(1) + _data_uri(name, data) + m.group(3)
+        _EQ_FILES.setdefault(name, "")          # 占位由 _INLINE_IMGS 承载字节
+        _INLINE_IMGS[name] = data
+        return f'{m.group(1)}images/{name}{m.group(3)}'
+
+    return _INLINE_IMG_RE.sub(_sub, html_str)
 
 
 def _data_uri(name: str, data: bytes) -> str:

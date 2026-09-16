@@ -30,3 +30,6 @@ _smoke_out/
 .DS_Store
 Thumbs.db
 review_ch1.md
+
+# 诊断样章 / 成品（可由 run_book 重新生成，二进制体积大不入库）
+diag/

@@ -261,11 +261,17 @@ class LLM:
         except Exception:                        # noqa: BLE001
             pass
 
-    def chat(self, system: str, user: str) -> str | None:
+    def chat(self, system: str, user: str, refresh: bool = False) -> str | None:
+        """refresh=True → **跳过磁盘缓存读**（照常写入）。
+
+        用途：章映射编号校验失败后的重试 —— temp=0 也有服务端非确定性，
+        但同键重试只会命中同一份坏缓存，必须强制真调一次才可能拿到新结果
+        （2026-09-17 prob 章映射实测）。
+        """
         if not self.enabled:
             return None
         k = self._key(system, user)
-        if self.cache_dir:
+        if self.cache_dir and not refresh:
             f = self.cache_dir / f"{k}.txt"
             if f.exists():
                 with self._lock:
@@ -362,9 +368,10 @@ class LLM:
             return [self.chat(*requests[0])]
         return list(self._executor().map(lambda a: self.chat(*a), requests))
 
-    def json(self, system: str, user: str):
+    def json(self, system: str, user: str, refresh: bool = False):
         """要求模型只输出 JSON；宽容解析（允许 ```json 代码块）。"""
-        txt = self.chat(system + "\n只输出 JSON，不要任何解释文字。", user)
+        txt = self.chat(system + "\n只输出 JSON，不要任何解释文字。", user,
+                        refresh=refresh)
         return self._parse_json(txt)
 
     @staticmethod
@@ -490,7 +497,7 @@ class LLM:
                    level: str = "section",
                    en_firsts: list[str] | None = None,
                    zh_firsts: list[str] | None = None,
-                   _depth: int = 0):
+                   _depth: int = 0, refresh: bool = False):
         """标题配对内核：只传标题与段数，输出极短（纯 mapping metadata）。
 
         level="section" → 章内小节配对（两版章节已确认对应）
@@ -509,9 +516,7 @@ class LLM:
 
         system, user = self._map_prompt(en_titles, zh_titles, en_counts,
                                         zh_counts, level, en_firsts, zh_firsts)
-        out = self.json(system, user)
-
-        out = self.json(system, user)
+        out = self.json(system, user, refresh=refresh)
         if isinstance(out, list):
             return self._norm_map(out)
         # ── 失败：先判断**是不是输出被截断**，是就二分（不是就老实返回 None）
@@ -595,14 +600,16 @@ class LLM:
 
     def map_titles(self, en_titles: list[str], zh_titles: list[str],
                    en_counts: list[int] | None = None,
-                   zh_counts: list[int] | None = None):
+                   zh_counts: list[int] | None = None,
+                   refresh: bool = False):
         """**章级**配对（两版章号体系/切分可能不同）。返回 [(en_idx[], zh_idx[])] 或 None。
 
         只在确定性章级映射不可信时调用 —— 输入只有几十个标题，输出只有 mapping，
         单次约 2k token，是整套 LLM 能力里最便宜的一个。
+        refresh=True → 跳过缓存读强制真调（编号校验失败后的重试用）。
         """
         return self._map_lists(en_titles, zh_titles, en_counts, zh_counts,
-                               level="chapter")
+                               level="chapter", refresh=refresh)
 
     # -------------------------------------------------------------- 能力 2：窗口细化
     def refine_window(self, en_lines: list[str], zh_lines: list[str],
@@ -708,8 +715,17 @@ class LLM:
 
     def _parse_range_map(self, txt, n_en: int, n_zh: int):
         """解析区间行格式。逐行容错：坏行跳过；整体守三条底线：
-        ① EN 覆盖率 ≥80%，② 空对（[]）占比 ≤60%，③ 行号不得重复。
-        触线整窗拒收（返回 None → 回退 DP），防「恒等映射+大量空对」静默进成品。"""
+        ① EN 行**显式提及率** ≥50%（太低 = 懒输出，整窗拒收）；
+        ② 空对（[]）占比 ≤60%（含按规则补的 0）；
+        ③ 行号不得重复。
+        触线整窗拒收（返回 None → 回退 DP），防「恒等映射+大量空对」静默进成品。
+
+        ⚠ 2026-09-17 修（prob 2.6.4 §4-9 破案）：模型对「英文无对应」的段
+        经常**整行省略**而不是按规则 3 写 0（实测 2.6.4 返回 1:1/2:2/3:3，
+        脚注 4-6 不提）。旧覆盖率守卫 ≥80% 把这种**语义完全正确**的输出整窗
+        拒掉 →「窗口无可用结果」。现在改为：显式提及率 ≥50% 的前提下，
+        省略的英文行补成空对（=无对应），交给下游覆盖率守卫 + skew 校对把关。
+        """
         if not txt or not isinstance(txt, str):
             return None
         pairs: list[tuple[list[int], list[int]]] = []
@@ -717,7 +733,10 @@ class LLM:
         zh_seen: set[int] = set()
         n_empty = 0
         for ln in txt.splitlines():
-            ln = ln.strip().strip("`").strip()
+            ln = ln.strip().strip("`").strip().rstrip(",").strip()
+            # 容错：模型有时无视区间格式、输出 JSON 对象（"1": "1"）——
+            # 去掉引号后语义等价，照样解析（2026-09-17 实测）
+            ln = ln.strip('"').strip()
             if not ln or ":" not in ln or ln.startswith(("#", "-", "输出", "格式")):
                 continue
             lhs, _, rhs = ln.partition(":")
@@ -739,8 +758,14 @@ class LLM:
             else:
                 pairs.append(([x - 1 for x in L], [x - 1 for x in R]))
         cov = len(en_seen) / max(1, n_en)
-        if cov < 0.8 or (n_empty / max(1, n_en)) > 0.6:
+        if cov < 0.5:                         # 显式提及率过低 = 懒输出
             return None
+        # 补全：模型省略的英文行 = 判无对应（规则 3 的隐式版，2026-09-17）
+        _missing = [i for i in range(1, n_en + 1) if i not in en_seen]
+        n_empty += len(_missing)
+        if n_empty / max(1, n_en) > 0.6:      # 空对占比（含补 0）不超六成
+            return None
+        pairs.extend(([i - 1], []) for i in _missing)
         return pairs
 
     # -------------------------------------------------------------- 能力 3：补译（两步）
