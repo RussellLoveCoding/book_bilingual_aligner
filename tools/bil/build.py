@@ -462,12 +462,23 @@ def _disp_tex(html_str: str) -> str:
     return _h.unescape(m.group(1)).strip()
 
 
+_EQS_COLLECTED = False             # 本进程已预渲染过（build_html+build_epub 共用）
+
+
 def _collect_eqs(results) -> None:
     """预渲染全书行间公式（一个 node 批量进程；磁盘缓存命中秒回）。
 
     必须在 render_chapter 之前调：_figure_html 渲染公式块时查 _EQ_RECS。
     顺带建 _EQ_TAGS（公式编号 → 锚点），供正文交叉引用加超链接。
+
+    ⚠ 幂等：build_html 和 build_epub 各调一次 —— 1817 条公式的缓存查找
+    （json+png 读）跑两遍纯属浪费（2026-09-17 相位计时，渲染占热跑 ~40s）。
+    同进程内 results 不变，第二遍直接跳过。
     """
+    global _EQS_COLLECTED
+    if _EQS_COLLECTED and _EQ_RECS:
+        return
+    _EQS_COLLECTED = True
     global _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS
     _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS = {}, {}, {}, {}
     texes = []

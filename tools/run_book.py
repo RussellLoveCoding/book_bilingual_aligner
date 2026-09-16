@@ -228,7 +228,15 @@ def main():
     if args.build:
         from bil import build
         from bil import bookmeta as BM
-        build.OUT_DIR = Path(args.out)
+        import shutil
+        import tempfile
+        from pathlib import Path as _P
+        out_real = _P(args.out)
+        # ⚠ DrvFs（/mnt/*）写 IO 慢 ~10×（2026-09-17 相位计时：占热跑 ~11s）。
+        # 渲染先写 ext4（/tmp），成品完成后整体搬到目标目录。
+        on_drvfs = str(out_real).startswith("/mnt/")
+        build.OUT_DIR = _P(tempfile.mkdtemp(prefix="bil_out_")) if on_drvfs \
+            else out_real
         # 沿用中文版的元数据与封面；书名没给就从中文版 OPF 里读，并补「双语」后缀
         # 元数据/封面来自 epub；中文侧是 md/txt 时退回英文版，都没有就留空
         if is_text_input(args.zh):
@@ -245,6 +253,11 @@ def main():
         build.build_book(results, title=title, meta=meta,
                          emit_en=args.emit_en, emit_zh=args.emit_zh,
                          style={"order": args.order, "dim": args.dim})
+        if on_drvfs:
+            out_real.mkdir(parents=True, exist_ok=True)
+            for f in build.OUT_DIR.iterdir():
+                shutil.move(str(f), str(out_real / f.name))
+            print(f"[输出] 成品经 ext4 中转后已写入 {out_real}")
 
 
 def _run_parallel(fn, jobs, workers):

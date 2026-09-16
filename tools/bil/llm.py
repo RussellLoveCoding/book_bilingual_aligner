@@ -758,7 +758,9 @@ class LLM:
             else:
                 pairs.append(([x - 1 for x in L], [x - 1 for x in R]))
         cov = len(en_seen) / max(1, n_en)
-        if cov < 0.5:                         # 显式提及率过低 = 懒输出
+        if cov < 0.4:                     # 显式提及率过低 = 懒输出
+            # 0.40：章尾脚注多的节（1.8.2：5 正文+6 脚注）正确输出也只有
+            # 5/11=45% 显式行——0.5 会把整类「尾部脚注」窗口拒掉（2026-09-17）
             return None
         # 补全：模型省略的英文行 = 判无对应（规则 3 的隐式版，2026-09-17）
         _missing = [i for i in range(1, n_en + 1) if i not in en_seen]
