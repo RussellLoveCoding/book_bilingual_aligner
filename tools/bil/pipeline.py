@@ -550,6 +550,8 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
             if s.pairs:
                 _before = len(s.pairs)
                 s.pairs = _split_wide_pairs(s.pairs, s.en_paras, s.zh_paras)
+                s.pairs = _merge_formula_translation(s.pairs, s.en_paras,
+                                                     s.zh_paras)
                 if len(s.pairs) != _before:
                     for _p in s.pairs:
                         _metrics(_p, s.en_paras, s.zh_paras)
@@ -1006,6 +1008,41 @@ def _merge_onesided_sections(sec_pairs):
     return out
 
 
+def _merge_formula_translation(pairs, en_paras, zh_paras):
+    """公式译文行并入引导对（2026-09-17 用户点名 (1.13) 错位）。
+
+    场景：英文引导行以冒号结尾（"…elementary theorem:"），后面跟公式图；
+    中文侧是「引导行 + **公式译文行**（latex 密集）」。DP 会把译文行推到
+    下一个 pair（长度比驱动的必然），成品里它就落到小节标题后面——
+    1.5 的「若 B̅ = AD…」实测。
+
+    规则写窄（三条同时成立才搬）：
+      ① 当前 pair 的 en 段以 ':' 收尾（公式引导行）；
+      ② 当前 pair 的 zh 末段也以冒号/等于收尾（同是引导语气）；
+      ③ **下一 pair 的 zh 首段** latex 密集（'$' ≥2 处）——是公式译文。
+    → 把下一 pair 的 zh 首段并入当前 pair。
+    """
+    out = [p for p in pairs]
+    for i in range(len(out) - 1):
+        p, q = out[i], out[i + 1]
+        if not (p.en and p.zh and q.zh):
+            continue
+        _et = " ".join(en_paras[x].text for x in p.en).rstrip()
+        _zt = " ".join(zh_paras[j].text for j in p.zh).rstrip()
+        _q0 = zh_paras[q.zh[0]].text
+        if not _et.endswith(":"):
+            continue
+        if not (_zt.endswith(("：", ":")) or _zt.endswith("。")):
+            continue
+        if _q0.count("$") < 2:
+            continue
+        p.zh = list(p.zh) + [q.zh[0]]
+        q.zh = list(q.zh[1:])
+        if not q.zh and not q.en:
+            out[i + 1] = q
+    return [p for p in out if p.en or p.zh]
+
+
 def _split_wide_pairs(pairs, en_paras=None, zh_paras=None,
                       r_lo: float = 0.5, r_hi: float = 4.0):
     """宽组（n:m，两侧都 ≥2）按序拆成 min(n,m) 个 1:1 + 一个余组。
@@ -1394,6 +1431,7 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             # 会把该拆的组全挡住 → 读者又看到「中中 / 英英英」。宽组拆分是
             # "怎么切"的问题，判据必须比"这对配不配"松一档。
             pairs = _split_wide_pairs(pairs, a_paras, b_paras)
+            pairs = _merge_formula_translation(pairs, a_paras, b_paras)
             for _p in pairs:                      # 新切的组要补长度比指标
                 _metrics(_p, a_paras, b_paras)
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
