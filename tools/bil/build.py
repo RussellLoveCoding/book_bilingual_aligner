@@ -138,6 +138,12 @@ h3.st { font-weight: bold; margin: 1.5em 0 .5em; }
 /* ⚠ 原版小节标题用的是 `p.h1`（不是 .h2！）：`.h1 { 100%; bold; 居中; **无斜体** }`
    —— 我上一轮按 .h2 加了斜体，是错的（用户指出「小节标题不能是斜体」）。 */
 h3.st.en-h { font-style: normal; }
+/* 子小节标题（Implication / A tricky point / 陷阱）：原版是 `p.h3` ——
+   `.h3 { 100%; italic; 居中 }`（2026-09-17 用户点名「原版是居中的」）。
+   中文侧不加斜体（中文斜体难读），居中照抄。 */
+h4.st { font-size: 1em; font-weight: bold; text-align: center;
+        margin: 1.2em 0 .4em; }
+h4.st.en-h { font-style: italic; }
 /* 章/节标题：英文、中文是两个独立标题元素（不是 span 套在一个里），
    上下紧挨着、视觉上仍是一组。中文字号给足，别缩成看不清的小字。
    ⚠ 拆成兄弟元素后 em 相对父级 body（=1em）解析，不再相对前面的英文标题！
@@ -716,6 +722,29 @@ def _en_elem(b, epigraph: bool = False) -> tuple[str, str]:
     return "p", cls
 
 
+def _multi_paras_zh_title(joined: str, tag: str, cls: str,
+                          zh_texts: list, en_stub: bool = False) -> str:
+    """`_multi_paras` + 逐段小标题提升：pair 里的某段中文若是独立小标题
+    （_looks_like_zh_title，如「陷阱」「蕴涵关系」），渲染成居中 h4.st，
+    其余照旧 <p>。标题判定用**纯文本**（zh_texts），渲染用 html 段。
+
+    ⚠ `en_stub=True`（pair 的英文侧全是短引出段，如 "and its inverse:"）
+    时**不提升**——那种对是「公式引出续行」（"和它的逆"/"以及"实测被错提）。
+    """
+    segs = joined.split("\x01")
+    out = []
+    for k, seg in enumerate(segs):
+        seg = seg.strip()
+        if not seg:
+            continue
+        txt = zh_texts[k].strip() if k < len(zh_texts) else ""
+        if not en_stub and _looks_like_zh_title(txt):
+            out.append(_head_block("h4", "st", "", E.norm_cjk_spacing(txt)))
+        else:
+            out.append(f'<{tag} class="{cls}">{seg}</{tag}>')
+    return "\n".join(out)
+
+
 def _multi_paras(joined: str, tag: str, cls: str) -> str:
     """把以 \\x01 为段界的 html 拼回**逐段独立**的元素。
 
@@ -964,16 +993,17 @@ def _looks_like_zh_title(z: str) -> bool:
     判据保守：短、无句读/冒号、无等号运算符、汉字占比高。
     """
     s = (z or "").strip()
-    # 下限 6 字（2026-09-16 实测：3 字的过渡语「也可以」被提升成了 <h4> 小标题，
-    # 在成品里是一行突兀的粗体 —— 它就是 prob ch2 §2.1 里那句
-    # 「Or, equally well,」的中文，本该是普通段落）
-    if not (6 <= len(s) <= 20):
+    # 下限 2 字（2026-09-17 用户点名：1.5 的子标题「陷阱」「蕴涵关系」只有
+    # 2/4 字，6 字下限把它们连同丢弃规则一起吞了。防「也可以」回归靠下面的
+    # 连接词黑名单，不靠长度）。上限 20 不变。
+    if not (2 <= len(s) <= 20):
         return False
     if re.search(r"[。！？；：，、.!?;:,]", s):
         return False
     # 连接词/过渡语黑名单：这类短句是正文的一部分，永远不是标题
     if s in ("也可以", "或者", "因此", "于是", "同样", "反之", "此外", "但是",
-             "然而", "例如", "所以", "于是乎", "也就是说"):
+             "然而", "例如", "所以", "于是乎", "也就是说", "其实", "当然",
+             "注意", "总之", "换言之", "进一步", "显然"):
         return False
     if re.search(r"[=+×÷<>%/]", s):
         return False
@@ -1251,7 +1281,15 @@ def render_chapter(res, prefix=""):
                         # 英文侧是提示框 → 中文跟着进同一个框（视觉上是一块）
                         if sec.en_paras[p.en[0]].box:
                             _zc += " boxed"
-                        parts.append(_multi_paras(zh_html, tag, _zc))
+                        # ⚠ 逐段检查小标题（2026-09-17 用户点名）：宽组里常粘着
+                        # 「陷阱」「蕴涵关系」这类 zh 子标题（EN 侧是原位标题、
+                        # zh 侧是普通段），整组按 <p> 渲染 → 标题变左对齐正文。
+                        # 每段独立判定 _looks_like_zh_title → 提升为居中 h4.st。
+                        parts.append(_multi_paras_zh_title(
+                            zh_html, tag, _zc,
+                            [sec.zh_paras[x].text for x in p.zh],
+                            en_stub=all(len(sec.en_paras[x].text.strip()) <= 40
+                                        for x in p.en)))
             elif p.mt:
                 zh_html = _put_notes(_zh_math(_esc(p.mt)), p, prefix,
                                      note_texts)
