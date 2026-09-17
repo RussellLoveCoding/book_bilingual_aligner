@@ -463,6 +463,7 @@ def _disp_tex(html_str: str) -> str:
 
 
 _EQS_COLLECTED = False             # 本进程已预渲染过（build_html+build_epub 共用）
+_DROPPED_ZH_ONLY: list = []        # 被丢弃的「中文独有正文段」样本（防静默）
 
 
 def _collect_eqs(results) -> None:
@@ -1138,13 +1139,22 @@ def render_chapter(res, prefix=""):
                         p, prefix, note_texts)
                     _emitted_zh.update(p.zh)
                     if _looks_like_zh_title(_zplain):
+                        # 小标题：保留（导航需要）
                         parts.append(_head_block(
                             "h4", "st", "", E.norm_cjk_spacing(_zplain)))
+                    elif _is_caption_text(_zplain):
+                        # 图表题注：保留（挂图需要）
+                        parts.append(_multi_paras(
+                            zh_html, "p", "caption" + _exercise_cls(_zplain)))
                     else:
-                        _cls = ("caption" if _is_caption_text(_zplain)
-                                else "zh zh_transed") + _exercise_cls(_zplain)
+                        # ⚠ 2026-09-17 用户定调：**中文多出、英文没有的正文段
+                        # 直接丢弃**，不进双语正文。这类段多半是「公式图的
+                        # 中文译文行」（EN 侧公式是图、zh 侧是文字，粒度天然
+                        # 对不上，硬塞进正文流放哪儿都是错位——1.5 的
+                        # 「若 B̅ = AD…」实测）。丢弃**计数告警**，不静默；
+                        # 小标题/题注两个例外保留（think2 题注丢失教训）。
+                        _DROPPED_ZH_ONLY.append(_zplain[:40])
                         _emitted_zh.update(p.zh)
-                        parts.append(_multi_paras(zh_html, "p", _cls))
                 # 挂在中文独有段上的中文图必须照常渲染（否则整张图丢失）
                 for f in figs.get(pi, []):
                     h = _figure_html(f, prefix, side="zh")
@@ -2542,4 +2552,8 @@ def build_book(results, title="Nexus 中英双语版", singles=True,
     for f in made:
         print(f"  {f}")
     print(f"  段落对 {tot} · 命中中文 {matched} · AI补译 {mt} · 待补 {miss} · 告警 {bad}")
+    if _DROPPED_ZH_ONLY:
+        print(f"  [zh-only 丢弃] {len(_DROPPED_ZH_ONLY)} 段中文独有正文段未进"
+              f"双语版（用户 2026-09-17 定调），样本："
+              f"{_DROPPED_ZH_ONLY[:3]}")
     return made

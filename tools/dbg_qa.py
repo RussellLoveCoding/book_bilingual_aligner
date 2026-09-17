@@ -125,9 +125,14 @@ def main() -> int:
         if max(ne, nz) >= 3 and min(ne, nz) >= 2:
             issues.append(f"② 宽组未拆 pair[{i}]：en {ne} 段 / zh {nz} 段")
 
-    # ③ 标记泄漏
+    # ③ 标记泄漏（**只扫正文**：CSS/JS 注释里可能有示例字符）
+    body = html[html.find("</style>"):]
+    body = body[:body.find("<script")] if "<script" in body else body
     for name, pat in LEAK_PATTERNS:
-        n = len(re.findall(pat, html))
+        if name == "$$ 残留":
+            n = body.count("$$")          # 字面计数，regex 的 $ 语义有歧义
+        else:
+            n = len(re.findall(pat, body))
         if n:
             issues.append(f"③ {name}：{n} 处")
 
