@@ -54,6 +54,11 @@ def load_all(en_path=EN_EPUB, zh_path=ZH_EPUB, llm=None):
     zh_toc = E.load_toc(zz) if not zh_txt else {}
     pairs = S.map_chapters(en_docs, zh_docs, llm=llm,
                            en_toc=en_toc, zh_toc=zh_toc)
+    # ⚠ 2026-09-18：中文独有章（`en_path == ""`）现在**照常产出**（见下面 jobs
+    # 那段），但下游 20+ 个调试工具都写的是 `en_docs[cp.en_path]` —— 直接下标会
+    # KeyError（`dbg_sec.py` 实测崩过）。这里给空 key 兜一个空列表，一次覆盖全部
+    # 调用方；语义也对：英文侧本来就没有内容。
+    en_docs.setdefault("", [])
     return en_docs, zh_docs, pairs
 
 
