@@ -1987,7 +1987,12 @@ def _nav_lis(entries) -> str:
 # （实测「9.16.1 非理性主义者 · 9.11.1 Implied alternatives」）。
 # 新做法：把片内**每个小节标题**都登记成子条目（href 带锚点），
 # 标签严格取**同一对** en-h/zh-h；层级仍只有两层（微信实测更深的会丢）。
-_NAV_H3_RE = re.compile(r'<h3 class="st ([^"]*)">(.*?)</h3>', re.S)
+# ⚠ 2026-09-17：正则**必须同时匹配 h3 和 h4**。只扫 h3 时，凡是「原位发」的
+# 子小节标题（`3.8.1 Digression…`、`18.11.1 Is indifference…` 等，渲染层发的是
+# `<h4 class="st …">`）**全都进不了目录** —— 实测 23 条 EN 独有编号小节在
+# nav 里一条都找不到（读者从 3.8 直接跳到 3.9）。全量 h4.st 共 108 个。
+# group 编号刻意保持不变（1=class，2=文本），下游两个调用点无需改。
+_NAV_H3_RE = re.compile(r'<h[34] class="st ([^"]*)">(.*?)</h[34]>', re.S)
 
 
 def _annotate_sections(piece: str, pid: str):
@@ -2022,8 +2027,11 @@ def _annotate_sections(piece: str, pid: str):
         entries.append((aid, _nav_label(_plain_nav(zh), _plain_nav(en))))
         first = tokg[0]
         out.append(piece[pos:first.start()])
-        out.append(f'<h3 class="st {first.group(1)}" id="{aid}">'
-                   f'{first.group(2)}</h3>')
+        # 保留原标题的标签名（h3 还是 h4）—— 原样重写成 h3 会把子小节标题
+        # 悄悄「升级」成小节标题，层级和样式都变。
+        _tag = "h4" if first.group(0).startswith("<h4") else "h3"
+        out.append(f'<{_tag} class="st {first.group(1)}" id="{aid}">'
+                   f'{first.group(2)}</{_tag}>')
         pos = first.end()
         for extra in tokg[1:]:
             out.append(piece[pos:extra.start()])
