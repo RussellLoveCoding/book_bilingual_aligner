@@ -6,6 +6,9 @@
 # ── WorkBuddy 工作区数据（会话状态，不是项目内容）──
 .workbuddy/
 
+# ── agent 记忆文件：本机级不入库（含本机路径），项目级入库 ──
+CODEBUDDY.local.md
+
 # ── 缓存与运行产物 ──
 .cache/
 __pycache__/
@@ -37,3 +40,7 @@ diag/
 # LLM/解析缓存（迁至 WSL 原生盘 ~/.cache/bil，tools/.cache 是符号链接；机器本地，不入库）
 tools/.cache
 tools/.cache.win-backup/
+.cache-win/
+
+# agent 工作区数据（本机级，不入库）
+.workbuddy-ai/

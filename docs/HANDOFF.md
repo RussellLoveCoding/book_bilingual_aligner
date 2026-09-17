@@ -36,6 +36,19 @@ python tools/dbg_qa.py <成品.html> 20            # 当前 32 项
 | 成品（`diag/样章/*`） | ❌ gitignored | 可由 `run_book --all --build` 复现（≈2 分钟 / ¥0） |
 | 本机依赖 | — | WSL + `~/.venvs/bil`、nvm 的 node（`tools/eqrender` 要 ≥20.9）、msedge（截图） |
 
+### 三本书的源配对（换账号/换机器时最容易找错，照这张表抄）
+
+| 书 | 英文原书 | 中译本 | 成品 |
+|---|---|---|---|
+| 概率论沉思录 | `.workbuddy/tmp/books/prob_en.epub` | `.workbuddy/tmp/books/prob_zh.md`（minerU OCR） | `diag/样章/prob_全书_双语.{epub,html}`（最新） |
+| 智人之上 (Nexus) | `.workbuddy/tmp/books/nexus_en.epub` | `uploads/zh_zh.epub` | `build/智人之上…_双语.{epub,html}`（09-14 版） |
+| 思考，快与慢（第二版） | `.workbuddy/tmp/books/think2_en.epub`（**不是** `think_en.epub`） | `.workbuddy/tmp/books/think2_zh.epub` | `build/思考，快与慢（第二版）_双语.epub`（09-14 版） |
+
+> ⚠ think2 有两份英文：`think2_en.epub`（2.3MB · 59 章片，流水线用这份）与
+> `think_en.epub`（3.65MB · 71 章片，z-lib 原版）。拿错会整章对不上。
+> nexus 的英文原始来源在用户 D 盘同步盘（项目外），项目内副本就是
+> `nexus_en.epub`（另有一份同内容 `nexus_en_原版.epub`）。
+
 ---
 
 ## 1. 钉死的配置（改任何一条都会让结果不可复现）
@@ -123,6 +136,8 @@ contents/editor's foreword/preface/acknowledgments ↔ 扉页/书名页/出版�
 tools/_run.sh             WSL 入口（护栏 + venv）
 tools/run_book.py         整本/单章构建（--all --llm --ai-fill-missing --skip-flag）
 tools/regress.py          三本小样确定性基线（免费，改代码后必跑）
+tools/mk_review_bundle.py 成品 HTML → 给外部模型（Gemini 等）评审的纯文本包
+                          （逐对导出 + 章号对照表 + 原书英文全文；秒级零 LLM）
 tools/dbg_bookscan.py     ★ 整本成品扫描门禁（前缀/泄漏/缺中文/nav）
 tools/dbg_qa.py           ★ 人眼级门禁（连续同侧段/宽组/标记泄漏/重复标题）
 tools/dbg_eqpos.py        公式位置 vs 英文原版（按编号比对）
@@ -133,3 +148,91 @@ tools/dbg_chmap_src.py    章映射 LLM/seq 两条路并排（回答「键表为
 tools/.cache/*            解析/公式/LLM 三级缓存
 tests/gold/               金标准（人工判定，不外包 LLM）
 ```
+
+---
+
+## 6. 接手当天（2026-09-17 20:xx）的补正 —— 以本节为准
+
+### 6.1 环境：本机 `wsl.exe` 进过安全黑名单
+
+新账号首次接手时，`wsl.exe` 被 **Security Center → Command Security → Program Blacklist**
+拉黑（报 `PROGRAM BLOCKED BY SECURITY POLICY`，命令层无法绕过）→ §0/§4 的「WSL 唯一」
+工作流整条不可执行。**用户已移除该条目，现恢复正常。**
+
+期间实测出**备用路径**（WSL 再被禁时可用）：`\\wsl$\Ubuntu-24.04\...` 可**只读**访问
+WSL 文件系统（`wsl.localhost` 别名不通），代码零第三方依赖、LLM/公式缓存是内容寻址 →
+把 `~/.cache/bil/{llm,eq}` 复制到项目内 `.cache-win/` 后，Windows 的 python 3.13 可跑：
+
+| 用途 | Windows 原生 |
+|---|---|
+| `dbg_bookscan` / `dbg_qa` / `dbg_eqcheck` / `dbg_chmap_src` / `regress.py` | ✅ 结果与 WSL **逐位一致** |
+| 整本 `--build` | ❌ **产物降级**（`tools/eqrender/node_modules` 是断链 → 没 `sharp` → 公式渲染不可用 → 裸 LaTeX 泄漏 0→746、qa 32→33），**而 stdout 指标照样是 5321/4752/552/17/1253** |
+
+⚠ **指标一致 ≠ 产物一致**——这正是 §铁律 3 说的那类事故，构建后必须跑门禁 + 核新鲜度。
+⚠ 别在 Windows 上 `npm i` 补依赖：会顶掉指向 WSL 的软链，反过来把 WSL 弄坏。
+
+### 6.2 本节新增的复现证据（三本对照）
+
+| | 盘上成品(16:10) | WSL 复现 | Windows 复现 |
+|---|---|---|---|
+| html md5 | `1a015f37…` | **完全相同** ✅ | `d175da0b…` ❌ |
+| dbg_bookscan | 0 / 0 / 0 | **0 / 0 / 0** ✅ | 746 泄漏 ❌ |
+| dbg_qa | 32 | **32** ✅ | 33 ❌ |
+| dbg_eqcheck | exit 0 | **exit 0** ✅ | — |
+| 耗时 | — | **33s** | 2m18s |
+
+**⇒ WSL 整本构建是位级可复现的（HTML md5 一致）。** 环境健康，可正式开工。
+
+### 6.3 修正 §2：小样回归基线的文件是过期的
+
+`tools/regress_baseline_sample.json` 里 ml/prob 两条是**旧的**
+（ml 204/193/0/11/14、prob 392/338/0/54/96），而 **§2 的 212/197/15/18、408/371/37/38
+才是实测值**（WSL 与 Windows 两边跑出来都一样）。
+`regress.py` 比对的是**那个 JSON**，不是 §2 → **环境完全正确也会报一堆 diff**。
+→ 修法：`bash tools/_run.sh regress.py --save` 刷新基线（顺手把只有 think2 的
+`regress_baseline.json` 补齐，或删掉）。
+
+另：`run_book` 的「段落对 5321」与 `dbg_qa`/评审包的「pair 5406」是**两个口径**
+（README「已知边界」已说明 pairs 是配对对象数），不是不一致。
+
+### 6.4 修正 §3.1：根因比原文更宽，**「两步窄修」不够**
+
+原文说「zh 前置粒度与 EN 不同」，实测根因是**两侧都错**，且**尾部同族**。
+（完整证据见 `.workbuddy/memory/2026-09-17.md §24.5`，下面是结论。）
+
+**代码点**
+- EN 侧：`structure.key_of_en`（`structure.py:63`）**没有前置词表**，只认
+  `_EN_HEAD_KINDS` 前缀 → `02_half-title`、`04_copyright`、`07_fm-chapter`("Editor's
+  foreword")、`08_fm-chapter1`("History") 全判 `other` 进了位置 DP。
+- ZH 侧：`txtimport.load_md` 的切分条件
+  `is_chapter = (level <= top_level or _is_heading(title, lang))`（`txtimport.py:182-183`）
+  + `_ZH_HEAD_RE`（`txtimport.py:34-36`）**缺 `编者序`**，也缺尾部 `人名索引/术语索引/符号`。
+
+**后果**
+- `md001`「出版信息」其实是 **出版信息+内容提要+概率论沉思录+版权声明+编者序**（51 段）；
+  `md032`「致谢」其实是 **致谢+人名索引+术语索引+符号**（500 段）。
+- seq 位置 DP 只看长度比 → `EN Editor's foreword ↔ zh 出版信息`、
+  **`EN References ↔ zh 附录C`**、**`EN Subject index ↔ zh 致谢`**。
+  实证 `diag/review/prob/全本对照/ch27` = EN 参考文献条目 ↔ ZH 卷积数学；
+  `ch28` = EN 主题索引 ↔ ZH 人名索引，**内容完全不相干**。
+- 成品 ch01 那 6 对**内容其实是对的**，错的是**标题取了块首「出版信息」**；
+  且 `出版信息/内容提要/版权声明` 被当「zh-only 正文段」**丢弃**（run_book 会打印
+  `[zh-only 丢弃] 1324 段…样本：['[美] 埃德温·汤普森·杰恩斯…', '图书在版编目（CIP）数据'…]`）。
+
+**⇒ 至少四步（原「两步」不够）**
+1. `_ZH_HEAD_RE` 补 `编者序`（+ 尾部 `人名索引|术语索引|符号`）→ zh 切成同粒度单元；
+2. 两侧补**前置/后置词表**按词配对，替代位置 DP；
+3. EN 侧修 `key_of_en`：认 half title / copyright / editor's foreword，并把这些
+   连同 zh 的 出版信息/内容提要/版权声明 判 `skip`（别进 DP）；
+4. 尾部：References↔参考文献、Author/Subject index↔人名/术语索引。
+
+⚠ **改切分 = 解析行为变更 → `fastcache._V += 1` → 全书 prompt 失效（花钱）**，
+且影响 ml/nexus/think2 → 按定调攒到 **00:30–08:30 半价时段**做，**先定方案再动手**。
+
+### 6.5 行尾符陷阱（提交前必看）
+
+`.gitattributes` 原来只覆盖 `*.py *.md *.json`。实测过：Windows 侧工具碰过的文件会变
+CRLF，而 `git diff` 会显示成**整文件重写**（`book_struct.json` 的 286/286 就是纯噪音，
+`--ignore-cr-at-eol` 后 diff 直接消失）。已补 `*.sh` / `.gitignore` / `*.txt` 等规则。
+⚠ 判行尾**别用 Git Bash 的 `grep -c $'\r'`**（对纯 LF 文件也报满行命中）→
+用 `tr -dc '\r' < f | wc -c`。

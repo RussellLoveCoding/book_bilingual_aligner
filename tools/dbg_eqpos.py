@@ -10,7 +10,9 @@ import sys
 import zipfile
 from pathlib import Path
 
-BOOKS = "/mnt/c/Users/abc/WorkBuddy/2026-09-12-13-08-31/.workbuddy/tmp/books"
+# 项目根自定位（别写死 /mnt/c：项目搬进 WSL 原生盘后仍要能跑）
+ROOT = Path(__file__).resolve().parent.parent
+BOOKS = str(ROOT / ".workbuddy" / "tmp" / "books")
 
 
 def _norm(s: str, n: int = 30) -> str:
