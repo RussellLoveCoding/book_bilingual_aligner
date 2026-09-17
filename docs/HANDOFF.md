@@ -162,6 +162,13 @@ tools/dbg_chmap_src.py    章映射 LLM/seq 两条路并排（回答「键表为
 tools/dbg_frontmap.py     ★ 前置/后置单元映射尺子（§3.1 专用）：并排打 EN/ZH 单位表
                           + 章映射首尾若干组 + 三条自动诊断（切分不足 / EN 前置误判
                           other / 标题错配）。改 §3.1 前后各跑一次即可判断有没有修好。
+                          `--dump <子串>` 把单元内部摊开（定位「这 1076 段里到底
+                          吞了什么」）、`--dump-from N` 看区间、`--dry-fix <mode>`
+                          在内存里预演切分修复（零成本）。
+tools/dbg_cost.py         ★ LLM 实销核算（铁律 5 的「跑完报实销」）：
+                          `_run.sh dbg_cost.py "09-17 21:21:40" "09-17 21:27:30"`。
+                          ⚠ trace.jsonl 里**只有未命中记录带 in_tok/out_tok**，
+                          命中记录只有 hit/key/bytes_ —— 直接 grep 全文件会误报 ¥0。
 tools/.cache/*            解析/公式/LLM 三级缓存
 tests/gold/               金标准（人工判定，不外包 LLM）
 ```
