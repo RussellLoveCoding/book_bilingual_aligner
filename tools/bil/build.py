@@ -1063,6 +1063,12 @@ def _iter_figures_en(sec):
 
 def render_chapter(res, prefix=""):
     """res: pipeline.ChapterResult → xhtml 片段。"""
+    # ⚠ 整章「中文独有」判定（英文侧没有对应文档）：如中文版的「出版信息」
+    # 「后记」「译后记」「译者致谢」。这类章**不参与对齐**，内容要**全保留** ——
+    # 与「配对章内部多出来的中文段直接丢弃」是两回事（后者针对公式图的中文
+    # 译文行，用户 2026-09-17 定调）。不分这两种情况的话，「出版信息」的
+    # 作者行/CIP 数据会被当成 orphan 丢掉（实测 zh-only 丢弃 964→1056）。
+    _zh_only_chapter = not any(p.en for s in res.sections for p in s.pairs)
     _EMITTED_EQ_IDS.clear()
     _EMITTED_EQ_NO.clear()
     # ⚠ **编号是跨语言/跨配对的权威锚点**：只要中文公式带编号，就直接去英文侧按编号
@@ -1220,6 +1226,11 @@ def render_chapter(res, prefix=""):
                         # 图表题注：保留（挂图需要）
                         parts.append(_multi_paras(
                             zh_html, "p", "caption" + _exercise_cls(_zplain)))
+                    elif _zh_only_chapter:
+                        # 整章中文独有（「出版信息」「后记」「译后记」「译者致谢」）：
+                        # **照常渲染**，不走下面的丢弃规则 —— 那些章本来就没有英文侧，
+                        # 不存在「粒度对不上」的问题（用户 2026-09-18 点名要留）。
+                        parts.append(_multi_paras(zh_html, "p", "zh_transed"))
                     else:
                         # ⚠ 2026-09-17 用户定调：**中文多出、英文没有的正文段
                         # 直接丢弃**，不进双语正文。这类段多半是「公式图的

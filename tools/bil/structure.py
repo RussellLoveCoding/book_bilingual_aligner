@@ -114,8 +114,13 @@ def _roman(s: str) -> int:
     return total
 
 
+# ⚠ 「出版信息」2026-09-18 移出 skip（用户点名要留）：它是中文版书前的
+# 信息页（出版信息 + 内容提要 + 版权声明，md001 一整块），英文原版对应的是
+# cover→编者序之间的那几页。早先判 skip 是为了避免它和 EN 版权页错配，
+# 但 ③ 已经用 `_EN_FILE_SKIP` 把 EN 侧的 half-title/copyright 判 skip 了，
+# 这里不再需要靠「丢中文」来躲错配 —— 让它作为中文独有章正常产出。
 _ZH_SKIP = re.compile(r"^(版权|封面|书名|献词|目录|内容简介|作者简介|推荐|序言页"
-                      r"|出版信息|内容提要|扉页|书名页)")
+                      r"|内容提要|扉页|书名页)")
 
 
 def key_of_zh(blocks) -> ChapterKey:

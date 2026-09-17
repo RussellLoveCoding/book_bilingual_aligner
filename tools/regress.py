@@ -41,7 +41,10 @@ SAMPLE_CHAPTERS = {
     #   seq 映射留下它们做 zh-only → 整体 +2 → 第2章=chapter8、第4章=chapter10。
     #   2026-09-17 起章映射回落 seq（LLM 映射编号校验未过，见 HANDOFF §4），
     #   小样 key 改用 seq 键系。换映射来源时这里必须跟着改。
-    "prob": ["chapter8", "chapter10"],
+    #   ⚠ 2026-09-18：中文版的「出版信息」不再判 skip（用户点名要留）→ 多出
+    #   一个 zh-only 章，**整体 +1**：第4章 chapter8→chapter9、第6章
+    #   chapter10→chapter11。凡新增/移除一个 zh-only 章，这里都要跟着改。
+    "prob": ["chapter9", "chapter11"],
     "ml": ["chapter4"],            # 公式/代码密集，历史坏点
 }
 

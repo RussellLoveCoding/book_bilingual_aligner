@@ -154,10 +154,15 @@ def main():
         if not cp.zh_path:
             continue
         if not cp.en_path:
-            # LLM 章级映射可能给出 1:0 章（中文有、英文无，如中文版
-            # 独有的前言/附录）：当前单章流水线要求两侧都有文档，
-            # 先跳过并记录，待「一侧大段缺失」专项处理。
-            print(f"[章映射] 跳过 1:0 章（英文缺）：{cp.key} {cp.zh_title[:30]}")
+            # 中文独有章（英文侧没有对应文档）：**照常产出**，只是整章都是
+            # zh-only 段，渲染层原样保留、不参与对齐。
+            # ⚠ 2026-09-18 用户点名要留「出版信息 + 前后记」，而此前这里是
+            # `continue`（原注释「待『一侧大段缺失』专项处理」）—— 结果中文版
+            # 独有的「出版信息」「后记」「译后记」「译者致谢」**整章消失**。
+            # 现在它们进 jobs，由 process_chapter(en_blocks=[]) 产出纯中文章。
+            print(f"[章映射] 中文独有章（英文缺，照常产出）："
+                  f"{cp.key} {cp.zh_title[:30]}")
+            jobs.append(cp)
             continue
         if cp.key in ("notes", "index", "skip"):
             continue
@@ -171,13 +176,14 @@ def main():
     if llm is not None and llm.enabled:
         n_pairs = 0
         for cp in jobs:
-            n_pairs += sum(1 for b in en_docs[cp.en_path]
+            n_pairs += sum(1 for b in (en_docs.get(cp.en_path) or [])
                            if b.type != "heading" and not b.is_visual)
         print(llm.estimate_cost(n_pairs, len(jobs)))
         print()
 
     def _run_one(cp):
-        res = P.process_chapter(en_docs[cp.en_path], zh_docs[cp.zh_path],
+        res = P.process_chapter(en_docs.get(cp.en_path) or [],
+                                zh_docs[cp.zh_path],
                                 key=cp.key, llm=llm,
                                 en_notes_map=_en_notes_map,
                                 llm_gate=args.llm_gate)

@@ -5,22 +5,22 @@
     "ai_mt": 0,
     "missing": 0,
     "warn": 1,
-    "sec": 7.0
+    "sec": 1.0
   },
   "ml": {
-    "pairs": 204,
-    "matched": 193,
+    "pairs": 212,
+    "matched": 197,
     "ai_mt": 0,
-    "missing": 11,
-    "warn": 14,
-    "sec": 26.0
+    "missing": 15,
+    "warn": 18,
+    "sec": 3.3
   },
   "prob": {
-    "pairs": 392,
-    "matched": 338,
+    "pairs": 539,
+    "matched": 480,
     "ai_mt": 0,
-    "missing": 54,
-    "warn": 96,
-    "sec": 51.4
+    "missing": 59,
+    "warn": 75,
+    "sec": 5.1
   }
 }
