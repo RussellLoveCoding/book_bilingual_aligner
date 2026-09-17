@@ -5,7 +5,7 @@
     "ai_mt": 0,
     "missing": 0,
     "warn": 1,
-    "sec": 1.0
+    "sec": 0.9
   },
   "ml": {
     "pairs": 212,
@@ -13,14 +13,14 @@
     "ai_mt": 0,
     "missing": 15,
     "warn": 18,
-    "sec": 3.3
+    "sec": 3.2
   },
   "prob": {
-    "pairs": 539,
-    "matched": 480,
+    "pairs": 533,
+    "matched": 498,
     "ai_mt": 0,
-    "missing": 59,
-    "warn": 75,
-    "sec": 5.1
+    "missing": 35,
+    "warn": 56,
+    "sec": 5.0
   }
 }
