@@ -584,6 +584,10 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                     out.append(_one[0] if _one and len(_one) == 1 else None)
             for (si, pi, p), txt in zip(chunk, out):
                 if txt:
+                    # ⚠ 剥掉批式补译的行号前缀（"1|1|" / "12|12|"）——
+                    # LLM 按行编号返回是 prompt 约定，回填不该带（用户
+                    # 2026-09-17 截图实测：全书 AI 段开头都是 N|N|）
+                    txt = re.sub(r"^\s*\d+\s*\|\s*\d+\s*\|?\s*", "", txt)
                     p.mt = txt
                     st["mt"] += 1
                 else:
@@ -1015,6 +1019,16 @@ def looks_like_zh_title(z: str) -> bool:
              "注意", "总之", "换言之", "进一步", "显然"):
         return False
     if re.search(r"[=+×÷<>%/]", s):
+        return False
+    # 公式引导短句（"or, on integration"→「积分后可得」/"where"→「其中」/
+    # "is equal to"→「等于」…）：2026-09-17 用户 5 张截图实锤被当成居中
+    # 标题。这类行 = 公式前的引导语，永远不是标题。
+    if s in ("其中", "等于", "我们有", "可得", "即", "设", "于是有",
+             "由此可得", "因此有", "写为", "记为", "变为", "注意到",
+             "积分后可得", "通过观察求解", "分拆函数现在变为", "从中可以得到"):
+        return False
+    if re.match(r"^(其中|我们有|由此|于是|因此|代入|整理|展开|化简)", s) \
+            and len(s) <= 8:
         return False
     if _is_caption_text(s):
         return False

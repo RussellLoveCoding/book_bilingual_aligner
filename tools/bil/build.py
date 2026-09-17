@@ -432,19 +432,21 @@ _INLINE = False
 
 
 def _head_block(tag: str, cls: str, en: str, zh: str,
-                anchor: str = "") -> str:
+                anchor: str = "", zh_raw: bool = False) -> str:
     """章/节标题：英文、中文各成一个独立标题元素，都是同级标题。
 
     原来中文是塞在英文标题里的 `<span class="zh-h">`，靠 CSS display:block
     换行 —— 微信读书排版下两行挤在一起，阅读器也只认得一个标题条目。
     拆开后两个都是 h2/h3，目录里是两条、排版各自独立；单语版也能整元素删除。
+    zh_raw=True：zh 已是**渲染好的 html**（如章名里的行内公式），不再转义。
     """
     out = []
     aid = f' id="{_esc(anchor)}"' if anchor else ""
     if (en or "").strip():
         out.append(f'<{tag} class="{cls} en-h"{aid}>{_esc(en.strip())}</{tag}>')
     if (zh or "").strip():
-        out.append(f'<{tag} class="{cls} zh-h">{_esc(zh.strip())}</{tag}>')
+        _zh = zh.strip() if zh_raw else _esc(zh.strip())
+        out.append(f'<{tag} class="{cls} zh-h">{_zh}</{tag}>')
     if not out:                      # 两边都空（不该发生）给个占位
         out.append(f'<{tag} class="{cls}">&nbsp;</{tag}>')
     return "\n".join(out)
@@ -1058,13 +1060,22 @@ def render_chapter(res, prefix=""):
     parts = []
     heads = list(getattr(res, "en_heads", None) or [])
     zh_t = (res.zh_title or "").strip()
+    if "$" in zh_t:
+        # 章名里的行内公式（第18章 $A_{p}$ 分布…）→ 纯 HTML 标签
+        # （用户 2026-09-17：章标题公式与正文同待遇，不许原样吐 $..$）
+        zh_t = _zh_math(_esc(zh_t))
+        _zh_raw = True
+    else:
+        _zh_raw = False
     if heads:
         num, main = heads[0], (heads[1] if len(heads) > 1 else heads[0])
         if len(heads) > 1:
             parts.append(f'<p class="ch-num">{_esc(num)}</p>')
-        parts.append(_head_block("h2", "ct", main, zh_t, prefix))
+        parts.append(_head_block("h2", "ct", main, zh_t, prefix,
+                                 zh_raw=_zh_raw))
     elif res.en_title or zh_t:
-        parts.append(_head_block("h2", "ct", res.en_title, zh_t, prefix))
+        parts.append(_head_block("h2", "ct", res.en_title, zh_t, prefix,
+                                 zh_raw=_zh_raw))
 
     n_notes = len(res.notes or [])
     # 注释纯文本表：供 note_mark() 把全文塞进注标 alt（微信读书弹窗用）
@@ -1265,26 +1276,13 @@ def render_chapter(res, prefix=""):
                         # 英文侧是提示框 → 中文跟着进同一个框（视觉上是一块）
                         if sec.en_paras[p.en[0]].box:
                             _zc += " boxed"
-                        # ⚠ 逐段检查小标题（2026-09-17 用户点名）：宽组里常粘着
-                        # 「陷阱」「蕴涵关系」这类 zh 子标题（EN 侧是原位标题、
-                        # zh 侧是普通段），整组按 <p> 渲染 → 标题变左对齐正文。
-                        # 每段独立判定 _looks_like_zh_title → 提升为居中 h4.st。
-                        # ⚠ 去重：标题段若已通过标题机制（_zh_heads_at）渲染过，
-                        # 这里跳过——否则同一段渲染两遍（蕴涵关系 ×2 实测）。
-                        _head_txts = {t for _, t in (sec.zh_heads_at or [])}
-                        _keep = [x for x in p.zh
-                                 if sec.zh_paras[x].text.strip()
-                                 not in _head_txts]
-                        if _keep != p.zh:
-                            zh_html = _put_notes(
-                                _zh_math("\x01".join(
-                                    sec.zh_paras[x].html for x in _keep)),
-                                p, prefix, note_texts)
-                        parts.append(_multi_paras_zh_title(
-                            zh_html, tag, _zc,
-                            [sec.zh_paras[x].text for x in _keep],
-                            en_stub=all(len(sec.en_paras[x].text.strip()) <= 40
-                                        for x in p.en)))
+                        # ⚠ 2026-09-17 停用渲染层逐段标题提升：无差别提升把
+                        # 公式引导短句（「积分后可得」「其中」「等于」——即
+                        # "or, on integration" / "where" / "is equal to" 的
+                        # 中文）全变成居中标题（用户 5 张截图实锤）。
+                        # 真正的 zh 子标题由 pipeline._extract_zh_titles
+                        # （靠近 EN 原位标题才摘）+ zh-only 分支负责。
+                        parts.append(_multi_paras(zh_html, tag, _zc))
             elif p.mt:
                 zh_html = _put_notes(_zh_math(_esc(p.mt)), p, prefix,
                                      note_texts)
