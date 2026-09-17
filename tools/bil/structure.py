@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -196,14 +197,16 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
             cp.map_src = "key"
         return _apply_toc(pairs, en_toc, zh_toc)
 
-    # ② 有 LLM 就先问 LLM（章级标题配对，单次约 2k token，远快于确定性 DP）；
-    #    确定性顺序兜底只在 LLM 不可用/失败时才跑 —— 2026-09-14 起调换了
-    #    顺序：旧实现先跑 130s 的文档级 DP，再问 LLM，纯浪费。
-    if llm is not None and getattr(llm, "enabled", False):
-        # ⚠ temp=0 也有服务端非确定性（2026-09-17 实测：prob 章映射一次返回
-        #   [26,27],[27,28],[28,29] 整体差一位，编号校验正确拒掉 → 回退 seq
-        #   → seq 又把卷头配错 → 整章 0 对）。所以校验失败**先重试一次**，
-        #   两次都不行才退 seq，并大声报出来（静默降级 = 查不到为什么空了）。
+    # ② LLM 章映射**默认关闭**（2026-09-17 定调：可复现优先）。
+    #    ⚠ 实测这是一条**开盲盒链**：LLM 结果随服务端非确定性变化，校验过了
+    #    就用 LLM 键表（prob 实测 28 个单位，卷头被压平，「Editor's foreword」
+    #    被配上中文「致谢」—— 用户 2026-09-17 截图点名的就是这个），校验没过
+    #    就退 seq（prob 36 个单位）。且校验失败时会用 `refresh=True` **绕过
+    #    缓存**重问一次 → 每跑一次结果都可能不同（同一个产物，两次重建
+    #    段落对 5321 → 4431）。**同一份代码必须给同一个结果**，所以默认走
+    #    seq（dbg_chmap 实测 seq 0% 错配），要 A/B 时才开环境变量。
+    if (llm is not None and getattr(llm, "enabled", False)
+            and os.environ.get("BIL_LLM_CHMAP", "0") != "0"):
         for _attempt in (1, 2):
             llm_pairs = _map_chapters_llm(en_docs, zh_docs, en_keys, zh_keys,
                                           llm, refresh=(_attempt > 1))

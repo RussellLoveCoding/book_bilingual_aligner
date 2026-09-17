@@ -19,12 +19,14 @@ import json
 import os
 from pathlib import Path
 
-_V = 9   # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
+_V = 10  # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
          # v3：块级保真（pre→code / 提示框 box / 列表 in_list），旧缓存无这些字段
          # v4：章首清理（页码块/重复章名丢弃、引语署名并入引语）
          # v5：正文段内的行内公式图（<img class="mi">）不再当插图搬出去
          # v6：装饰横线（`p.line_img` / 高≤4 宽≥300 的极扁图）不再进图位流
          #     —— 它会抢中文公式的配对、还把真公式编号顶到自己头上（§2.6）
+         # v10：md 导入清洗（`<eq>…</eq>`→`$…$`；`![image](cdn…)` 整行剔除）
+         #     —— 旧缓存里这两类原文会原样漏进成品（2026-09-17 用户截图）
 CACHE = Path(os.environ.get("PARSE_CACHE_DIR", ".cache/parse"))
 
 

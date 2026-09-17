@@ -97,6 +97,9 @@ td.eqno { text-align: right; font-size: .95em; white-space: nowrap; }
 /* 渲染失败的公式：等宽原文兜底（可读、可搜，不吐 $$ 符号） */
 .eq-raw { font-family: ui-monospace, Consolas, monospace; font-size: .82em;
   white-space: pre-wrap; color: inherit; opacity: .85; }
+/* \boxed{…}：行内细框（原书用它标重点结论） */
+.boxed { border: 1px solid currentColor; border-radius: 2px;
+  padding: 0 .22em; }
 /* 公式交叉引用：跟正文同色，不加下划线（原版就是普通编号文本） */
 /* 交叉引用照原版：链接蓝、无下划线（原书里 (2.66) 这类引用是蓝色的） */
 a.eqref { text-decoration: none; color: #3b6fd4; }
@@ -442,10 +445,23 @@ def _head_block(tag: str, cls: str, en: str, zh: str,
     """
     out = []
     aid = f' id="{_esc(anchor)}"' if anchor else ""
+    # ⚠ 标题里的行内公式一律渲染（用户 2026-09-17 #4：章名/小节名的 $…$ 与
+    # 正文同待遇）。此前只有章名走 _zh_math，小节标题原样吐 `### 11.2 最小化
+    # $\sum p_i^2$`（实测 ch12 标题里就是这句）。
     if (en or "").strip():
-        out.append(f'<{tag} class="{cls} en-h"{aid}>{_esc(en.strip())}</{tag}>')
+        _en = en.strip()
+        if "$" in _en:
+            _en = _en_math(_esc(_en))
+            out.append(f'<{tag} class="{cls} en-h"{aid}>{_en}</{tag}>')
+        else:
+            out.append(f'<{tag} class="{cls} en-h"{aid}>{_esc(_en)}</{tag}>')
     if (zh or "").strip():
-        _zh = zh.strip() if zh_raw else _esc(zh.strip())
+        if zh_raw:
+            _zh = zh.strip()
+        elif "$" in zh:
+            _zh = _zh_math(_esc(zh.strip()))
+        else:
+            _zh = _esc(zh.strip())
         out.append(f'<{tag} class="{cls} zh-h">{_zh}</{tag}>')
     if not out:                      # 两边都空（不该发生）给个占位
         out.append(f'<{tag} class="{cls}">&nbsp;</{tag}>')
@@ -674,7 +690,14 @@ def _zh_math(html_str: str) -> str:
 
     段落 html 是转义过的：公式片段先 unescape 再交给 latexrender，
     输出的标签保持原样（正文其余部分不动）。
+
+    渲染层**兜底清洗**（2026-09-17，用户报「为啥还有 ![img]()」「<eq> 漏在
+    注释里」）：无论源是什么形态（md 导入 / 缓存里的旧文本 / LLM 回填），
+    到这一步都保证不留原始标记：
+      * `![alt](url)` 外链图片语法 → 删（插图走英文原版渲染）；
+      * 残留的 `<eq>…</eq>` / `&lt;eq&gt;…` → 当行内公式渲染。
     """
+    html_str = _leak_clean(html_str)
     if "$" in html_str:
         import html as _h
 
@@ -697,6 +720,23 @@ def _zh_math(html_str: str) -> str:
 
         html_str = _INLINE_TEX_RE.sub(sub, html_str)
     return _link_eq_refs(html_str)
+
+
+_MD_IMG_LEAK_RE = re.compile(r"!\[[^\]]*\]\([^)\s]*\)")
+_EQ_LEAK_RE = re.compile(r"(?:&lt;|<)/?(?:eq|EQ)(?:&gt;|>)")
+
+
+def _leak_clean(s: str) -> str:
+    """清掉不该出现在成品里的原始标记（幂等；无命中直接返回原值）。"""
+    if not s:
+        return s
+    if "![" in s:
+        s = _MD_IMG_LEAK_RE.sub("", s)
+    if "eq&gt;" in s or "<eq>" in s or "</eq>" in s:
+        # 成对替换成 $…$，再交给上面的行内公式渲染
+        s = re.sub(r"(?:&lt;|<)(?:eq|EQ)(?:&gt;|>)", "$", s)
+        s = re.sub(r"(?:&lt;|<)/(?:eq|EQ)(?:&gt;|>)", "$", s)
+    return s
 
 
 def _en_elem(b, epigraph: bool = False) -> tuple[str, str]:
@@ -965,7 +1005,8 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
             # 中文 `$$` 块，而英文侧另有一张（无编号的）原图 → 中文这份不出，
             # 免得同一公式出两次（英文侧按原样出那张图，见下面的图片链路）
             return ""
-        out = ['<figure class="fig tbl">', _blk]
+        out = ['<figure class="fig tbl">',
+               (_zh_math(_blk) if "$" in _blk else _blk)]
         if cap:
             out.append(f"<figcaption>{_esc(cap)}</figcaption>")
         out.append("</figure>")
@@ -1101,11 +1142,19 @@ def render_chapter(res, prefix=""):
         # 小节标题优先**回到原文位置**（en_heads_at/zh_heads_at，见 pipeline）：
         # 合并单元把几个英文小节名拼成「A / B」扔在章首是错的（用户实测
         # 《思考，快与慢》第2章）。只有拿不到原位信息时才退回章首渲染。
-        if (sec.en_title or sec.zh_title) and not (
-                getattr(sec, "en_heads_at", None)
-                or getattr(sec, "zh_heads_at", None)):
-            parts.append(_head_block("h3", "st",
-                                     sec.en_title, sec.zh_title))
+        if (sec.en_title or sec.zh_title) and (
+                getattr(sec, "merged", False)
+                or not (getattr(sec, "en_heads_at", None)
+                        or getattr(sec, "zh_heads_at", None))):
+            # 合并单元（"3.8 Sampling… / 3.8.1 Digression…"）只发**首个分段**
+            # —— 那是真实的小节边界；后面的 3.8.1 由 en_heads_at 在它自己的
+            # 位置发。不发的话「3.8 有放回抽样」整条标题会消失（实测目录里
+            # 从 3.7 直接跳到 3.9）。
+            _et = (sec.en_title or "").split(" / ")[0] if \
+                getattr(sec, "merged", False) else sec.en_title
+            _zt = (sec.zh_title or "").split(" / ")[0] if \
+                getattr(sec, "merged", False) else sec.zh_title
+            parts.append(_head_block("h3", "st", _et, _zt))
         _en_hp = list(getattr(sec, "en_heads_at", None) or [])
         _zh_hp = list(getattr(sec, "zh_heads_at", None) or [])
         _hip = _hiz = 0
@@ -1239,8 +1288,9 @@ def render_chapter(res, prefix=""):
                             parts.append(h)
             if getattr(p, "censored", False) and p.zh_fix:
                 # 审查删减已修复：段首图标（听书 TTS 不读出）+ 修复后的译文
+                from .pipeline import strip_fill_prefix as _sfp2
                 parts.append(f'<p class="zh censorship_fix">'
-                             f'{censor_note()}{_esc(p.zh_fix)}</p>')
+                             f'{censor_note()}{_esc(_sfp2(p.zh_fix))}</p>')
             elif p.zh and not _cap_consumed(sec, p):
                 # ⚠ 2026-09-16 修：这里原来还有 `and not E.no_translate_reason(...)`，
                 # 而那个启发式把「≤3 个英文词且 ≤16 字母」的段判成 symbolic（如
@@ -1284,7 +1334,11 @@ def render_chapter(res, prefix=""):
                         # （靠近 EN 原位标题才摘）+ zh-only 分支负责。
                         parts.append(_multi_paras(zh_html, tag, _zc))
             elif p.mt:
-                zh_html = _put_notes(_zh_math(_esc(p.mt)), p, prefix,
+                # ⚠ 渲染层兜底再剥一次行号前缀（`3|` / `2||` / `3|3|`）：回填
+                # 路径已经剥过，但**旧缓存里的 mt 文本可能仍带**（用户
+                # 2026-09-17 报 ch2/ch5/ch9 全书仍有序号）。宁可重复剥。
+                from .pipeline import strip_fill_prefix as _sfp
+                zh_html = _put_notes(_zh_math(_esc(_sfp(p.mt))), p, prefix,
                                      note_texts)
                 # 英文侧是原版脚注段（class=fn）→ 中文补译同口径小字（原版格式）
                 _fn = any("fn" in (getattr(sec.en_paras[x], "cls", "")
@@ -1428,7 +1482,10 @@ def render_chapter(res, prefix=""):
                     f'<p><b>[{n}]</b> {inner}</p></li></ol></aside>')
 
         for n, blk in enumerate(res.notes, 1):
-            parts.append(_note_entry(n, blk.html))
+            # ⚠ 注释正文也要过行内公式渲染（用户 2026-09-17 #10 截图：
+            # 「中文残留的公式渲染漏在后面的注释中」——注释走的这条路径
+            # 以前完全没接 _zh_math，`$…$` 原样印出来）
+            parts.append(_note_entry(n, _zh_math(blk.html)))
         # 补齐缺的条目
         have = len(res.notes)
         for k in range(have, len(ids)):
@@ -1605,6 +1662,43 @@ def _collect_figures(results):
     return seen
 
 
+def _nav_math(label: str) -> str:
+    """目录标签里的行内公式 → 纯 HTML 标签（**不**做交叉引用链接）。
+
+    ⚠ 用户 2026-09-17 点名 #4：第18章的章名是「第18章 $A_{p}$ 分布与连续法则」，
+    正文里已经渲染成 <i>A</i><sub>p</sub>，**但导航页/目录页还是 $A_{p}$ 原文**。
+    章名、小节名的公式一律与正文同待遇。
+    """
+    import html as _h
+
+    def sub(m):
+        return LR.inline_html(_h.unescape(m.group(1)))
+
+    try:
+        return _INLINE_TEX_RE.sub(sub, _esc(label.strip()))
+    except Exception:                                      # noqa: BLE001
+        return _esc(label.strip())      # 渲染不了就退化成纯文本，别让目录炸掉
+
+
+def _nav_esc(x) -> str:
+    """目录标签出 HTML：允许 str（转义）或 ("html", 已渲染) 两种形态。"""
+    if isinstance(x, tuple):
+        return x[1]
+    return _esc(x)
+
+
+def _nav_label(zh: str, en: str):
+    """zh · en 组成目录标签；含行内公式时返回 ("html", …) 让出标签绕过转义。"""
+    zh, en = (zh or "").strip(), (en or "").strip()
+    parts = [p for p in (zh, en) if p]
+    if not parts:
+        return ""
+    txt = " · ".join(parts)
+    if "$" not in txt:
+        return txt
+    return ("html", _nav_math(txt))
+
+
 def _nav_title(res) -> str:
     """目录条目：中文标题优先，附英文。
 
@@ -1613,8 +1707,10 @@ def _nav_title(res) -> str:
     zh = (getattr(res, "zh_title", "") or "").strip()
     en = (getattr(res, "en_title", "") or "").strip()
     if zh and en and zh != en:
-        return f"{zh} · {en}"
-    return zh or en or getattr(res, "key", "")
+        lab = _nav_label(zh, en)
+    else:
+        lab = _nav_label(zh or en, "")
+    return lab or getattr(res, "key", "")
 
 
 _CLS_ATTR_RE = re.compile(r'class="([^"]*)"')
@@ -1879,30 +1975,98 @@ def _nav_lis(entries) -> str:
     lis = []
     for h, t, subs in entries:
         if subs:
-            inner = "".join(f'<li><a href="{sh}">{_esc(st)}</a></li>'
+            inner = "".join(f'<li><a href="{sh}">{_nav_esc(st)}</a></li>'
                             for sh, st in subs)
-            lis.append(f'    <li><a href="{h}">{_esc(t)}</a>'
+            lis.append(f'    <li><a href="{h}">{_nav_esc(t)}</a>'
                        f'<ol>{inner}</ol></li>')
         else:
-            lis.append(f'    <li><a href="{h}">{_esc(t)}</a></li>')
+            lis.append(f'    <li><a href="{h}">{_nav_esc(t)}</a></li>')
     return chr(10).join(lis)
 
 
-def _piece_label(piece: str, lang: str, k: int) -> str:
-    """续片的目录标签：取该片开头的首个小节标题（双语拼成 中文 · English）。
+# ── 小节级目录（2026-09-17 用户 #1/#2 报障）─────────────────────────────
+# 旧目录只登记「spine 文件」，每章的子条目 = 续片文件的首个小节标题。
+# 后果：① 读者目录里每章只看到 1~3 条（第2章只有 "2.3 定性属性"），
+# 用户原话「第二章……小节标题不见了，现在只有到 2.2」；
+# ② 续片标签是「第一个 zh-h + 第一个 en-h」拼的，两条可能来自**不同标题**
+# （实测「9.16.1 非理性主义者 · 9.11.1 Implied alternatives」）。
+# 新做法：把片内**每个小节标题**都登记成子条目（href 带锚点），
+# 标签严格取**同一对** en-h/zh-h；层级仍只有两层（微信实测更深的会丢）。
+_NAV_H3_RE = re.compile(r'<h3 class="st ([^"]*)">(.*?)</h3>', re.S)
 
-    切片边界就是小节标题，正常必然命中；万一走到 div 兜底切点，
-    退回「（续 k）」。别用整章标题 —— 微信目录里会出现一排同名条目。
+
+def _annotate_sections(piece: str, pid: str):
+    """给片内每个小节 <h3 class="st …"> 补幂等 id，返回 (新片, 条目列表)。
+
+    条目 = [(锚点 id, 标签)]，标签是「中文 · English」（与 _head_block 同序）。
+    只有 en-h 或只有 zh-h 的标题照样登记（单侧小节也要能在目录里跳）。
     """
-    def h3(cls):
-        m = re.search(rf'<h3 class="st {cls}"[^>]*>(.*?)</h3>', piece, re.S)
-        return re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else ""
+    toks = list(_NAV_H3_RE.finditer(piece))
+    if not toks:
+        return piece, []
+    groups: list[tuple[list, str, str]] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        cl = t.group(1).split()
+        nxt = toks[i + 1] if i + 1 < len(toks) else None
+        if "en-h" in cl and nxt is not None \
+                and "zh-h" in nxt.group(1).split():
+            groups.append(([t, nxt], t.group(2), nxt.group(2)))
+            i += 2
+        else:
+            groups.append(([t],
+                           t.group(2) if "en-h" in cl else "",
+                           t.group(2) if "zh-h" in cl else ""))
+            i += 1
+    entries: list[tuple[str, object]] = []
+    out, pos, k = [], 0, 0
+    for tokg, en, zh in groups:
+        aid = f"{pid}-s{k}"
+        k += 1
+        entries.append((aid, _nav_label(_plain_nav(zh), _plain_nav(en))))
+        first = tokg[0]
+        out.append(piece[pos:first.start()])
+        out.append(f'<h3 class="st {first.group(1)}" id="{aid}">'
+                   f'{first.group(2)}</h3>')
+        pos = first.end()
+        for extra in tokg[1:]:
+            out.append(piece[pos:extra.start()])
+            out.append(extra.group(0))
+            pos = extra.end()
+    out.append(piece[pos:])
+    return "".join(out), entries
 
-    zt, et = h3("zh-h"), h3("en-h")
-    lab = " · ".join(t for t in (zt, et) if t)
-    if not lab:
-        lab = f"(cont. {k})" if lang == "en" else f"（续{k}）"
-    return lab[:60]
+
+def _plain_nav(s: str) -> str:
+    """去掉标题里的标签，但**保留行内公式**（$…$ 交给 _nav_math 渲染）。"""
+    if not s:
+        return ""
+    return re.sub(r"<[^>]+>", "", s).strip()
+
+
+def _piece_label(piece: str, lang: str, k: int) -> str:
+    """续片的兜底目录标签（片内一个小节标题都没有时用）。
+
+    取该片开头的**同一对** en-h/zh-h（旧实现分别取「第一个 zh-h」和
+    「第一个 en-h」，两条可能来自不同标题 → 目录里出现张冠李戴）。
+    """
+    toks = list(_NAV_H3_RE.finditer(piece))
+    for i, t in enumerate(toks):
+        cl = t.group(1).split()
+        if "en-h" in cl:
+            nxt = toks[i + 1] if i + 1 < len(toks) else None
+            zh = (nxt.group(2) if nxt is not None
+                  and "zh-h" in nxt.group(1).split() else "")
+            lab = _nav_label(_plain_nav(zh), _plain_nav(t.group(2)))
+            if lab:
+                return lab
+        elif "zh-h" in cl:
+            lab = _nav_label(_plain_nav(t.group(2)), "")
+            if lab:
+                return lab
+    return f"(cont. {k})" if lang == "en" else f"（续{k}）"
+
 
 
 def _ncx_xml(title: str, entries, ident: str) -> str:
@@ -1924,7 +2088,7 @@ def _ncx_xml(title: str, entries, ident: str) -> str:
         pad = " " * indent
         xml = (f'{pad}<navPoint id="np{counter[0]:02d}" '
                f'playOrder="{counter[0]}">\n'
-               f'{pad}  <navLabel><text>{_esc(label)}</text></navLabel>\n'
+               f'{pad}  <navLabel><text>{_nav_esc(label)}</text></navLabel>\n'
                f'{pad}  <content src="{href}"/>\n')
         xml += "".join(point(ch, lab, [], indent + 2)
                        for ch, lab in children)
@@ -2093,6 +2257,16 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
         for k, piece in enumerate(pieces):
             pname = name if k == 0 else f"ch{i:02d}_{k}.xhtml"
             mid = "" if k == 0 else f"_{k}"
+            # 小节级目录（用户 #1/#2）：给片内每个小节标题补 id 并登记。
+            # id 前缀用文件名（ch07_1-s3），跟 spine 文件一一对应，不会串章。
+            piece, secs = _annotate_sections(piece, pname.rsplit(".", 1)[0])
+            if not secs:
+                # 片内没有小节标题（纯前言页/脚注尾巴等）→ 只在**续片**上
+                # 兜底登记，首片本来就有章级条目指向它，别造出「（续0）」
+                if k:
+                    secs = [(None, _piece_label(piece, lang, k))]
+            for aid, lab in secs:
+                subs.append((f"{pname}#{aid}" if aid else pname, lab))
             docs.append((pname, f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang if lang != 'bi' else 'zh'}-CN" lang="{lang if lang != 'bi' else 'zh'}-CN" class="{pair_style_class(style)}">
@@ -2104,13 +2278,11 @@ def _build_epub_impl(results, out: Path, title="Nexus 中英双语版", lang="bi
             manifest.append(f'    <item id="c{i:02d}{mid}" href="{pname}" '
                             f'media-type="application/xhtml+xml"/>')
             spine.append(f'    <itemref idref="c{i:02d}{mid}"/>')
-            if k:
-                subs.append((pname, _piece_label(piece, lang, k)))
         nt = _nav_title(r)
         if lang == "zh":
-            nt = (getattr(r, "zh_title", "") or "").strip() or nt
+            nt = _nav_label(getattr(r, "zh_title", ""), "") or nt
         elif lang == "en":
-            nt = (getattr(r, "en_title", "") or "").strip() or nt
+            nt = _nav_label(getattr(r, "en_title", ""), "") or nt
         toc_entries.append((name, nt, subs))
 
     # 插图资源：从两本源 epub 里抽出来写进新包

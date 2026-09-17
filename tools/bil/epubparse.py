@@ -1196,12 +1196,28 @@ def load_toc(z: zipfile.ZipFile | None) -> dict[str, str]:
     用途：《思考，快与慢》中文版正文里章标题只有「第2章」，真正的章名
     （「注意力与努力」）排在开篇插图之后、且不是 heading —— 全靠解析拿不到。
     目录（toc.ncx）里写的是完整章名，是零成本的权威来源。
+
+    ⚠⚠ 2026-09-17 用户报「目录页错得很」的根因就在本函数：条目 src 带
+    `#锚点`（`11_Chapter02.html#h1_2.2`），旧实现用 `([^"#]+)` 把锚点切掉 →
+    **同一文件的所有小节条目塌成一个键**，`setdefault` 只留最先出现的那条。
+    prob 实测：`10_Chapter01.html` 的首条是小节 `1.2 Analogies with physical
+    theories` → 第1章章名变成小节名；`11_Chapter02.html` 首条恰是 `#chapter2`
+    → 第2章侥幸正确。**章名错得毫无规律、只看目录里谁先出现**。
+
+    新规则（一条：文件级条目优先，章锚点次之，小节条目永不冒充章名）：
+      1. 无锚点条目（`xx.html`）—— 它就是文件级标题，最高优先；
+      2. 锚点形如 `#chapterN` / `#partN` / 纯数字 —— 章/部级锚点；
+      3. 其余（`#h1_2.2`、`#h2_2.6.4`、任意小节锚点）**默认丢弃**；
+         若整个文件只有小节条目，则退化为「首条去掉编号后的标题」是不行的
+         （会得到 "Analogies with physical theories"），所以干脆不登记，
+         让上层回落到**正文首个 heading**（比错误的小节名好）。
     """
     out: dict[str, str] = {}
     if z is None:
         return out
     names = z.namelist()
     ncx = next((n for n in names if n.lower().endswith(".ncx")), None)
+    rank: dict[str, int] = {}          # 键 → 已登记条目的优先级（越小越权威）
     if ncx:
         try:
             t = z.read(ncx).decode("utf-8", "replace")
@@ -1210,21 +1226,55 @@ def load_toc(z: zipfile.ZipFile | None) -> dict[str, str]:
         for m in re.finditer(
                 r"<navPoint[^>]*>(.*?)</navPoint>", t, re.S | re.I):
             body = m.group(1)
-            sm = re.search(r'<content[^>]*src\s*=\s*"([^"#]+)', body, re.I)
+            sm = re.search(r'<content[^>]*src\s*=\s*"([^"#]+)(#[^"]*)?"',
+                           body, re.I)
             tm = re.search(r"<text[^>]*>(.*?)</text>", body, re.S | re.I)
             if not sm or not tm:
                 continue
             label = strip_tags(tm.group(1)).strip()
-            if label:
-                out.setdefault(sm.group(1).lstrip("./"), label)
+            if not label:
+                continue
+            frag = (sm.group(2) or "").lstrip("#")
+            pri = _toc_entry_rank(frag)
+            if pri is None:
+                continue                       # 小节锚点：不许当文件标题
+            key = sm.group(1).lstrip("./")
+            if key not in rank or pri < rank[key]:
+                rank[key] = pri
+                out[key] = label
     # nav.xhtml（EPUB3）兜底
     nav = next((n for n in names
                 if n.lower().endswith(("nav.xhtml", "nav.html"))), None)
     if nav and not out:
         t = z.read(nav).decode("utf-8", "replace")
-        for m in re.finditer(r'<a[^>]*href\s*=\s*"([^"#]+)[^"]*"[^>]*>(.*?)</a>',
-                             t, re.S | re.I):
-            href, label = m.group(1).lstrip("./"), strip_tags(m.group(2)).strip()
-            if label:
-                out.setdefault(href, label)
+        for m in re.finditer(r'<a[^>]*href\s*=\s*"([^"#]+)(#[^"]*)?"[^>]*>'
+                             r"(.*?)</a>", t, re.S | re.I):
+            href, frag, lab = (m.group(1).lstrip("./"),
+                               (m.group(2) or "").lstrip("#"),
+                               strip_tags(m.group(3)).strip())
+            pri = _toc_entry_rank(frag)
+            if lab and pri is not None and (href not in rank or pri < rank[href]):
+                rank[href] = pri
+                out[href] = lab
     return out
+
+
+_TOC_CHAPTER_FRAG_RE = re.compile(r"^(?:chapter|part|ch|pt)\s*[-_]?\s*[\w.]+$",
+                                  re.I)
+
+
+def _toc_entry_rank(frag: str) -> int | None:
+    """目录条目锚点的「层级优先级」：0 = 文件级/章级，2 = 部级，None = 丢弃。
+
+    只认「文件级」「chapter/part 锚点」；小节锚点（h1_2.2 / h2_2.6.4 / 任意
+    别的东西）一律 None —— 章名绝不允许由小节标题顶替。返回 None 的条目
+    被直接忽略，文件若因此没有条目，上层回落到正文首个 heading。
+    """
+    if not frag:
+        return 0
+    if _TOC_CHAPTER_FRAG_RE.match(frag):
+        return 0 if frag.lower().startswith(("chapter", "ch")) else 1
+    if re.fullmatch(r"\d+(?:\.\d+)*", frag):
+        return 1
+    return None
+

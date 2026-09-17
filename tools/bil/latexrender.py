@@ -67,6 +67,12 @@ _SYMS = {
     "quad": "\u2003", "qquad": "\u2003\u2003",
     "hbar": "ℏ", "ell": "ℓ", "Re": "ℜ", "Im": "ℑ", "aleph": "ℵ",
     "degree": "°", "prime2": "″",
+    # 2026-09-17 按「全书行内公式扫一遍」补的命令（各自都有实测出处，
+    # 不补就留下 `\gets`/`\sqrtN` 这类半截 LaTeX）
+    "gets": "←", "longleftarrow": "⟵", "longrightarrow": "⟶",
+    "nsubseteq": "⊈", "sqsubseteq": "⊑", "sqcup": "⊔", "sqcap": "⊓",
+    "implies": "⟹", "iff": "⟺",
+    "bigcap": "⋂", "varnothing": "∅", "mid": "|", "colon": ":",
 }
 _SYM_RE = re.compile(
     r"\\(" + "|".join(sorted(_SYMS, key=len, reverse=True)) + r")(?![a-zA-Z])")
@@ -91,16 +97,57 @@ def _decorate(t: str) -> str:
 
     ⚠ `\overline` 是 Jaynes 这类书的最高频装饰（`\overline{A}` 表示取反），
     漏了它就等于整段数学读不通 —— 2026-09-16 实测成品里残留 22 处。
+    ⚠ 参数可能**嵌套一层**：`\overline{R_{\mathrm{later}}}`（实测 ch3 泄漏
+    「\overlineRlater」）→ 花括号匹配要允许内层再有一层。
     """
     marks = {"bar": "\u0304", "overline": "\u0305", "hat": "\u0302",
              "widehat": "\u0302", "tilde": "\u0303", "widetilde": "\u0303",
              "dot": "\u0307", "ddot": "\u0308", "vec": "\u20D7",
              "underline": "\u0332"}
     for name, mk in marks.items():
-        t = re.sub(r"\\" + name + r"\{([^{}]*)\}", r"\1" + mk, t)
+        t = re.sub(r"\\" + name + r"\{((?:[^{}]|\{[^{}]*\})*)\}",
+                   r"\1" + mk, t)
         # \overline\s A / \overlineA（无花括号的紧凑写法）
         t = re.sub(r"\\" + name + r"\s*([A-Za-z0-9])\b", r"\1" + mk, t)
     return t
+
+
+def _sqrt_html(t: str) -> str:
+    r"""\sqrt{x} → √(x)；单符号参数写成 √x。
+
+    ⚠ 2026-09-17 实测：`\sqrt` 从来没被处理过，成品里印出 `1 / \sqrtN`
+    （ch3/ch4/ch7 多处）。根号没有 Unicode 组合形式，多符号参数用括号代替
+    上横线，单符号（√N、√2）直接并写。
+    """
+    pat = re.compile(r"\\sqrt\s*\{((?:[^{}]|\{[^{}]*\})*)\}")
+    while True:
+        m = pat.search(t)
+        if not m:
+            break
+        body = m.group(1).strip()
+        core = body.replace(" ", "")
+        rep = f"√{body}" if len(core) <= 1 else f"√({body})"
+        t = t[:m.start()] + rep + t[m.end():]
+    t = re.sub(r"\\sqrt\s*([A-Za-z0-9])\b", r"√\1", t)
+    return t
+
+
+def _binom_html(t: str) -> str:
+    r"""\binom{n}{c} → C(n, c)（组合数；没有现成 Unicode 排版，用 C(·,·)）。"""
+    pat = re.compile(r"\\binom\s*\{([^{}]*)\}\s*\{([^{}]*)\}")
+    while True:
+        m = pat.search(t)
+        if not m:
+            break
+        t = (t[:m.start()] + f"C({m.group(1).strip()}, {m.group(2).strip()})"
+             + t[m.end():])
+    return t
+
+
+def _boxed_html(t: str) -> str:
+    """\\boxed{x} → 带细框的行内 span（原书用它标「重点结论」）。"""
+    return re.sub(r"\\boxed\s*\{([^{}]*)\}",
+                  r'<span class="boxed">\1</span>', t)
 
 
 def _frac_html(t: str) -> str:
@@ -120,7 +167,13 @@ def inline_html(tex: str) -> str:
     t = tex or ""
     # 1) 文本类命令先剥（\text/\mathrm/\mathit 内容原样保留）
     t = re.sub(r"\\(?:text|mathrm|mathit|mathsf|textrm)\s*\{([^{}]*)\}", r"\1", t)
-    t = re.sub(r"\\(?:mathbf|boldsymbol|bm)\s*\{([^{}]*)\}", r"<b>\1</b>", t)
+    # \operatorname{var} / \operatorname*{max}：语义就是直立体文本，跟 \mathrm
+    # 同待遇。⚠ 之前没处理 → 花括号被后面前的分组步骤吃掉，成品里印出
+    # 「\operatornamevar(L)」这种半截 LaTeX（2026-09-17 用户截图「残留的公式和
+    # 错乱的玩意」，ch13/ch14 与 ch7 评注多处）。
+    t = re.sub(r"\\operatorname\*?\s*\{([^{}]*)\}", r"\1", t)
+    t = re.sub(r"\\(?:mathbf|boldsymbol|bm|pmb)\s*\{([^{}]*)\}",
+               r"<b>\1</b>", t)
     t = re.sub(r"\\(?:mathcal|mathbb|mathfrak)\s*\{([^{}]*)\}", r"\1", t)
     # 2) 装饰与上下标（先于符号替换，避免 α 里的字母被 ^/_ 误配）
     t = _decorate(t)
@@ -128,6 +181,9 @@ def inline_html(tex: str) -> str:
     # 3) 符号
     t = _SYM_RE.sub(lambda m: _SYMS[m.group(1)], t)
     t = _frac_html(t)
+    t = _sqrt_html(t)
+    t = _binom_html(t)
+    t = _boxed_html(t)
     # 4) 定界符与分组
     t = re.sub(r"\\(?:left|right|big|Big|bigl|bigr|Bigl|Bigr)\s*", "", t)
     t = t.replace(r"\{", "{").replace(r"\}", "}")
@@ -136,7 +192,8 @@ def inline_html(tex: str) -> str:
     t = _SPACING_RE.sub("", t)
     # 5) 变量斜体：孤立拉丁字母（希腊/HTML 标签之外）→ <i>
     #    保守起见只包「单独出现」的字母；紧贴标签的先挖出来再放回去
-    parts = re.split(r"(<(?:sub|sup|b)>.*?</(?:sub|sup|b)>)", t)
+    parts = re.split(r"(<(?:sub|sup|b|span)[^>]*>.*?</(?:sub|sup|b|span)>)",
+                     t)
     for i, seg in enumerate(parts):
         if seg.startswith("<"):
             continue

@@ -32,6 +32,27 @@ from . import notes as NO
 _ZH_CAP_RE = re.compile(r"^图\s*(\d+)\s*[-–—]\s*(\d+)")
 _EN_FIG_RE = re.compile(r"\bFigure\s+(\d+)\b", re.I)
 
+# 补译回填：LLM 按「行号|译文」的约定返回，回填时要把行号剥掉。
+# ⚠ 2026-09-17 用户报障（ch2/ch5/ch9 仍带序号）：**形态不唯一**，实测全书
+# 161 处里同时出现 `1|`、`2||`、`1|[5]`、`3|3|` 四种 —— 旧实现只写了
+# `^\d+\|\d+\|?`，把单数字形态全漏了，"全书残留=0" 是假绿。
+# 规则：开头 `数字 + 竖线`，竖线 1~2 个，可再接一组 `数字 + 竖线`；循环剥。
+_FILL_PREFIX_RE = re.compile(r"^\s*\d+\s*[|｜]{1,2}\s*(?:\d+\s*[|｜]{1,2}\s*)?")
+
+
+def strip_fill_prefix(t: str) -> str:
+    """剥掉补译回填文本开头的行号前缀（`3|` / `3|3|` / `2||`…）。
+
+    幂等；循环剥是为了对付 `1|2|3|` 这类模型自造的多层前缀。
+    """
+    s = t or ""
+    for _ in range(4):
+        n = _FILL_PREFIX_RE.sub("", s, count=1)
+        if n == s:
+            break
+        s = n
+    return s
+
 
 @dataclass
 class SectionResult:
@@ -43,6 +64,12 @@ class SectionResult:
     zh_paras: list = field(default_factory=list)
     degrade: bool = False
     note: str = ""
+    # 本单元由**多个**英文/中文小节合并而来（标题是 "A / B" 形式）。
+    # ⚠ 渲染层必须照常输出它的标题：合并后的单元里第一个小节是真实的小节
+    # 边界，读者要看到（2026-09-17 实测：EN 3.8 与 3.8.1 合成一个单元后，
+    # 渲染层因「有 heads_at 就不发小节标题」把「3.8 有放回抽样」整条吞掉，
+    # 目录里从 3.7 直接跳到 3.9）。
+    merged: bool = False
     # v3：图位。渲染时按 anchor 插回正文
     figures: list = field(default_factory=list)   # [FigureRef]
     en_visuals: list = field(default_factory=list)
@@ -584,10 +611,11 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                     out.append(_one[0] if _one and len(_one) == 1 else None)
             for (si, pi, p), txt in zip(chunk, out):
                 if txt:
-                    # ⚠ 剥掉批式补译的行号前缀（"1|1|" / "12|12|"）——
+                    # ⚠ 剥掉批式补译的行号前缀（"1|" / "1|1|" / "2||" / "1|[5]"）——
                     # LLM 按行编号返回是 prompt 约定，回填不该带（用户
-                    # 2026-09-17 截图实测：全书 AI 段开头都是 N|N|）
-                    txt = re.sub(r"^\s*\d+\s*\|\s*\d+\s*\|?\s*", "", txt)
+                    # 2026-09-17 截图实测：全书 AI 段开头都是 N|；多形态见
+                    # strip_fill_prefix 注释）
+                    txt = strip_fill_prefix(txt)
                     p.mt = txt
                     st["mt"] += 1
                 else:
@@ -710,13 +738,44 @@ def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
     if not need or len(pairs) < min_hits or len(pairs) < need * min_cover:
         return None
     out = [([i], [j]) for i, j, _n in pairs]
-    # 未配上的小节（多半是无编号的**章首块** / 尾部附录）：
-    # 先按顺序互配（章首↔章首），剩下的单侧尾巴才做成单边对 —— 否则
-    # 会把整段章首内容判成「中文缺失」（实测 prob ch2 待补 16 段全是它）。
-    k = min(len(en_un), len(zh_un))
-    out += [([i], [j]) for i, j in zip(en_un[:k], zh_un[:k])]
-    out += [([i], []) for i in en_un[k:]]
-    out += [([], [j]) for j in zh_un[k:]]
+    # 未配上的小节（多半是无编号的**章首块** / 尾部附录）。旧实现「按顺序
+    # zip 互配」会把两条毫不相干的无编号小节硬凑一对 —— prob ch3 实测：
+    # EN「3.8.1 Digression: a sermon on reality vs. models」被配到 ZH「展望」
+    # （那其实是 3.11.1 A look ahead 的中文标题），EN 3.11.1 反而落单 →
+    # 成品里 3.8.1 的标题印成「展望」（用户 2026-09-17 截图点名）。
+    # 新规则（**邻接锚点**，窄）：
+    #   ① 无编号 EN 节 i，只有它紧邻的前一个已配节 i-1 ↔ ZH[j] 且 ZH[j+1]
+    #      也无编号时才配 ZH[j+1]；
+    #   ② 章首块同理（jp = -1 → 候选 = ZH[0]），所以首块互配保留；
+    #   ③ 中文侧反向再跑一遍（对称）；
+    #   ④ 邻居对不上就做单边对 —— 宁缺毋滥，标注「中文版缺此小节」也比
+    #      张冠李戴强（内容不会丢，只是标题留空）。
+    en_paired = {i: j for i, j, _n in pairs}
+    zh_paired = {j: i for i, j, _n in pairs}
+    used_en, used_zh = set(), set()
+
+    def _try(i, j):
+        if i in used_en or j in used_zh or i in en_paired or j in zh_paired:
+            return False
+        if not (0 <= i < len(en_secs) and 0 <= j < len(zh_secs)):
+            return False
+        out.append(([i], [j]))
+        used_en.add(i)
+        used_zh.add(j)
+        return True
+
+    for i in en_un:
+        _j = en_paired.get(i - 1, -1)        # 前一个已配 EN 节的中文伙伴
+        for j in (zh_un if _j < 0 else [_j + 1]):
+            if _try(i, j):
+                break
+    for j in zh_un:
+        _i = zh_paired.get(j - 1, -1)
+        for i in (en_un if _i < 0 else [_i + 1]):
+            if _try(i, j):
+                break
+    out += [([i], []) for i in en_un if i not in used_en]
+    out += [([], [j]) for j in zh_un if j not in used_zh]
     out.sort(key=lambda x: (x[0] or x[1]))
     return out
 
@@ -1011,14 +1070,28 @@ def looks_like_zh_title(z: str) -> bool:
     # 连接词黑名单，不靠长度）。上限 20 不变。
     if not (2 <= len(s) <= 20):
         return False
-    if re.search(r"[。！？；：，、.!?;:,]", s):
+    # ⚠ 2026-09-17：中文小标题常用「主标题：副标题」式冒号（对应英文
+    # "Digression: a sermon on reality vs. models" / "Comments: …"）。
+    # 旧实现见冒号一律否决 → prob 3.8.1 的「离题：关于现实与模型的说明」
+    # 被判成正文段 → 走 zh-only 丢弃 → **中文小标题整个消失**（用户截图
+    # 实锤：成品里该字符串出现 0 次），EN 侧 3.8.1 标题只好去蹭别处的
+    # zh 标题（「展望」，属 3.11.1）。
+    # 新规则写窄：允许**一个**全角冒号，但冒号前 ≤8 字、冒号后非空，
+    # 且整串不含句末/逗号类标点（"注意：这样做，是因为……" 仍被否决）。
+    if re.search(r"[。！？；，、.!?;,]", s):
+        return False
+    if s.count("：") == 1:
+        _head, _tail = s.split("：", 1)
+        if not (2 <= len(_head.strip()) <= 8 and _tail.strip()):
+            return False
+    elif ":" in s:
+        return False
+    if re.search(r"[=+×÷<>%/]", s):
         return False
     # 连接词/过渡语黑名单：这类短句是正文的一部分，永远不是标题
     if s in ("也可以", "或者", "因此", "于是", "同样", "反之", "此外", "但是",
              "然而", "例如", "所以", "于是乎", "也就是说", "其实", "当然",
              "注意", "总之", "换言之", "进一步", "显然"):
-        return False
-    if re.search(r"[=+×÷<>%/]", s):
         return False
     # 公式引导短句（"or, on integration"→「积分后可得」/"where"→「其中」/
     # "is equal to"→「等于」…）：2026-09-17 用户 5 张截图实锤被当成居中
@@ -1444,6 +1517,9 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                   for g in (_zh_off[j] + _k for _k in range(len(zh_secs[j].paras)))]
         a_t = " / ".join(en_secs[i].title for i in ei if en_secs[i].title)
         b_t = " / ".join(zh_secs[j].title for j in zi if zh_secs[j].title)
+        # 本单元是否由多个小节合并而成（渲染层要照常发标题，见 merged 注释）
+        _merged = (len([i for i in ei if en_secs[i].title]) > 1
+                   or len([j for j in zi if zh_secs[j].title]) > 1)
 
         # 本小节英文图位（按出现顺序），中文图按全书顺序顺延分配
         en_figs = [v for i in ei for v in A.visual_of_sec(en_secs[i])]
@@ -1461,14 +1537,15 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             pairs = [A.Pair(en=[i], zh=[]) for i in range(len(a_paras))]
             ar = AU.audit_pairs(pairs, a_paras, b_paras or [])
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras,
-                               note="中文版缺此小节")
+                               merged=_merged, note="中文版缺此小节")
         elif not a_paras and b_paras:         # 中文多出的小节
             pairs = [A.Pair(en=[], zh=[j]) for j in range(len(b_paras))]
             ar = AU.audit_pairs(pairs, a_paras or [], b_paras)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras,
-                               note="中文版多出的小节")
+                               merged=_merged, note="中文版多出的小节")
         elif not a_paras and not b_paras:
-            sr = SectionResult(a_t, b_t, [], AU.AuditResult(), [], [])
+            sr = SectionResult(a_t, b_t, [], AU.AuditResult(), [], [],
+                               merged=_merged)
         else:
             # 体检当裁判：DP 与整章 LLM 映射各出一套配对，逐小节取
             # bad 更少的那个。理由：《思考快与慢》这类书 DP 本来就准
@@ -1522,7 +1599,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                 _metrics(_p, a_paras, b_paras)
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
-            sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)
+            sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras,
+                               merged=_merged)
             if _moved:
                 sr.note = ((sr.note + "；" if sr.note else "")
                            + f"编号段归位 {_moved} 处")

@@ -70,6 +70,37 @@ def _strip_front_matter(text: str) -> str:
     return text
 
 
+def _norm_md_inline(s: str) -> str:
+    """md 行内标记归一：`<eq>…</eq>` → `$…$`，孤立图片行 → 空。
+
+    两个都是 2026-09-17 用户报障的**源头**（minerU 的 md 产物）：
+
+    ① `<eq>\\sigma_{\\max}</eq>`（36 处）：minerU 用它包行内公式，我们从不
+       处理 → 成品里原样吐出 `&lt;eq&gt;`/`<eq>\\sigma…` 源码（用户截图
+       「中文残留的公式渲染漏在后面的注释中」）。转成 `$…$` 后由 build 的
+       `_zh_math` 走既有的行内公式渲染（纯 HTML 标签），零新增渲染路径。
+    ② `![image](https://cdn-mineru…)`（15 处）：minerU 把书里的插图换成了
+       外链 markdown 图片语法。我们不下外链图（离线书 + 不稳定 CDN），
+       插图本身从**英文原版**抽图渲染（`_attach_figures`/`_figure_html`），
+       所以这一行是纯冗余噪音 → 删掉，别让 `![image](…)` 漏进成品
+       （用户截图「为啥还有 ![img]()」）。
+       行内夹带的情况按「删掉图片语法、保留其余文字」处理。
+    """
+    if not s:
+        return s
+    n_open = s.count("<eq>") + s.count("&lt;eq&gt;")
+    n_close = s.count("</eq>") + s.count("&lt;/eq&gt;")
+    if n_open or n_close:
+        s = re.sub(r"(?:&lt;|<)/(?:eq|EQ)(?:&gt;|>)", "$", s)
+        s = re.sub(r"(?:&lt;|<)(?:eq|EQ)(?:&gt;|>)", "$", s)
+        if n_open != n_close and s.count("$") % 2:
+            s += "$"          # 源里标签不成对时才补，避免动到正常的 $ 文本
+    return s
+
+
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)\s]*\)")
+
+
 def load_md(path, lang: str) -> dict[str, list]:
     """Markdown 原稿 → {伪路径: [Block]}。
 
@@ -163,7 +194,13 @@ def load_md(path, lang: str) -> dict[str, list]:
             # md 引用标记（minerU 题词用「> / > >」）剥掉——它们是排版
             # 记号不是内容，留着会原样漏进成品（2026-09-17 ch1 实测）
             line = re.sub(r"^\s*(?:>\s?)+", "", line)
-            buf.append(line)
+            # 外链图片语法（minerU 的 `![image](cdn…)`）：插图走英文原版，
+            # 这里整行/整段剔除（见 _norm_md_inline 注释）
+            if _MD_IMG_RE.search(line):
+                line = _MD_IMG_RE.sub("", line)
+                if not line.strip():
+                    continue
+            buf.append(_norm_md_inline(line))
     flush()
     if cur:
         docs[cur_name] = cur
