@@ -555,6 +555,11 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 if len(s.pairs) != _before:
                     for _p in s.pairs:
                         _metrics(_p, s.en_paras, s.zh_paras)
+        # 2.5) 标题摘出收尾（幂等）：细化候选会把已摘除的 zh 标题段带回
+        # 宽组（蕴涵关系 ×2 实测），refine 之后必须再摘一次。
+        for s in res.sections:
+            if getattr(s, "en_heads_at", None):
+                _extract_zh_titles(s)
 
     # 2) 补译：中文版删减/缺失的段落
     if translate:
@@ -986,6 +991,38 @@ def _structural_suspicion(s) -> tuple[bool, str]:
     return (bool(why), "·".join(why))
 
 
+def looks_like_zh_title(z: str) -> bool:
+    """**中文短段是不是小标题**（单一来源；build._looks_like_zh_title 别名到此）。
+
+    中文版的小标题常常不是 heading 而是普通段。判据保守：短、无句读/冒号、
+    无等号运算符、汉字占比高、不在连接词黑名单。
+    """
+    from .build import _is_caption_text      # 延迟导入避免环
+
+    s = (z or "").strip()
+    # 下限 2 字（2026-09-17 用户点名：1.5 的子标题「陷阱」「蕴涵关系」只有
+    # 2/4 字，6 字下限把它们连同丢弃规则一起吞了。防「也可以」回归靠下面的
+    # 连接词黑名单，不靠长度）。上限 20 不变。
+    if not (2 <= len(s) <= 20):
+        return False
+    if re.search(r"[。！？；：，、.!?;:,]", s):
+        return False
+    # 连接词/过渡语黑名单：这类短句是正文的一部分，永远不是标题
+    if s in ("也可以", "或者", "因此", "于是", "同样", "反之", "此外", "但是",
+             "然而", "例如", "所以", "于是乎", "也就是说", "其实", "当然",
+             "注意", "总之", "换言之", "进一步", "显然"):
+        return False
+    if re.search(r"[=+×÷<>%/]", s):
+        return False
+    if _is_caption_text(s):
+        return False
+    core = re.sub(r"\s+", "", s)
+    if not core:
+        return False
+    cjk = sum(1 for c in core if "\u4e00" <= c <= "\u9fff")
+    return cjk / len(core) >= 0.75
+
+
 def _merge_onesided_sections(sec_pairs):
     """中文为空的 EN 子小节 → 并入前一个有配对的小节。
 
@@ -1006,6 +1043,38 @@ def _merge_onesided_sections(sec_pairs):
             continue
         out.append((e, z))
     return out
+
+
+def _extract_zh_titles(sr):
+    """宽组里的 zh 标题段（title-like）→ 摘出挂到邻近 EN 原位标题。
+
+    幂等收尾：细化采纳的候选会把已摘除的标题段带回来（窗口按旧 pairs
+    切），所以必须在 refine **之后**再跑一遍。典型：1.5 的
+    pair en14↔zh[蕴涵关系,命题,读作] —— 蕴涵关系是 Implication 的中文
+    标题，应紧贴 EN 标题渲染，而不是埋在 1:3 宽组里（用户截图实锤）。
+    """
+    zh2pair = {j: pi for pi, p in enumerate(sr.pairs) for j in (p.zh or [])}
+    for j in sorted(zh2pair):
+        t = (sr.zh_paras[j].text or "").strip()
+        if not looks_like_zh_title(t):
+            continue
+        p = sr.pairs[zh2pair[j]]
+        if not p.zh or len(p.zh) < 2:
+            continue                       # 独占一对的标题段不动（zh-only
+                                           # 分支自会提升；1:1 的也正常）
+        # 邻近 EN 原位标题：en 首段位置 ±1
+        if not p.en:
+            continue
+        hit = any(p.en[0] - 1 <= hp <= p.en[0] + 1 for hp, _ in sr.en_heads_at)
+        if not hit:
+            continue
+        # ⚠ 文本去重：refine 候选会把已摘除的标题段带回来——这时只需从
+        # pair 里再摘一次，**不能重复追加**（蕴涵关系 ×2 实测）。
+        if any(x_t == t for _, x_t in sr.zh_heads_at):
+            p.zh = [x for x in p.zh if x != j]
+            return
+        sr.zh_heads_at = sorted(sr.zh_heads_at + [(p.zh[0], t)])
+        p.zh = [x for x in p.zh if x != j]
 
 
 def _merge_formula_translation(pairs, en_paras, zh_paras):
@@ -1493,6 +1562,71 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                     _n += 1
             _off += _n
         sr.en_heads_at = _en_heads_at
+        sr.zh_heads_at = _zh_heads_at
+
+        # 临时诊断（BIL_DBG_HEADS=1 时 dump 到 /tmp）：核查标题挂靠
+        import os as _os
+        if _os.environ.get("BIL_DBG_HEADS") and "Implication" in \
+                " ".join(t for _, t in _en_heads_at):
+            with open("/tmp/heads_dump.txt", "a", encoding="utf-8") as _f:
+                _f.write(f"== section {a_t[:40]!r}\n")
+                _f.write(f"   en_heads_at = {_en_heads_at}\n")
+                _f.write(f"   zh_heads_at = {_zh_heads_at}\n")
+                for _pi, _p in enumerate(sr.pairs):
+                    _f.write(f"   pair[{_pi}] en={_p.en} zh={_p.zh}\n")
+
+        # ── zh「短标题样普通段」挂靠邻近 EN 原位标题（2026-09-17）─────────
+        # 场景（用户点名 1.5）：EN 侧子标题 Implication/A tricky point 是
+        # heading 块（进 _en_heads_at），zh 侧对应物「蕴涵关系」「陷阱」
+        # 却是普通段 → 不在 _zh_heads_at 里；DP 又把它们排错位置
+        # （蕴涵关系落到 (1.14) 图后，与 Implication 标题隔了一对）。
+        # 规则：zh 段 title-like、且所属 pair（或前后 pair）的 en 范围内
+        # 存在 EN 原位标题（每个标题只用一次）→ 挂到该标题位置（渲染成
+        # 居中 h4.st，紧贴 EN 标题），并从原 pair 摘除。
+        _zh2pair = {}
+        for _pi, _p in enumerate(sr.pairs):
+            for _j in (_p.zh or []):
+                _zh2pair[_j] = _pi
+        _used_heads = set()
+        for _j in sorted(_zh2pair):
+            _t = (b_paras[_j].text or "").strip()
+            if not looks_like_zh_title(_t):
+                continue
+            _pi = _zh2pair[_j]
+            _p = sr.pairs[_pi]
+            if not _p.en:
+                # zh-only pair：渲染层 zh-only 分支自己会把 title 提升为
+                # h4（同判据）——这里再挂 _zh_heads_at 就是双重渲染
+                # （蕴涵关系/陷阱 ×2 实测），跳过。
+                continue
+            _hit = None
+            if _p.en:
+                for hp, ht in _en_heads_at:
+                    if hp not in _used_heads and _p.en[0] - 1 <= hp <= _p.en[-1] + 1:
+                        _hit = hp
+                        break
+            else:
+                _pe = max((_q.en[-1] for _q in sr.pairs[:_pi] if _q.en),
+                          default=-1)
+                _sn = min((_q.en[0] for _q in sr.pairs[_pi + 1:] if _q.en),
+                          default=10 ** 9)
+                for hp, ht in _en_heads_at:
+                    if hp not in _used_heads and _pe < hp <= _sn:
+                        _hit = hp
+                        break
+            if _hit is None:
+                continue
+            _used_heads.add(_hit)
+            _zh_heads_at.append((_j, _t))
+            _zh_heads_at.sort()
+            _p.zh = [x for x in _p.zh if x != _j]
+            _zh2pair.pop(_j)
+        if _os.environ.get("BIL_DBG_HEADS") and _en_heads_at:
+            with open("/tmp/heads_dump.txt", "a", encoding="utf-8") as _f:
+                _f.write(f"   [after] zh_heads_at = {_zh_heads_at}\n")
+                for _pi, _p in enumerate(sr.pairs):
+                    if _p.en and len(_p.en or []) + len(_p.zh or []):
+                        _f.write(f"   pair[{_pi}] en={_p.en} zh={_p.zh}\n")
         sr.zh_heads_at = _zh_heads_at
 
     # 中文多出来的图（通常是被漏掉位置的插图）：追加到最后一个有正文的小节

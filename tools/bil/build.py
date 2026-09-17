@@ -985,35 +985,10 @@ def _figure_html(fig, prefix: str, side: str = "zh") -> str:
 
 
 def _looks_like_zh_title(z: str) -> bool:
-    """**英文侧为空**时判断中文段是不是小标题。
-
-    中文版的小标题常常不是 heading 而是普通段（多为单字 `<b>` 拆分，
-    取文本后形如「谈 谈 回 归 均 值」），既配不上英文标题、又落进
-    「英文为空的 pair」，旧渲染直接把它整对跳过 → 中文小标题丢失。
-    判据保守：短、无句读/冒号、无等号运算符、汉字占比高。
-    """
-    s = (z or "").strip()
-    # 下限 2 字（2026-09-17 用户点名：1.5 的子标题「陷阱」「蕴涵关系」只有
-    # 2/4 字，6 字下限把它们连同丢弃规则一起吞了。防「也可以」回归靠下面的
-    # 连接词黑名单，不靠长度）。上限 20 不变。
-    if not (2 <= len(s) <= 20):
-        return False
-    if re.search(r"[。！？；：，、.!?;:,]", s):
-        return False
-    # 连接词/过渡语黑名单：这类短句是正文的一部分，永远不是标题
-    if s in ("也可以", "或者", "因此", "于是", "同样", "反之", "此外", "但是",
-             "然而", "例如", "所以", "于是乎", "也就是说", "其实", "当然",
-             "注意", "总之", "换言之", "进一步", "显然"):
-        return False
-    if re.search(r"[=+×÷<>%/]", s):
-        return False
-    if _is_caption_text(s):
-        return False
-    core = re.sub(r"\s+", "", s)
-    if not core:
-        return False
-    cjk = sum(1 for c in core if "\u4e00" <= c <= "\u9fff")
-    return cjk / len(core) >= 0.75
+    """单一来源在 pipeline.looks_like_zh_title（2026-09-17 起管线侧也用：
+    zh 短标题样普通段挂靠 EN 原位标题）。此处仅别名转发。"""
+    from .pipeline import looks_like_zh_title
+    return looks_like_zh_title(z)
 
 
 def _cap_consumed(sec, p) -> bool:
@@ -1103,6 +1078,15 @@ def render_chapter(res, prefix=""):
         if _t:
             note_texts[_k + 1] = _t[:800]
     for sec in res.sections:
+        # 临时诊断（BIL_DBG_HEADS=1）：渲染入口的数据形状
+        import os as _os
+        if _os.environ.get("BIL_DBG_HEADS") and "Implication" in \
+                (sec.en_title or ""):
+            with open("/tmp/render_dump.txt", "a", encoding="utf-8") as _f:
+                _f.write(f"== render {sec.en_title[:40]!r}\n")
+                _f.write(f"   zh_heads_at = {sec.zh_heads_at}\n")
+                for _pi, _p in enumerate(sec.pairs):
+                    _f.write(f"   pair[{_pi}] en={_p.en} zh={_p.zh}\n")
         # 小节标题优先**回到原文位置**（en_heads_at/zh_heads_at，见 pipeline）：
         # 合并单元把几个英文小节名拼成「A / B」扔在章首是错的（用户实测
         # 《思考，快与慢》第2章）。只有拿不到原位信息时才退回章首渲染。
@@ -1285,9 +1269,20 @@ def render_chapter(res, prefix=""):
                         # 「陷阱」「蕴涵关系」这类 zh 子标题（EN 侧是原位标题、
                         # zh 侧是普通段），整组按 <p> 渲染 → 标题变左对齐正文。
                         # 每段独立判定 _looks_like_zh_title → 提升为居中 h4.st。
+                        # ⚠ 去重：标题段若已通过标题机制（_zh_heads_at）渲染过，
+                        # 这里跳过——否则同一段渲染两遍（蕴涵关系 ×2 实测）。
+                        _head_txts = {t for _, t in (sec.zh_heads_at or [])}
+                        _keep = [x for x in p.zh
+                                 if sec.zh_paras[x].text.strip()
+                                 not in _head_txts]
+                        if _keep != p.zh:
+                            zh_html = _put_notes(
+                                _zh_math("\x01".join(
+                                    sec.zh_paras[x].html for x in _keep)),
+                                p, prefix, note_texts)
                         parts.append(_multi_paras_zh_title(
                             zh_html, tag, _zc,
-                            [sec.zh_paras[x].text for x in p.zh],
+                            [sec.zh_paras[x].text for x in _keep],
                             en_stub=all(len(sec.en_paras[x].text.strip()) <= 40
                                         for x in p.en)))
             elif p.mt:
