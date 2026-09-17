@@ -17,11 +17,14 @@
 本探针把「切分」与「配对」两步并排打出来，改代码前后各跑一次即可判断有没有修好。
 
 用法：
-  _run.sh dbg_frontmap.py prob            # 默认 head/tail 各 8 对
+  _run.sh dbg_frontmap.py prob                      # 现状（改前基线）
+  _run.sh dbg_frontmap.py prob --dry-fix split      # 只预演「zh 切分补词」
+  _run.sh dbg_frontmap.py prob --dry-fix split+en   # 再叠加「EN 前置归类」
   _run.sh dbg_frontmap.py prob --head 12 --tail 6
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -66,10 +69,75 @@ def _dump_units(tag: str, docs: dict, keyf) -> None:
     print(f"=== {tag} 单位（{len(docs)} 个）===")
     print(f"  {'单元':26s} {'kind':9s} {'段数':>5s} {'标题数':>5s}  首个标题")
     for p, b in docs.items():
-        k = keyf(b)
+        k = keyf(b, p) if keyf is S.key_of_en else keyf(b)
         hs = _heads(b)
         print(f"  {p[:26]:26s} {k.kind:9s} {len(b):5d} {len(hs):5d}  {_title(b)[:30]}")
     print()
+
+
+def _apply_dry_fix(mode: str) -> list[str]:
+    """在**内存里**预演修复方案：不碰真代码、不污染真缓存、零 LLM。
+
+    mode ∈ {"split", "split+en"}（含 "split" 即生效；"en" 为叠加项）。
+
+    为什么要它：§3.1 的四步修复**全部会改解析切分 → `fastcache._V += 1`
+    → 全书 prompt 失效**，按定调要攒到半价时段。所以先用零成本预演回答
+    「改了之后映射会变成什么样、够不够」，再决定动手。
+
+    ⚠ 两个关键点：
+    1. **必须让旧解析缓存失效**，否则改了正则也读回旧结果 —— 所以内存里 `_V += 1`。
+    2. **缓存目录要指到项目内 scratch**，绝不能写 `~/.cache/bil`：万一正式实现与
+       预演不完全一致，同键的脏结果会被后来当成有效缓存（缓存=钱，但脏缓存更贵）。
+    """
+    from bil import fastcache as FC
+
+    notes: list[str] = []
+    scratch = (Path(__file__).resolve().parent.parent
+               / ".workbuddy" / "tmp" / "parse_dryfix")
+    FC.CACHE = scratch
+    FC._V = FC._V + 1
+    notes.append(f"fastcache._V {FC._V - 1} → {FC._V}（仅内存）· 解析缓存改到 {scratch}")
+
+    # ① zh 切分：把「本该独立成单元但正则不认」的词补进 _ZH_HEAD_RE。
+    #    用「在最后一个 ) 前插入」而不是重抄整条正则 —— 原正则改了也不会漂。
+    #    mode 里带 editor = 只加 `编者序`（交接单 §3.1 原方案①的最小版）；
+    #    mode 里带 split  = 再叠加尾部 `人名索引|术语索引|符号`（影响面更大，含内容决策）。
+    words = []
+    if "editor" in mode:
+        words.append("编者序")
+    if "split" in mode:
+        words += ["人名索引", "术语索引", "符号"]
+    if words:
+        pat = TX._ZH_HEAD_RE.pattern
+        i = pat.rindex(")")
+        TX._ZH_HEAD_RE = re.compile(pat[:i] + "|" + "|".join(words) + pat[i:])
+        notes.append(f"_ZH_HEAD_RE 补词: {'|'.join(words)}")
+
+    # ② EN 前置归类：key_of_en 原来没有前置词表 → half-title/copyright 被判 other
+    #    混进位置 DP。这里只补**明确该 skip**的（不动 References/Index：那是内容决策）。
+    if "en" in mode:
+        orig = S.key_of_en
+
+        def _patched(blocks):                                # noqa: ANN001
+            k = orig(blocks)
+            if k.kind != "other":
+                return k
+            heads = [b.text for b in blocks if b.type == "heading"]
+            h0 = (heads[0] if heads else "").strip()
+            low = h0.lower()
+            total = sum(len(b.text or "") for b in blocks)
+            if re.match(r"^half[- ]?title|^title page|^copyright|^dedicat", low) \
+                    or (not h0 and total < 900):
+                return S.ChapterKey("skip", 0, h0[:40])
+            if "foreword" in low or low.startswith("preface"):
+                return S.ChapterKey("front", 0, h0[:40])
+            return k
+
+        S.key_of_en = _patched
+        notes.append("key_of_en: half-title/title page/copyright/dedication → skip；"
+                     "foreword/preface → front")
+
+    return notes
 
 
 def main() -> None:
@@ -81,6 +149,15 @@ def main() -> None:
             head = int(argv[i + 1])
         if a == "--tail" and i + 1 < len(argv):
             tail = int(argv[i + 1])
+
+    mode = ""
+    if "--dry-fix" in argv:
+        j = argv.index("--dry-fix")
+        mode = argv[j + 1] if j + 1 < len(argv) and not argv[j + 1].startswith("--") else "split"
+        print("[预演模式] 只改内存，不写代码、不写真缓存\n")
+        for n in _apply_dry_fix(mode):
+            print(f"  · {n}")
+        print()
 
     en_docs, zh_docs, pairs = EA.load(book)
     print(f"[书] {book} · EN {len(en_docs)} 单元 / ZH {len(zh_docs)} 单元 "
@@ -123,15 +200,18 @@ def main() -> None:
         print("  ✅ 没有单元吞掉本该独立的标题（切分粒度已对齐）")
 
     en_other_front = [(p, _title(b), len(b)) for p, b in list(en_docs.items())[:9]
-                      if S.key_of_en(b).kind == "other"]
+                      if S.key_of_en(b, p).kind == "other"]
     if en_other_front:
         print(f"  ⚠ EN 侧前置区仍有 {len(en_other_front)} 个单元判 other（该 skip/front，"
               f"会污染位置 DP）：")
         for p, t, n in en_other_front:
             print(f"      {p} 「{t}」({n} 段)")
 
+    # ⚠ 这里只列**容器名**（被并块的首标题），不能把 编者序/致谢 这类**合法单元名**
+    #   也算进来 —— 切分修好后它们会正常出现在标题位，那样就成了误报。
+    container = {"出版信息", "内容提要", "版权声明", "封面", "扉页", "书名页"}
     bad = [(cp.key, cp.en_title, cp.zh_title) for cp in pairs
-           if cp.en_title and cp.zh_title and cp.zh_title in _MISSING_WORDS]
+           if cp.en_title and cp.zh_title and cp.zh_title in container]
     if bad:
         print(f"  ⚠ {len(bad)} 组标题疑似错配（zh 侧标题取了被并块的首标题）：")
         for k, e, z in bad:

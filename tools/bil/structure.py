@@ -59,8 +59,16 @@ _EN_NUM_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
                  "fifteen": 15, "sixteen": 16, "seventeen": 17,
                  "eighteen": 18, "nineteen": 19, "twenty": 20}
 
+# 前置页的**标题文本常常认不出来** —— half-title 的标题是书名（"PROBABILITY THEORY"）、
+# copyright 页干脆没有标题标签 —— 所以只能看**文件名**。与 sectmine.FN_HINT 同一思路。
+# 2026-09-17（§3.1 第③步）：不剔掉它们，这些「垃圾页」会进章级位置 DP，
+# 把 EN Copyright 配到 zh「出版信息」，在 dbg_qa 上多出一条「连续同侧长段」。
+_EN_FILE_SKIP = re.compile(
+    r"(?:^|[_/])(?:cover|half[-_]?title|title|copyright|dedication|"
+    r"toc|contents)\.(?:x?html?|xhtml)$", re.I)
 
-def key_of_en(blocks) -> ChapterKey:
+
+def key_of_en(blocks, file: str = "") -> ChapterKey:
     heads = [b.text for b in blocks if b.type == "heading"]
     h0 = heads[0].strip() if heads else ""
     low = h0.lower()
@@ -69,6 +77,8 @@ def key_of_en(blocks) -> ChapterKey:
     for pat, kind in _EN_HEAD_KINDS:
         if re.search(pat, low):
             return ChapterKey(kind, 0, h0[:40])
+    if file and _EN_FILE_SKIP.search(file.replace("\\", "/")):
+        return ChapterKey("skip", 0, h0[:40])
     m = re.match(r"^part\s+(\w+)", low)
     if m:
         raw = m.group(1)
@@ -104,7 +114,8 @@ def _roman(s: str) -> int:
     return total
 
 
-_ZH_SKIP = re.compile(r"^(版权|封面|书名|献词|目录|内容简介|作者简介|推荐|序言页)")
+_ZH_SKIP = re.compile(r"^(版权|封面|书名|献词|目录|内容简介|作者简介|推荐|序言页"
+                      r"|出版信息|内容提要|扉页|书名页)")
 
 
 def key_of_zh(blocks) -> ChapterKey:
@@ -173,7 +184,7 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     en_toc/zh_toc：epub 目录（{文件名: 目录标题}）。正文里的章标题可能只有
     「第2章」甚至不是 heading（真实章名排在开篇插图之后）——目录是零成本的
     完整章名来源，优先用它。"""
-    en_keys = {p: key_of_en(b) for p, b in en_docs.items()}
+    en_keys = {p: key_of_en(b, p) for p, b in en_docs.items()}
     zh_keys = {p: key_of_zh(b) for p, b in zh_docs.items()}
     zh_by_key = {}
     for p, k in zh_keys.items():

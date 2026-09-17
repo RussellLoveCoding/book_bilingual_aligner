@@ -31,8 +31,14 @@ def _read_text(path: Path) -> str:
 _EN_HEAD_RE = re.compile(
     r"^(chapter|prologue|epilogue|introduction|foreword|preface|afterword"
     r"|acknowledg\w*|appendix|part)\b", re.I)
+# ⚠ `编者序` 是 2026-09-17 补的（§3.1）。md 的单元切分条件是
+#   `level <= top_level or _is_heading(title)`（见下方 load_md）—— 也就是说
+#   `###` 级标题**只有命中本正则才会开新单元**。原先没有 `编者序`，
+#   于是中文前置的「出版信息/内容提要/概率论沉思录/版权声明/编者序」被并成**一块**，
+#   EN 的 Editor's foreword 只能配到块首的「出版信息」（标题错 + 编者序内容被吞）。
+#   补上后实测：只影响前置 2 组（`Editor's foreword ↔ 编者序` 归位），尾部不动。
 _ZH_HEAD_RE = re.compile(
-    r"^(第[0-9一二三四五六七八九十百千两]+[章节卷回]|序章|序幕|序言|自序|前言"
+    r"^(第[0-9一二三四五六七八九十百千两]+[章节卷回]|序章|序幕|序言|自序|编者序|前言"
     r"|引言|引子|题记|楔子|结语|尾声|后记|致谢|附录)[\s:：·.,、—-]*")
 
 

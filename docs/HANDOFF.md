@@ -85,7 +85,13 @@ python tools/dbg_qa.py <成品.html> 20            # 当前 32 项
 
 ## 3. 未完成（按优先级，都**没动手**，先定方案再改）
 
-### 3.1 前置部分章映射（用户点名 #2）
+### 3.1 前置部分章映射（用户点名 #2）—— **①③ 已修，②④ 待做，详见 §6.4**
+
+> 2026-09-17 21:1x：`Editor's foreword ↔ 编者序`、`Preface ↔ 前言` 已归位，
+> 垃圾页（EN half-title/copyright、zh 出版信息/内容提要/版权声明）已出局，
+> 门禁全绿（bookscan 0 / qa 32 / eqcheck 0），成本 ≈¥0.001。
+> **剩下的尾部（References↔附录C、Subject index↔致谢）见 §6.4 的 ②④。**
+
 zh 前置与 EN 前置**粒度不同**：
 `zh = 出版信息 / 内容提要 / 版权声明 / 编者序 / 前言 / 致谢`，
 `EN = Half Title / Copyright / Editor's foreword / Preface`。
@@ -222,15 +228,38 @@ WSL 文件系统（`wsl.localhost` 别名不通），代码零第三方依赖、
   且 `出版信息/内容提要/版权声明` 被当「zh-only 正文段」**丢弃**（run_book 会打印
   `[zh-only 丢弃] 1324 段…样本：['[美] 埃德温·汤普森·杰恩斯…', '图书在版编目（CIP）数据'…]`）。
 
-**⇒ 至少四步（原「两步」不够）**
-1. `_ZH_HEAD_RE` 补 `编者序`（+ 尾部 `人名索引|术语索引|符号`）→ zh 切成同粒度单元；
-2. 两侧补**前置/后置词表**按词配对，替代位置 DP；
-3. EN 侧修 `key_of_en`：认 half title / copyright / editor's foreword，并把这些
-   连同 zh 的 出版信息/内容提要/版权声明 判 `skip`（别进 DP）；
-4. 尾部：References↔参考文献、Author/Subject index↔人名/术语索引。
+**⇒ 原「两步窄修」不够，实为四步。①③ 已做，②④ 待做：**
 
-⚠ **改切分 = 解析行为变更 → `fastcache._V += 1` → 全书 prompt 失效（花钱）**，
-且影响 ml/nexus/think2 → 按定调攒到 **00:30–08:30 半价时段**做，**先定方案再动手**。
+| 步 | 内容 | 状态 |
+|---|---|---|
+| ① | `_ZH_HEAD_RE` 补 `编者序`（`txtimport.py:34`） | ✅ **已做**（`fastcache._V` 10→11） |
+| ③ | EN 侧垃圾页判 skip：`key_of_en(blocks, file)` 加**文件名兜底** `_EN_FILE_SKIP`（标题文本认不出：half-title 的标题是书名、copyright 页无标题）；`_ZH_SKIP` 补 `出版信息\|内容提要\|扉页\|书名页` | ✅ **已做**（不动解析层，无需 `_V`） |
+| ② | 两侧补**前置/后置词表**按词配对，替代位置 DP | ⬜ 待做 |
+| ④ | 尾部：References↔参考文献、Author/Subject index↔人名/术语索引 | ⬜ 待做 |
+
+**①③ 的实测结果（2026-09-17 21:1x，prob 整本）**
+
+- 前置：`chapter1 Editor's foreword ↔ 编者序` ✅、`chapter2 Preface ↔ 前言` ✅
+  （改前是 `Editor's foreword ↔ 出版信息`，且编者序内容被当 zh-only 丢弃）
+- 成品里 `埃德温·汤普森·杰恩斯于1998年4月30日去世`（编者序首句）出现 1 次 ✅；
+  `图书在版编目（CIP）数据` / `This publication is in…` 均归 0（垃圾页正确出局）
+- 指标：段落对 **5321** · 命中中文 **4752** · AI补译 552 · 待补 17 ·
+  告警 **1253 → 1225**（−28）· zh-only 丢弃 1324 → 1258（−66）
+- 门禁：`dbg_bookscan` 全 0 ✅ · `dbg_qa` **32 项**（与基线一致，QA 清单零新增零丢失）✅ ·
+  `dbg_eqcheck` exit 0 ✅ · `pair 5406 / 元素 11741` 与改前完全相同
+- regress 三本小样**零变化**（33/33/0/1 · 212/197/15/18 · 408/371/37/38）✅
+- 成本 ≈ **¥0.001**（改动只波及前置/尾部，ch1–22 的 prompt 全部命中缓存）
+
+**剩下的 ②④ 才是尾部那块硬骨头**（现状：`EN References ↔ zh 附录C`、
+`EN Subject index ↔ zh 致谢`——zh 的 人名索引/术语索引/符号 仍并成一块，
+且 EN 的 References/Bibliography 在中文版里**没有对应物**，属内容决策）。
+⚠ ②④ 会再动 `_ZH_HEAD_RE`（`人名索引|术语索引|符号`）→ 需 `_V` 12。
+`tools/dbg_frontmap.py` 已备好 `--dry-fix split` 预演模式，**零成本先看效果再动手**。
+
+⚠ 通用教训（本次实测）：`fastcache._V += 1` 并不等于「全书 prompt 失效」——
+改动的**影响面要用 `dbg_frontmap.py` 的改前/改后 diff 量**（这次只差 2 个区域，
+ch1–22 全不变 → 成本从「按定调要等半价时段」降到 ¥0.001）。
+先量影响面，再决定要不要等时段。
 
 ### 6.5 行尾符陷阱（提交前必看）
 
