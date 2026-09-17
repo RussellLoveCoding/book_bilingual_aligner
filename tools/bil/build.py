@@ -1171,6 +1171,9 @@ def render_chapter(res, prefix=""):
                     while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j0:
                         parts.append(_head_block("h4", "st", "",
                                                  _zh_hp[_hiz][1]))
+                        # 记账：这一段已经以 h4 形式发出去了，别再被下面的
+                        # orphan 兜底或末尾自检当成「没渲染」。
+                        _emitted_zh.add(_zh_hp[_hiz][0])
                         _hiz += 1
                     _zplain = " ".join(sec.zh_paras[x].text
                                        for x in p.zh).strip()
@@ -1267,6 +1270,7 @@ def render_chapter(res, prefix=""):
                 _j = p.zh[0]
                 while _hiz < len(_zh_hp) and _zh_hp[_hiz][0] <= _j:
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
+                    _emitted_zh.add(_zh_hp[_hiz][0])   # 同 1171 处：记账防误报
                     _hiz += 1
                 zh_html = _put_notes(
                     _zh_math("\x01".join(sec.zh_paras[x].html for x in p.zh)),
@@ -1356,6 +1360,12 @@ def render_chapter(res, prefix=""):
         # 用户实测：「(III) 具有一致性.」在成品里整句消失 —— 它悬在配对之外，
         # 渲染层谁也没管它。宁可多一段（看得见、可挑错），也不能静默丢内容。
         _claimed = {j for _p in sec.pairs for j in (_p.zh or [])}
+        # ⚠ 已摘为「原位小节标题」的中文段（`pipeline._extract_zh_titles`）**不算
+        # orphan**：它已经从 pair 里摘出去（`p.zh` 里不再有它），但已由
+        # `zh_heads_at` 在 EN 原位标题旁渲染成 h4。不排除的话会被这里的兜底
+        # 再渲染一次 —— 实测 50 段**标题重复**（3.8.1「离题：关于现实与模型的
+        # 说明」、1.5「蕴涵关系」…），页面上同一句话先当标题、又当正文各出现一次。
+        _claimed |= {j for j, _t in (getattr(sec, "zh_heads_at", None) or [])}
         _orphan = [j for j in range(len(sec.zh_paras)) if j not in _claimed]
         if _orphan:
             print(f"    [渲染] {res.key} 小节「{(sec.en_title or '章首')[:20]}」"
