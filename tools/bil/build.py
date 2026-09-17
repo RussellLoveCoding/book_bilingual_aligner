@@ -475,11 +475,11 @@ def _collect_eqs(results) -> None:
     （json+png 读）跑两遍纯属浪费（2026-09-17 相位计时，渲染占热跑 ~40s）。
     同进程内 results 不变，第二遍直接跳过。
     """
-    global _EQS_COLLECTED
+    # ⚠ global 声明必须在**任何**用到这些名字的语句之前（否则 SyntaxError）
+    global _EQS_COLLECTED, _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS
     if _EQS_COLLECTED and _EQ_RECS:
         return
     _EQS_COLLECTED = True
-    global _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS
     _EQ_RECS, _EQ_FILES, _EQ_TAGS, _INLINE_IMGS = {}, {}, {}, {}
     texes = []
     for r in results:

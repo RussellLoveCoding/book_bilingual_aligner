@@ -258,6 +258,19 @@ def main():
             for f in build.OUT_DIR.iterdir():
                 shutil.move(str(f), str(out_real / f.name))
             print(f"[输出] 成品经 ext4 中转后已写入 {out_real}")
+        # ⚠ 产物新鲜度校验：构建崩在写盘前时，stdout 指标看起来"正常"，
+        # 但成品是几天前的旧文件（2026-09-17 实测：build.py 一个 SyntaxError
+        # 让产物停在 02:13，用户拿着旧成品报了一整轮错位）。必须显式校验。
+        import time as _t
+        fresh = [f for f in out_real.iterdir()
+                 if f.is_file() and _t.time() - f.stat().st_mtime < 600]
+        if fresh:
+            for f in sorted(fresh):
+                print(f"[产物校验] OK {f.name} "
+                      f"({f.stat().st_size/1024:.0f} KB, 刚刚写入)")
+        else:
+            print(f"[产物校验] ❌ {out_real} 里没有本次新写的成品——"
+                  f"构建很可能崩在写盘之前，请回看上面的 Traceback")
 
 
 def _run_parallel(fn, jobs, workers):
