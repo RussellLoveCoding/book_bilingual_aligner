@@ -1121,7 +1121,25 @@ def render_chapter(res, prefix=""):
                 getattr(sec, "merged", False) else sec.en_title
             _zt = (sec.zh_title or "").split(" / ")[0] if \
                 getattr(sec, "merged", False) else sec.zh_title
-            parts.append(_head_block("h3", "st", _et, _zt))
+            # ⚠ 合并单元的首个分段标题**可能已经在原位标题表里** —— 那样它下面
+            # 会被 en_heads_at/zh_heads_at 再发一次 h4，于是同一行标题连着出现
+            # 两遍（附录 A/B/C 的 `A.1/B.1/C.1` 实测 3 处：h3 在章首、h4 在正文）。
+            # 原位已经有就不在这里发；原位没有才发（3.8「有放回抽样」正是后者，
+            # 见上面 merged 的注释 —— 那条不能丢）。
+            _hp_txt = {t.strip() for _p, t in
+                       (getattr(sec, "en_heads_at", None) or [])}
+            _hp_txt |= {t.strip() for _p, t in
+                        (getattr(sec, "zh_heads_at", None) or [])}
+            # 中英两侧都要查：附录 A.1/B.1/C.1 是**英文**标题重复；而「参考文献」
+            # 章里中文版独有的文章（「一位物理学家的概率观」）是**中文**标题重复
+            # —— 它被 split_sections 当成了该章的 zh_title 发在章首，位置也是错的。
+            # 只发原位没有的那一侧。
+            _et_new = bool(_et.strip()) and _et.strip() not in _hp_txt
+            _zt_new = bool(_zt.strip()) and _zt.strip() not in _hp_txt
+            if _et_new or _zt_new:
+                parts.append(_head_block("h3", "st",
+                                         _et if _et_new else "",
+                                         _zt if _zt_new else ""))
         _en_hp = list(getattr(sec, "en_heads_at", None) or [])
         _zh_hp = list(getattr(sec, "zh_heads_at", None) or [])
         _hip = _hiz = 0
