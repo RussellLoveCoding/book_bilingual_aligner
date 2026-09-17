@@ -1171,6 +1171,12 @@ def _extract_zh_titles(sr):
         p.zh = [x for x in p.zh if x != j]
 
 
+# 临时诊断计数器（2026-09-18）：量化 _merge_formula_translation 的影响面。
+# `moved_from_en_pair` = 被搬的中文段**原本所在的 pair 还有英文** —— 这类多半是
+# 误合并（1.5 节实测：EN[8] 的正常译文被搬给 EN[7]，EN[8] 反而变成「缺中文」）。
+_MERGE_STATS = {"moved": 0, "moved_from_en_pair": 0, "left_empty_with_en": 0}
+
+
 def _merge_formula_translation(pairs, en_paras, zh_paras):
     """公式译文行并入引导对（2026-09-17 用户点名 (1.13) 错位）。
 
@@ -1185,6 +1191,24 @@ def _merge_formula_translation(pairs, en_paras, zh_paras):
       ③ **下一 pair 的 zh 首段** latex 密集（'$' ≥2 处）——是公式译文。
     → 把下一 pair 的 zh 首段并入当前 pair。
     """
+    # ⚠ 2026-09-18：**默认关闭**（`BIL_FMT=1` 才开）。
+    #
+    # 实测数据（prob 整本，只有这一处差异）：
+    #   开启  段落对 6067 · 命中中文 4893 · AI补译 1157 · 待补 17 · 告警 1871
+    #   关闭  段落对 6039 · 命中中文 5014 · AI补译 1021 · 待补  4 · 告警 1785
+    # ⇒ 命中中文 **+121**、待补 **−13**、告警 **−86**、AI补译 **−136**，全面改善。
+    #
+    # 原因：它搬了 230 段，其中 **202 段（88%）搬完后原 pair 变成「有英文、没中文」**
+    # —— 正是成品里那些「缺中文」的来源（1.5 节 EN[8] 实测：正常译文被搬给
+    # EN[7]）。第③条判据「下一 pair 的 zh 首段含 ≥2 个 `$`」太宽，普通数学句子
+    # 也满足，所以误合并远多于真修复。
+    #
+    # 它本来要解决的场景（中文「公式译文行」落到下一个 pair）应该由
+    # 「识别中文公式段并丢弃」来正面解决（用户 2026-09-18 的要求），
+    # 而不是靠「把它搬回上一段」—— 搬完上一段读起来仍然是错位的。
+    import os
+    if not os.environ.get("BIL_FMT"):
+        return [p for p in pairs if p.en or p.zh]
     out = [p for p in pairs]
     for i in range(len(out) - 1):
         p, q = out[i], out[i + 1]
@@ -1203,6 +1227,17 @@ def _merge_formula_translation(pairs, en_paras, zh_paras):
         q.zh = list(q.zh[1:])
         if not q.zh and not q.en:
             out[i + 1] = q
+        _MERGE_STATS["moved"] += 1
+        if q.en:
+            _MERGE_STATS["moved_from_en_pair"] += 1
+            if not q.zh:
+                # ⚠ 最可疑的一类：中文段被搬走后，原 pair 变成「有英文、没中文」
+                # —— 这就是成品里那些「缺中文」的由来（1.5 节 EN[8] 实测）。
+                _MERGE_STATS["left_empty_with_en"] += 1
+    if _MERGE_STATS["moved"]:
+        print(f"    [合并统计] 累计搬 {_MERGE_STATS['moved']} 段"
+              f"（来自有英文的 pair {_MERGE_STATS['moved_from_en_pair']} 段；"
+              f"**搬完让原 pair 变成缺中文** {_MERGE_STATS['left_empty_with_en']} 段）")
     return [p for p in out if p.en or p.zh]
 
 
