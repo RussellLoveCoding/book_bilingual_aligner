@@ -145,6 +145,9 @@ tools/dbg_eqcheck.py      成品公式守恒/编号唯一/死链（exit 0 = 全�
 tools/dbg_sec.py          倒出指定小节全部配对全文（人审错位专用）
 tools/dbg_hchain.py       小节标题链 + deep 配对（--deep）
 tools/dbg_chmap_src.py    章映射 LLM/seq 两条路并排（回答「键表为什么变了」）
+tools/dbg_frontmap.py     ★ 前置/后置单元映射尺子（§3.1 专用）：并排打 EN/ZH 单位表
+                          + 章映射首尾若干组 + 三条自动诊断（切分不足 / EN 前置误判
+                          other / 标题错配）。改 §3.1 前后各跑一次即可判断有没有修好。
 tools/.cache/*            解析/公式/LLM 三级缓存
 tests/gold/               金标准（人工判定，不外包 LLM）
 ```
