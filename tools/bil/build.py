@@ -541,12 +541,57 @@ def _eq_key(no: str) -> str:
     return LR.eq_no_key(no)
 
 
+def _eq_render_now(tex: str) -> dict:
+    """按需渲染一条行间公式并回写 `_EQ_RECS`（原来是**只查预渲染池**，
+    行内公式里的 array 不在池里 → 直接返回空 → 成品吐
+    「beginarray<i>l</i>…」的垃圾，1.5 布尔代数实测）。
+    """
+    if tex in _EQ_RECS:
+        return _EQ_RECS[tex]
+    rec: dict = {}
+    try:
+        from . import eqrender as EQ
+        ok, why = EQ.available()
+        if ok:
+            recs = EQ.render_many([tex], display=True)
+            rec = (recs[0] if recs else {}) or {}
+    except Exception:                     # noqa: BLE001
+        rec = {}
+    if not rec.get("ok"):
+        # 渲染失败 → 让 LLM 修语法（用户 2026-09-17 定调），再渲染一次。
+        # 缓存键 = tex，真跑一次后就不再花钱。
+        _err = str(rec.get("err") or "")
+        try:
+            from . import llm as _L
+            _cli = _L.get_client()
+            _fixed = _cli.fix_tex(tex, err=_err)
+            if _fixed and _fixed != tex:
+                rec2: dict = {}
+                try:
+                    from . import eqrender as EQ2
+                    ok2, _w2 = EQ2.available()
+                    if ok2:
+                        rs = EQ2.render_many([_fixed], display=True)
+                        rec2 = (rs[0] if rs else {}) or {}
+                except Exception:      # noqa: BLE001
+                    rec2 = {}
+                if rec2.get("ok"):
+                    rec = rec2
+                    print(f"    [公式修 tex] LLM 修正后渲染成功（原 {len(tex)}"
+                          f" 字符 → {len(_fixed)}）")
+        except Exception:              # noqa: BLE001
+            pass
+    _EQ_RECS[tex] = rec                   # 缓存（含失败），别重复调 node
+    return rec
+
+
 def _eq_div_html(tex: str) -> str:
     """行间公式 → 居中 <div class="eq">（带锚点，供交叉引用跳转）。
 
     epub 用 images/ 文件（_EQ_FILES 登记，打包时写入），HTML 预览内联。
+    `_render_now=True`（默认）时允许**按需渲染**（行内多行公式走这条）。
     """
-    rec = _EQ_RECS.get(tex)
+    rec = _eq_render_now(tex)
     if not rec or not rec.get("png"):
         return ""
     try:
@@ -625,7 +670,21 @@ def _zh_math(html_str: str) -> str:
         import html as _h
 
         def sub(m):
-            return LR.inline_html(_h.unescape(m.group(1)))
+            tex = _h.unescape(m.group(1))
+            # ⚠ 多行结构（\begin{array}…、\\ 分行）不能走「行内→纯 HTML」：
+            # 花括号/反斜杠会被当标记吃掉，成品里吐出
+            # 「beginarray<i>l</i>AA = A」这种垃圾（1.5 布尔代数实测）。
+            # 一律改按**行间公式出图**。
+            if "\\begin" in tex or "\\\\" in tex or "\\left" in tex:
+                _div = _eq_div_html(tex)
+                if _div:
+                    return _div
+                # 出图失败也**不许回退 inline 文本**（会把 \begin{array}{l}
+                # 的花括号当标记吃掉，吐「beginarray<i>l</i>…」）→ 原 tex
+                # 可读占位。
+                import html as _h2
+                return (f'<code class="eq-raw">{_h2.escape(tex)}</code>')
+            return LR.inline_html(tex)
 
         html_str = _INLINE_TEX_RE.sub(sub, html_str)
     return _link_eq_refs(html_str)

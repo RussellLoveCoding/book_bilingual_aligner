@@ -858,6 +858,30 @@ class LLM:
         return out
 
     # -------------------------------------------- 能力 4：勘误打标（新增两类）
+    def fix_tex(self, tex: str, err: str = "") -> str | None:
+        """公式 LaTeX 语法纠错（渲染失败时的兜底；磁盘缓存命中零成本）。
+
+        用户 2026-09-17 定调：公式有语法错误时让 LLM 校对修改，而不是
+        把坏 tex 原样吐进成品。只返回**改动过**的 tex（没把握就返回 None，
+        交给上层用可读占位或直接放弃）。
+        """
+        if not self.enabled or self.only_mapping or not (tex or "").strip():
+            return None
+        system = ("你是 LaTeX 公式修复助手。给定一条渲染失败的 LaTeX 公式，"
+                  "只修语法（缺花括号、环境名被吃掉空格、\\left/\\right 不配对、"
+                  "多余或缺失 $ 等），**不改变数学含义、不增删符号**。" +
+                  ACADEMIC_NOTICE)
+        user = (f"渲染错误：{err or '未知'}\n\n原公式：\n{tex}\n\n"
+                "只输出修复后的 LaTeX 源码，不要解释、不要代码块标记。")
+        out = (self.chat(system, user) or "").strip()
+        out = out.strip("`").strip()
+        if out.startswith("latex"):
+            out = out[len("latex"):].strip()
+        out = out.strip()
+        if not out or out == (tex or "").strip() or "$" in out:
+            return None
+        return out
+
     def flag_errors(self, items: list[dict], title: str = "",
                     batch: int = 20, check_censor: bool = False) -> dict:
         """对 chapter 内的 pair 逐批打标，返回 {pair序号: 标记}。

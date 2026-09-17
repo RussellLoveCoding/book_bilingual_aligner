@@ -99,6 +99,27 @@ def load_md(path, lang: str) -> dict[str, list]:
         if buf:
             para = " ".join(x.strip() for x in buf if x.strip())
             if para:
+                # ⚠ 裸公式行 / 编号行（"AB"、"1.6"、"(1.12)"）：minerU 把
+                # 行间公式和它的编号拆成了独立文本行。它们参与 DP 会把
+                # 小节段数搅乱（1.5 布尔代数 zh 31 段 vs en 13 段的级联
+                # 漂移就是这么来的）→ 与 $$ 块同待遇（is_visual）。
+                if len(para) <= 12 and re.fullmatch(
+                        r"[A-Za-z0-9()\+\=\.\s,①-⑩]+", para) \
+                        and not re.search(r"[\u4e00-\u9fff]", para):
+                    cur.append(Block(tag="div", cls="eq-display",
+                                     html=_esc(para), text=para,
+                                     type="formula"))
+                    buf.clear()
+                    return
+                if para.startswith("<table"):
+                    # ⚠ minerU 有时会直接吐 HTML 表格（真值表等）。以前走
+                    # `_esc` 转义 → 成品里显示成 `&lt;table&gt;…` 的源码。
+                    # 现在识别成表格块：html 原样输出、文本取纯文字供对齐。
+                    cur.append(Block(tag="table", cls="", html=para,
+                                     text=re.sub(r"<[^>]+>", " ", para).strip(),
+                                     type="table"))
+                    buf.clear()
+                    return
                 if para.startswith("$$") and para.endswith("$$") \
                         and len(para) > 4:
                     # 行间公式段：不参与段落 DP（与图/表同待遇，is_visual），

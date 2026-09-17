@@ -542,6 +542,18 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                             f"散文bad 未降({old_bad}→{new_bad})")
                 print(f"      → 拒收：{_why_not}")
 
+    # 1.5) 收尾拆宽组（**细化采纳之后**）：窗口细化给出的候选常是 (3:2)、
+    #      (2:3) 这种宽组 —— process_chapter 里那次拆分会被它覆盖掉，
+    #      成品里又是「中中 / 英英英」（前言 Style 节实测）。这里再拆一次。
+    if refine:
+        for s in res.sections:
+            if s.pairs:
+                _before = len(s.pairs)
+                s.pairs = _split_wide_pairs(s.pairs, s.en_paras, s.zh_paras)
+                if len(s.pairs) != _before:
+                    for _p in s.pairs:
+                        _metrics(_p, s.en_paras, s.zh_paras)
+
     # 2) 补译：中文版删减/缺失的段落
     if translate:
         todo = []
@@ -972,6 +984,91 @@ def _structural_suspicion(s) -> tuple[bool, str]:
     return (bool(why), "·".join(why))
 
 
+def _merge_onesided_sections(sec_pairs):
+    """中文为空的 EN 子小节 → 并入前一个有配对的小节。
+
+    场景（2026-09-17 ch1 实测）：英文 1.5 里还有 "Implication"、"A tricky
+    point" 两个子标题，中文版把它们并进了 1.5 正文本体。切小节时它们成了
+    「EN 3 段 / ZH 0 段」的小节 → 那 6 段的中文其实躺在 1.5 的 31 段里，
+    于是 1.5 内部产生 N 段级联漂移（读者看到大段中文跑到别的英文后面）。
+
+    规则写窄：只合并**连续**、且**前一个小节有中文**的 1:0 小节（0:1 的
+    中文独有小节同理并入）。两侧都有内容的小节一个不动。
+    """
+    out = []
+    for e, z in sec_pairs:
+        e, z = list(e or []), list(z or [])
+        if out and (not e or not z) and out[-1][0] and out[-1][1]:
+            # 单侧缺失：并入前一个两侧齐全的小节
+            out[-1] = (out[-1][0] + e, out[-1][1] + z)
+            continue
+        out.append((e, z))
+    return out
+
+
+def _split_wide_pairs(pairs, en_paras=None, zh_paras=None,
+                      r_lo: float = 0.5, r_hi: float = 4.0):
+    """宽组（n:m，两侧都 ≥2）按序拆成 min(n,m) 个 1:1 + 一个余组。
+
+    为什么需要（2026-09-17 用户点名）：DP 会把连续几段凑成 (3:2)、(3:2) 这种
+    组，成品里读起来是「中中 / 英英英」——中文和英文看着粘成一坨、且**整段
+    中文被推到它对应英文的后面**。前言 Style 节实测：en[5,6,7]↔zh[5,6] 与
+    en[8,9,10]↔zh[7,8]，正确解是 en5↔zh5、en6↔zh6、en7↔∅、en8↔zh7、
+    en9↔zh8、en10↔∅——正是这个拆分。
+
+    判据写窄（两条都满足才拆）：
+      ① n≠m 且两侧都 ≥2（n==m 的组由渲染层逐段交错，不动）；
+      ② **拆完每一对的长度比都落在 [r_lo, r_hi]**（默认放宽到 0.5~4.0：
+         只拦"5 个词的英文配 300 字中文"这种真胡拆；最初用审计口径的
+         1.2~3.0 太紧，把前言那种英文啰嗦的正常对也挡了，实测反而把
+         粘连放了回去）。这条来自 2026-09-17 ml 的教训：技术书里
+         「多段代码/列表 ↔ 一段中文」是真的合并，硬拆会让 missing 翻倍。
+         判不下就保留原组，宁可不拆。
+    按两侧原顺序一对一配，多出来的那一侧单独成组（不计入 r 校验）。
+    """
+    out = []
+    for p in pairs:
+        n, m = len(p.en or []), len(p.zh or [])
+        if not (n and m) or n == m or min(n, m) < 2:
+            out.append(p)
+            continue
+        k = min(n, m)
+        if en_paras is not None and zh_paras is not None:
+            ok = True
+            for i in range(k):
+                eb, zb = en_paras[p.en[i]], zh_paras[p.zh[i]]
+                # 代码块/列表项**不拆**：技术书里「多段代码 ↔ 一段中文」是
+                # 真合并，拆开必错（ml 实测 missing 翻倍）
+                if getattr(eb, "type", "") in ("code", "li", "pre") \
+                        or getattr(eb, "in_list", False):
+                    ok = False
+                    break
+                r = _ratio(eb, zb)
+                if not (r_lo <= r <= r_hi):
+                    ok = False
+                    break
+            if not ok:
+                out.append(p)          # 判不下 → 保留原组
+                continue
+        for i in range(k):
+            out.append(A.Pair(en=[p.en[i]], zh=[p.zh[i]]))
+        rest_en, rest_zh = list(p.en[k:]), list(p.zh[k:])
+        if rest_en or rest_zh:
+            np = A.Pair(en=rest_en, zh=rest_zh)
+            np.mt = getattr(p, "mt", None) if (rest_en and not rest_zh) else None
+            out.append(np)
+    return out
+
+
+def _ratio(en_b, zh_b) -> float:
+    """单段长度比：中文汉字数 / 英文词数（与 audit 同口径）。"""
+    try:
+        from .align import en_words, han_chars
+        return han_chars(zh_b.text) / max(1.0, en_words(en_b.text) * 1.8)
+    except Exception:                   # noqa: BLE001
+        return 1.0
+
+
 def _split_glued_marker(pairs, en_paras, zh_paras) -> int:
     """中文段「粘在上一对」的编号开头段 → 归位到下一对的段首。
 
@@ -1198,6 +1295,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     if sec_pairs is None:
         sec_pairs = A.align_sections(en_secs, zh_secs, band=band, k=K)
 
+    sec_pairs = _merge_onesided_sections(sec_pairs)
+
     res = ChapterResult(key=key, en_title=en_title, zh_title=zh_title, notes=notes)
     res.en_heads = [b.text for b in en_secs[0].blocks
                     if b.type == "heading"] if en_secs else []
@@ -1290,6 +1389,13 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                         pairs, n_fix, src = cand, 0, src + "+选LLM"
             _moved = _split_glued_marker(pairs, a_paras, b_paras)
             _n_anchor = _apply_num_anchors(pairs, a_paras, b_paras)
+            # ⚠ 这里**不能用审计口径的 r_lo/r_hi**（1.2~3.0）：前言实测
+            # r=0.70/0.92/1.05/0.81 全是正常散文（只是英文啰嗦），用审计界
+            # 会把该拆的组全挡住 → 读者又看到「中中 / 英英英」。宽组拆分是
+            # "怎么切"的问题，判据必须比"这对配不配"松一档。
+            pairs = _split_wide_pairs(pairs, a_paras, b_paras)
+            for _p in pairs:                      # 新切的组要补长度比指标
+                _metrics(_p, a_paras, b_paras)
             ar = AU.audit_pairs(pairs, a_paras, b_paras, r_lo=r_lo, r_hi=r_hi,
                                 fail_rate=fail_rate)
             sr = SectionResult(a_t, b_t, pairs, ar, a_paras, b_paras)
