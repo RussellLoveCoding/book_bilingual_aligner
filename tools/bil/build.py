@@ -813,6 +813,25 @@ _CAP_TEXT_RE = re.compile(r"^\s*(?:表|图|Table|Figure)\s*\d+(?:\s*[-–—]\s*
                             r"^\s*(?:表|Table)\s*\d+[-–—]\d+")
 
 
+# 中文「公式图 OCR」段：英文原版用**图片**排公式（`eqn01_39a.jpg`），中文 md 把
+# 图里的文字 OCR 成了**普通段落**，于是它被错配到相邻的英文正文上。
+# 用户 2026-09-18 明确要求：这类中文段**丢弃**，只忠实跟英文、保留原版公式图。
+# 判据写窄（三条同时成立，避免误伤正文）：
+#   ① 以**带字母后缀**的公式编号开头（`(IIIa)` / `(1.39a)`）—— 纯 `(1.12)`/`(I)`
+#      的段要么已经是 formula 类型，要么是正文里的条件列表；
+#   ② 段内**没有行内公式** —— 正文公理列表「(Ia) 传递性. 如果 $(A|X) \geqslant…」
+#      含 `$`，靠这条排除；
+#   ③ 长度 ≤ 120 字。
+_FORMULA_OCR_RE = re.compile(r"^\((?:[IVX]+[a-z]|[0-9]+\.[0-9]+[a-z])\)\s*")
+
+
+def _is_formula_ocr(t: str) -> bool:
+    """中文段是不是「英文公式图片的 OCR 文字」（该丢弃，见上面注释）。"""
+    s = (t or "").strip()
+    return bool(s) and len(s) <= 120 and "$" not in s \
+        and bool(_FORMULA_OCR_RE.match(s))
+
+
 def _is_caption_text(t: str) -> bool:
     """图表题注（表29-1 / 图1-2 / Table 29-1 …）：居中、小字排版。"""
     return bool(_CAP_TEXT_RE.match((t or "").strip()))
@@ -1320,7 +1339,12 @@ def render_chapter(res, prefix=""):
                 _eplain = " ".join(sec.en_paras[x].text for x in p.en).strip()
                 # 渲染时提升（决策中性）：中文小标题在源文件里常是普通段
                 # （不是 heading），位置与英文小标题对应 → 渲染成标题
-                if _looks_like_title(_zplain, _eplain):
+                if _is_formula_ocr(_zplain):
+                    # 中文「公式图 OCR」段（见 _is_formula_ocr 注释）：丢弃中文、
+                    # 保留英文原版公式图 —— 用户 2026-09-18 明确要求。计数不静默。
+                    _DROPPED_ZH_ONLY.append(_zplain[:40])
+                    _emitted_zh.update(p.zh)
+                elif _looks_like_title(_zplain, _eplain):
                     _emitted_zh.update(p.zh)
                     parts.append(_head_block("h4", "st", "", _zplain))
                 else:
