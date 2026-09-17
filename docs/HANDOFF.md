@@ -25,6 +25,17 @@ python tools/dbg_qa.py <成品.html> 20            # 当前 32 项
 只有 `.env.example` 入库。换账号/换工作区时手动把 `.env` 拷过去，并确认
 `LLM_MODEL=qwen3.7-flash`（缓存键含模型名，换模型＝缓存全废、结果大变）。
 
+### 换账号「携带清单」（新工作区 ≠ 旧目录时逐项核对）
+
+| 东西 | 在库里？ | 怎么带 |
+|---|---|---|
+| 代码 | ✅ git | clone / 打开同一 repo |
+| `.env`（LLM key） | ❌ gitignored | 手动复制，含 `LLM_MODEL` |
+| **源书**（`prob_en.epub` / `prob_zh.md` 等） | ❌ gitignored（版权+体积） | 手动复制 `.workbuddy/tmp/books/` |
+| 解析/公式/LLM 三级缓存 | ❌ 在 WSL `~/.cache/bil` | **同一台机器就自动共享**（缓存=钱，别清） |
+| 成品（`diag/样章/*`） | ❌ gitignored | 可由 `run_book --all --build` 复现（≈2 分钟 / ¥0） |
+| 本机依赖 | — | WSL + `~/.venvs/bil`、nvm 的 node（`tools/eqrender` 要 ≥20.9）、msedge（截图） |
+
 ---
 
 ## 1. 钉死的配置（改任何一条都会让结果不可复现）
