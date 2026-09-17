@@ -37,9 +37,16 @@ _EN_HEAD_RE = re.compile(
 #   于是中文前置的「出版信息/内容提要/概率论沉思录/版权声明/编者序」被并成**一块**，
 #   EN 的 Editor's foreword 只能配到块首的「出版信息」（标题错 + 编者序内容被吞）。
 #   补上后实测：只影响前置 2 组（`Editor's foreword ↔ 编者序` 归位），尾部不动。
+# ⚠ 尾部五个词是 2026-09-17 补的（§3.1 第②步）。中文版尾部结构实测：
+#   `### 人名索引 / 术语索引 / 符号` 是三级标题、但不在词表里 → 不满足
+#   `level(3) <= top_level(2)`，于是连「致谢」一起被并成一块 500 段的 md033。
+#   补上后 md033 拆成 致谢 / 人名索引 / 术语索引 / 符号 四个单元。
+#   `引用文献 / 参考文献` 同理 —— 它们在源稿里甚至是**裸行**（见 _bare_head），
+#   被并进附录C 单元（1076 段），是尾部映射全错的总根源。
 _ZH_HEAD_RE = re.compile(
     r"^(第[0-9一二三四五六七八九十百千两]+[章节卷回]|序章|序幕|序言|自序|编者序|前言"
-    r"|引言|引子|题记|楔子|结语|尾声|后记|致谢|附录)[\s:：·.,、—-]*")
+    r"|引言|引子|题记|楔子|结语|尾声|后记|致谢|附录|(?:引用|参考)文献"
+    r"|人名索引|术语索引|符号)[\s:：·.,、—-]*")
 
 
 def _is_heading(line: str, lang: str) -> bool:
@@ -48,6 +55,26 @@ def _is_heading(line: str, lang: str) -> bool:
     if lang == "en":
         return bool(_EN_HEAD_RE.match(line))
     return bool(_ZH_HEAD_RE.match(line))
+
+
+def _bare_head(line: str, lang: str) -> bool:
+    """**裸标题行**：没有任何 md 标记、整行恰好就是一个标题词。
+
+    中文版 md 实测（2026-09-17）：`引用文献`、`参考文献` 两节的标题在源稿里
+    就是裸行（前面只有缩进空格），`_MD_HEAD_RE` 认不出 → 被并进上一单元，
+    连带把整个尾部映射搅乱（EN References 529 段 ↔ zh 附录C 1076 段）。
+
+    ⚠ 必须 **fullmatch** 而不是 match：正文里「……见参考文献」这类句子若用
+      前缀匹配会被误判成标题，整章会被切碎。
+    ⚠ 只对中文生效：英文 md 的裸行标题（References / Bibliography）没有
+      实测样本，不做无依据的放宽。
+    """
+    if lang != "zh":
+        return False
+    t = line.strip()
+    if not t or len(t) > 12:
+        return False
+    return bool(_ZH_HEAD_RE.fullmatch(t))
 
 
 def _esc(s: str) -> str:
@@ -196,6 +223,9 @@ def load_md(path, lang: str) -> dict[str, list]:
                                  type="heading", level=2))
         elif not line.strip():
             flush()
+        elif _bare_head(line, lang):
+            # 裸标题行（无 md 标记的节标题）：与 `#` 标题同等对待，开新单元。
+            open_doc(norm_heading(line.strip()), 1)
         else:
             # md 引用标记（minerU 题词用「> / > >」）剥掉——它们是排版
             # 记号不是内容，留着会原样漏进成品（2026-09-17 ch1 实测）

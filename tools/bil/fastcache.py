@@ -19,7 +19,7 @@ import json
 import os
 from pathlib import Path
 
-_V = 11  # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
+_V = 12  # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
          # v3：块级保真（pre→code / 提示框 box / 列表 in_list），旧缓存无这些字段
          # v4：章首清理（页码块/重复章名丢弃、引语署名并入引语）
          # v5：正文段内的行内公式图（<img class="mi">）不再当插图搬出去
@@ -30,6 +30,11 @@ _V = 11  # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
          # v11：`_ZH_HEAD_RE` 补 `编者序`（§3.1）—— 它原本不算标题，导致中文前置的
          #     编者序被并进「出版信息」单元，EN Editor's foreword 只好配到「出版信息」
          #     （标题错 + 编者序内容被吞）。实测影响面：**只前置 2 组，尾部不动**。
+         # v12：`_ZH_HEAD_RE` 补 `引用文献/参考文献/人名索引/术语索引/符号`，
+         #     并新增 `_bare_head`（裸标题行识别）—— 中文版尾部这五节的标题
+         #     要么是三级标题不在词表、要么压根是裸行，于是全被并进 md032/md033，
+         #     导致 EN References(529) ↔ zh 附录C(1076)、Subject index ↔ 致谢。
+         #     实测影响面：**只尾部 chapter30 以后**（预演见 dbg_frontmap --dry-fix）。
 CACHE = Path(os.environ.get("PARSE_CACHE_DIR", ".cache/parse"))
 
 

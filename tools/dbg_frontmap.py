@@ -21,6 +21,7 @@
   _run.sh dbg_frontmap.py prob --dry-fix split      # 只预演「zh 切分补词」
   _run.sh dbg_frontmap.py prob --dry-fix split+en   # 再叠加「EN 前置归类」
   _run.sh dbg_frontmap.py prob --head 12 --tail 6
+  _run.sh dbg_frontmap.py prob --dump md032,md033   # 把单元内部看穿（路径含子串即命中）
 """
 from __future__ import annotations
 
@@ -72,6 +73,23 @@ def _dump_units(tag: str, docs: dict, keyf) -> None:
         k = keyf(b, p) if keyf is S.key_of_en else keyf(b)
         hs = _heads(b)
         print(f"  {p[:26]:26s} {k.kind:9s} {len(b):5d} {len(hs):5d}  {_title(b)[:30]}")
+    print()
+
+
+def _dump_one(tag: str, path: str, blocks, limit: int = 40, start: int = 0) -> None:
+    """把单个单元内部摊开：每块的 type + 文本前缀。
+
+    为什么需要：单位表只给「段数/标题数/首标题」，当某个单元段数远大于 EN 同名单元
+    （如 zh md032 附录C 1076 段 vs EN Appendix03 80 段）时，**必须看内部**才知道
+    它吞掉了什么 —— 而那些被吞的标题若不在词表里，诊断小结是报不出来的。
+    """
+    seg = blocks[start:start + limit]
+    print(f"=== {tag} {path}（{len(blocks)} 段，显示 {start}–{start + len(seg) - 1}）===")
+    for i, b in enumerate(seg, start=start):
+        t = (b.text or "").replace("\n", " ")[:70]
+        print(f"  {i:4d} {b.type:9s} {t}")
+    if start + len(seg) < len(blocks):
+        print(f"  … 余 {len(blocks) - start - len(seg)} 段（用 --dump-limit / --dump-from 调）")
     print()
 
 
@@ -159,12 +177,34 @@ def main() -> None:
             print(f"  · {n}")
         print()
 
+    dumps: list[str] = []
+    dump_limit = 40
+    dump_from = 0
+    if "--dump-from" in argv:
+        j = argv.index("--dump-from")
+        if j + 1 < len(argv):
+            dump_from = int(argv[j + 1])
+    if "--dump" in argv:
+        j = argv.index("--dump")
+        if j + 1 < len(argv):
+            dumps = [s for s in argv[j + 1].split(",") if s]
+    if "--dump-limit" in argv:
+        j = argv.index("--dump-limit")
+        if j + 1 < len(argv):
+            dump_limit = int(argv[j + 1])
+
     en_docs, zh_docs, pairs = EA.load(book)
     print(f"[书] {book} · EN {len(en_docs)} 单元 / ZH {len(zh_docs)} 单元 "
           f"/ 配对 {len(pairs)} 组\n")
 
     _dump_units("EN", en_docs, S.key_of_en)
     _dump_units("ZH", zh_docs, S.key_of_zh)
+
+    for pat in dumps:
+        for tag, docs in (("EN", en_docs), ("ZH", zh_docs)):
+            for p, b in docs.items():
+                if pat in p:
+                    _dump_one(tag, p, b, dump_limit, dump_from)
 
     def row(cp) -> str:
         return (f"  {cp.key:10s} src={getattr(cp, 'map_src', '?'):4s} "
