@@ -17,7 +17,6 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import bookmeta as BM
 from . import epubparse as E
 from . import notes as NO
 from . import latexrender as LR
@@ -764,29 +763,6 @@ def _en_elem(b, epigraph: bool = False) -> tuple[str, str]:
     return "p", cls
 
 
-def _multi_paras_zh_title(joined: str, tag: str, cls: str,
-                          zh_texts: list, en_stub: bool = False) -> str:
-    """`_multi_paras` + 逐段小标题提升：pair 里的某段中文若是独立小标题
-    （_looks_like_zh_title，如「陷阱」「蕴涵关系」），渲染成居中 h4.st，
-    其余照旧 <p>。标题判定用**纯文本**（zh_texts），渲染用 html 段。
-
-    ⚠ `en_stub=True`（pair 的英文侧全是短引出段，如 "and its inverse:"）
-    时**不提升**——那种对是「公式引出续行」（"和它的逆"/"以及"实测被错提）。
-    """
-    segs = joined.split("\x01")
-    out = []
-    for k, seg in enumerate(segs):
-        seg = seg.strip()
-        if not seg:
-            continue
-        txt = zh_texts[k].strip() if k < len(zh_texts) else ""
-        if not en_stub and _looks_like_zh_title(txt):
-            out.append(_head_block("h4", "st", "", E.norm_cjk_spacing(txt)))
-        else:
-            out.append(f'<{tag} class="{cls}">{seg}</{tag}>')
-    return "\n".join(out)
-
-
 def _multi_paras(joined: str, tag: str, cls: str) -> str:
     """把以 \\x01 为段界的 html 拼回**逐段独立**的元素。
 
@@ -1130,15 +1106,6 @@ def render_chapter(res, prefix=""):
         if _t:
             note_texts[_k + 1] = _t[:800]
     for sec in res.sections:
-        # 临时诊断（BIL_DBG_HEADS=1）：渲染入口的数据形状
-        import os as _os
-        if _os.environ.get("BIL_DBG_HEADS") and "Implication" in \
-                (sec.en_title or ""):
-            with open("/tmp/render_dump.txt", "a", encoding="utf-8") as _f:
-                _f.write(f"== render {sec.en_title[:40]!r}\n")
-                _f.write(f"   zh_heads_at = {sec.zh_heads_at}\n")
-                for _pi, _p in enumerate(sec.pairs):
-                    _f.write(f"   pair[{_pi}] en={_p.en} zh={_p.zh}\n")
         # 小节标题优先**回到原文位置**（en_heads_at/zh_heads_at，见 pipeline）：
         # 合并单元把几个英文小节名拼成「A / B」扔在章首是错的（用户实测
         # 《思考，快与慢》第2章）。只有拿不到原位信息时才退回章首渲染。
@@ -2066,7 +2033,6 @@ def _piece_label(piece: str, lang: str, k: int) -> str:
             if lab:
                 return lab
     return f"(cont. {k})" if lang == "en" else f"（续{k}）"
-
 
 
 def _ncx_xml(title: str, entries, ident: str) -> str:

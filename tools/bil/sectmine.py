@@ -407,15 +407,6 @@ def prep(us):
     return out
 
 
-def find_chapter(path, num: int):
-    """→ (unit, path)；按章号找章单元（含续页）。"""
-    p = Path(path)
-    for u in prep(units(p)):
-        if u["kind"] == "ch" and u["num"] == num:
-            return u, p
-    return None, p
-
-
 # ══════════════════════════════ T2 候选挖掘 ══════════════════════════════
 _MD_H = re.compile(r"^(#{1,6})\s+(.*)$")
 _BARE_MARK = re.compile(
@@ -540,39 +531,3 @@ def _md_rows(p: Path, lo: int, hi: int):
                 out.append((f"h{len(m.group(1))}", t))
     return out
 
-
-# ══════════════════════════════ §4.2.3 我方校验 ══════════════════════════════
-def check_t2(out, en_ids, zh_ids, chapter_num):
-    """校验 LLM 的 T2 输出 → (ok: bool, problems: [str])。
-
-    设计稿 §4.2.3：不合格**拒收**（只保留 T1 结果，不破坏已有对齐）。
-    """
-    p: list[str] = []
-    if not isinstance(out, dict):
-        return False, ["输出不是 JSON 对象"]
-    units_ = out.get("units")
-    if not isinstance(units_, list):
-        return False, ["缺 units 数组"]
-    seen_en, seen_zh = set(), set()
-    for i, u in enumerate(units_):
-        if not isinstance(u, dict):
-            p.append(f"units[{i}] 不是对象")
-            continue
-        for side, ids, seen in (("en", en_ids, seen_en), ("zh", zh_ids, seen_zh)):
-            for x in u.get(side) or []:
-                if x not in ids:
-                    p.append(f"units[{i}].{side} 引用了输入里没有的 id：{x}")
-                if x in seen:
-                    p.append(f"id 重复引用：{x}")
-                seen.add(x)
-        # 章号一致性（最硬的一道闸，专治「EN 第4章配到 ZH 第5章」）
-        for key in ("num_en", "num_zh"):
-            v = str(u.get(key) or "")
-            m = re.match(r"^(\d+)", v)
-            if m and int(m.group(1)) != chapter_num:
-                p.append(f"units[{i}].{key}={v} 的章号与本章（第{chapter_num}章）"
-                         f"不一致")
-    conf = (out.get("self_check") or {}).get("num_conflicts")
-    if conf:
-        p.append(f"self_check.num_conflicts 非空：{conf}")
-    return (not p), p

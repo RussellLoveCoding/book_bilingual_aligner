@@ -136,35 +136,3 @@ def map_pos(pos_en: int, len_en: int, text_zh: str) -> int:
             return i + 1
     return n
 
-
-def attach(text_zh: str, marks, len_en: int,
-           ) -> tuple[str, list[int]]:
-    """把注释序号按位置插进中文段，返回 (带标记的文本, 已插入的序号列表)。
-
-    序号相同的标记只插一次（同一处重复引用同一注释的情况）。
-    **已有字面 `[n]` 的注释不重复插入**——机器补译的段落常常把标记带进译文，
-    再插一次就成了 `[82][82]`。
-
-    marks 兼容 2 元组 `(num, pos)` 与 3 元组 `(num, pos, id)`。
-    """
-    if not marks or not text_zh:
-        return text_zh, []
-    present = {int(m) for m in re.findall(r"\[(\d+)\]", text_zh)}
-    ins: list[tuple[int, int]] = []      # (插入位置, 注释序号)
-    used: set[int] = set()
-    for mk in marks:
-        num, pos_en = mk[0], mk[1]
-        if num in used or num in present:
-            continue
-        used.add(num)
-        ins.append((map_pos(pos_en, len_en, text_zh), num))
-    if not ins:
-        return text_zh, []
-    # 同一位置多个序号时保持原有先后；从后往前插，避免下标漂移
-    ins.sort(key=lambda t: (t[0], t[1]))
-    out = text_zh
-    put: list[int] = []
-    for pos, num in reversed(ins):
-        out = out[:pos] + f"[{num}]" + out[pos:]
-        put.append(num)
-    return out, sorted(put)

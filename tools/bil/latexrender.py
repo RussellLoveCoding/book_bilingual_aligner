@@ -18,7 +18,6 @@ minerU 产出的 LaTeX 有几个特点要兼容：
 """
 from __future__ import annotations
 
-import html
 import re
 import shutil
 import subprocess
@@ -375,13 +374,3 @@ def display_png(tex: str, out: str | Path, dpi: int = 220,
         except Exception:                    # noqa: BLE001
             return None
 
-
-def png_width_px(png: str | Path, font_px: float = 16.0) -> int:
-    """按阅读器正文 16px 估算该 PNG 的显示宽（px）。"""
-    try:
-        from PIL import Image
-        with Image.open(png) as im:
-            w, h = im.size
-        return max(1, round(w * font_px / (11.0 * 220 / 96.0)))
-    except Exception:                        # noqa: BLE001
-        return 0

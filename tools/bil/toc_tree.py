@@ -162,12 +162,6 @@ def num_of(title: str) -> str:
     return ""
 
 
-def heading_chain(blocks) -> list[tuple[int, str]]:
-    """正文块 → [(层级, 标题文本)]（整条链，不做任何拍平）。"""
-    return [(b.level or 1, (b.text or "").strip())
-            for b in blocks if b.type == "heading"]
-
-
 def match_chains(en_chain: list[tuple[int, str]],
                  zh_chain: list[tuple[int, str]]):
     """按编号跨语言配对标题链。

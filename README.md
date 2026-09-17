@@ -6,6 +6,10 @@
 ![流水线](https://img.shields.io/badge/python-3.10%2B-blue)
 ![依赖](https://img.shields.io/badge/依赖-仅标准库-success)
 
+> **接手开发／换账号继续：先读 [`docs/HANDOFF.md`](docs/HANDOFF.md)**
+> （开工三步、钉死的配置、当前指标、未完成清单、血泪坑）。注意 `.env` 不在库里，
+> 需要手动复制。
+
 ---
 
 ## 这是什么

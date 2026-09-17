@@ -158,13 +158,6 @@ def _is_visual(b) -> bool:
     return getattr(b, "is_visual", False)
 
 
-
-def map_sections_deterministic(en_secs, zh_secs):
-    """顺序配对；数量不等时按前缀对齐，多出来的降级。"""
-    n = min(len(en_secs), len(zh_secs))
-    return [(i, i) for i in range(n)], (len(en_secs) != len(zh_secs))
-
-
 def _valid_section_map(mapping, n, m) -> bool:
     """校验 LLM 给的小节映射：覆盖且单调。"""
     if not mapping:
@@ -708,13 +701,6 @@ def apply_error_repair(res: ChapterResult, llm, title="",
                 f.caption_mt = t
             st["cap_mt"] = len(caps)
     return st
-
-def _sec_offsets_of(secs):
-    offs, acc = [], 0
-    for sec in secs:
-        offs.append(acc)
-        acc += len(sec.paras)
-    return offs
 
 
 def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
@@ -1964,12 +1950,6 @@ def _zh_cap_owners(zh_pos, gidx: int) -> list[int]:
     return [i for i, (_v, g) in enumerate(zh_pos) if g == gidx - 1]
 
 
-def _last_used(sr: SectionResult, zh_vs_all, fallback: int) -> int:
-    """本小节实际认领到第几个中文图（供下一小节顺延）。"""
-    return fallback + sum(1 for f in sr.figures
-                          if f.zh_src and not f.zh_missing)
-
-
 # ⚠ 编号允许 a/b 后缀（原书有 (2.10a)/(2.10b)，`id="eqn02_10a"`）——
 # 抽不出来它就配不上中文侧的 2.10a，只能靠邻接抢（一抢就错位）。
 def _eq_key_no(no: str) -> str:
@@ -2047,7 +2027,6 @@ def _anchor_pair(after: int, sr: SectionResult) -> int:
     frac = (after + 1) / n
     idx = int(round(frac * len(sr.pairs))) - 1
     return max(-1, min(len(sr.pairs) - 1, idx))
-
 
 
 def summarize(res: ChapterResult) -> dict:

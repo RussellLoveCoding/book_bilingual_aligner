@@ -25,7 +25,7 @@ import re
 from collections import Counter
 import struct
 import zipfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Iterable, Sequence
 
 # 块级元素：会成为 Block 的标签
@@ -1067,25 +1067,6 @@ def _find_img_div(s: str):
     return best
 
 
-
-
-def _salvage_bare_images(body: str, existing: list[Block]) -> list[Block]:
-    """把没有被任何块承载的裸 <img> 补成独立 image 块（保底机制）。
-
-    ⚠ 行内注释标记图（epub-footnote / zy-footnote）**不补** —— 它们不是插图，
-    补进来会变成几百个假图位（《思考，快与慢》中文版有 435 枚）。
-    """
-    carried_html = " ".join(b.html for b in existing if b.is_visual)
-    out = []
-    for m in IMG_SRC_RE.finditer(body):
-        tag_html = m.group(0)
-        if tag_html in carried_html or is_inline_note_img(tag_html):
-            continue
-        out.append(Block(tag="img", cls="", html=tag_html, text="",
-                         type="image", src=m.group(1)))
-    return out
-
-
 # ---------------------------------------------------------------- epub 读取
 
 def find_opf(z: zipfile.ZipFile) -> str:
@@ -1161,13 +1142,6 @@ def open_epub(path: str) -> zipfile.ZipFile:
     return zipfile.ZipFile(path)
 
 
-def doc_title(blocks: Iterable[Block]) -> str:
-    for b in blocks:
-        if b.type == "heading":
-            return b.text
-    return ""
-
-
 # ---------------------------------------------------------------- 脚注引用
 
 NOTEREF_RE = re.compile(
@@ -1181,13 +1155,6 @@ def extract_noterefs(blocks: Iterable[Block]) -> list[tuple[int, int]]:
         for m in NOTEREF_RE.finditer(b.html):
             out.append((i, int(m.group(1))))
     return out
-
-
-def rewrite_noterefs(html_str: str, prefix: str = "n") -> str:
-    """把指向外部 nts 文档的脚注链接改写成指向本章注释区。"""
-    return NOTEREF_RE.sub(
-        lambda m: f'<a class="noteref" href="#{prefix}{m.group(1)}">'
-                  f'<sup>{m.group(1)}</sup></a>', html_str)
 
 
 def load_toc(z: zipfile.ZipFile | None) -> dict[str, str]:
