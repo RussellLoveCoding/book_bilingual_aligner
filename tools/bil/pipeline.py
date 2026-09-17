@@ -555,11 +555,6 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 if len(s.pairs) != _before:
                     for _p in s.pairs:
                         _metrics(_p, s.en_paras, s.zh_paras)
-        # 2.5) 标题摘出收尾（幂等）：细化候选会把已摘除的 zh 标题段带回
-        # 宽组（蕴涵关系 ×2 实测），refine 之后必须再摘一次。
-        for s in res.sections:
-            if getattr(s, "en_heads_at", None):
-                _extract_zh_titles(s)
 
     # 2) 补译：中文版删减/缺失的段落
     if translate:
@@ -593,6 +588,13 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                     st["mt"] += 1
                 else:
                     st["failed"] += 1
+
+    # 3) 标题摘出收尾（**必须在补译之后**）：细化候选会把已摘除的 zh 标题
+    # 段带回宽组；若在补译前摘出，补译又会为 EN-only 对生成 AI 译文 →
+    # 标题 h4 + mt 段双重内容（「命题」实测）。放最后，摘完即定格。
+    for s in res.sections:
+        if getattr(s, "en_heads_at", None):
+            _extract_zh_titles(s)
     return st
 
 
@@ -1059,9 +1061,10 @@ def _extract_zh_titles(sr):
         if not looks_like_zh_title(t):
             continue
         p = sr.pairs[zh2pair[j]]
-        if not p.zh or len(p.zh) < 2:
-            continue                       # 独占一对的标题段不动（zh-only
-                                           # 分支自会提升；1:1 的也正常）
+        # 只摘 **pair 首段** 的标题（「蕴涵关系」在宽组首位）；非首段的
+        # title-like（如「命题」是公式引出行）不摘，留在原对正常渲染。
+        if not p.zh or j != p.zh[0] or len(p.zh) < 2:
+            continue
         # 邻近 EN 原位标题：en 首段位置 ±1
         if not p.en:
             continue
