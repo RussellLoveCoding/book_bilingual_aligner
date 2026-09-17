@@ -1200,7 +1200,19 @@ def render_chapter(res, prefix=""):
                                              for x in p.zh)),
                         p, prefix, note_texts)
                     _emitted_zh.update(p.zh)
-                    if _looks_like_zh_title(_zplain):
+                    # ⚠ 2026-09-18：**紧跟公式表/公式图之后的短中文段不是小标题** ——
+                    # 那是公式图把正文切断留下的残片。实测 `<h4 class="st zh-h">因为</h4>`
+                    # 紧跟在公式 (3.33) 之后、`面的语句应该是` 紧跟在 (22.26) 之后，
+                    # 英文侧分别只对应 `But` / `while Tribus (1961) gives it as`（完全
+                    # 对不上）。它们被提升成 h4 后还进了 nav，目录里出现「因为」这种
+                    # 伪小节（Gemini 评审报告也点到了）。文本判据挡不住「面的语句应该是」
+                    # 这种半个句子，所以这里再加一道**位置**判据。
+                    # 往前看 4 个 part：公式表的收尾是 `</table></div>`（不含
+                    # `eqtable` 字样），只看最后一个会漏 —— 「面的语句应该是」
+                    # 就是这么漏过去的。
+                    _after_eq = any("eqtable" in x or 'class="eq' in x
+                                    or "</table>" in x for x in parts[-4:])
+                    if _looks_like_zh_title(_zplain) and not _after_eq:
                         # 小标题：保留（导航需要）
                         parts.append(_head_block(
                             "h4", "st", "", E.norm_cjk_spacing(_zplain)))
