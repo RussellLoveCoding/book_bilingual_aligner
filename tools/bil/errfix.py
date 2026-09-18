@@ -263,12 +263,39 @@ def screen_section(key: str, sec_index: int, s, en_pool: set[str],
         # 块数差里有多少是"真独有 + 碎片"造成的？
         if _n_en_other or _n_zh_other or multi:
             why.append(f"块数差{n_en}/{n_zh}")
+    # ★ 2026-09-18 修：块数差是否**已被解释掉**。
+    #
+    # `_n_en_other/_n_zh_other` 是「经内容反查确认为真独有/碎片」的段数
+    # —— 它们**合理地**造成块数差（中文版不译/DP 粒度）。把它们的贡献扣掉后
+    # 若还剩缺口，说明块数差**另有原因**（多半就是错位），必须留作候选。
+    #
+    # ⚠ 为什么必须补这一条（实测两例被误杀，都是用户肉眼能看见的缺陷）：
+    #   · `1.1 Deductive and plausible reasoning` EN23/ZH21 —— 疑点=块数差23/21，
+    #     detail 里一条单侧段都没有（`单侧段全部孤立（EN0/ZH0）`），
+    #     却因为「孤立单侧豁免」把 why 清空、整节丢弃。
+    #     豁免判据 `_n_en_other<=1 and _n_zh_other<=1 and run<=1` 对
+    #     「0 个单侧段但块数差 2」的节**恒真** —— 逻辑漏洞，不是判断口味。
+    #   · `1.7 The basic desiderata` EN20/ZH24 —— 反查已明确报
+    #     `('only_zh','1.3次','错位嫌疑','命中 1/1')`（查得到 = 错位实锤），
+    #     仍被豁免吞掉；该节正是成品里 `[167]/[168]` 两个「仅英文孤儿段」的所在。
+    # ⚠ 阈值取 0 而不是 1：**任何**未被解释的块数差都留作候选。
+    # 理由（实测）：块数差正是 DP「整体错位一格」的痕迹，而错位一格
+    # 在小节里就表现为「差 1 段」。`8.10.1 Fine-grained propositions`
+    # EN6/ZH5（差 1）被旧阈值放行，而它正是成品里 `[1410]/[1411]` 两个
+    # Tchebycheff 证明段孤儿化的所在 —— 差 1 也要拦。
+    # 代价可控：豁免本身还有 `_n_*_other<=1 / run<=1 / multi<=25%` 三道门，
+    # 只有「块数差完全由真独有/碎片解释掉」的节才会被放行。
+    _blk_unexplained = (abs((n_en - n_zh)
+                            - (_n_en_other - _n_zh_other)) > 0)
     if _n_en_other:
         why.append(f"英文独有{_n_en_other}")
     if _n_zh_other:
         why.append(f"中文独有{_n_zh_other}")
     if multi / max(1, len(s.pairs)) > 0.25:
         why.append(f"多对{multi}/{len(s.pairs)}")
+    # 「错位嫌疑」是反查给出的**正面证据**（中文段的信号在英文侧查得到），
+    # 它比任何豁免都强 —— 有它就不许进孤立豁免。
+    _has_misplace = any(d[2] == "错位嫌疑" for d in c.detail)
 
     # ★★ **孤立单段单侧 → 不是候选**（2026-09-18 实测定论）。
     #
@@ -285,6 +312,15 @@ def screen_section(key: str, sec_index: int, s, en_pool: set[str],
     #
     # ⚠ 别把这条读成"单侧段无害" —— 成串单侧（如章首连续 5 段只有英文）
     #   正是 DP 错位的典型痕迹，那种**必须**留作候选（下面的 `_run_len` 判据）。
+    #
+    # ⚠⚠ **2026-09-18 二次修**：上面那段结构性论证只对「纯孤儿」成立。
+    #   它漏了 DP 的**另一半**行为 —— 合并（(1,2)/(2,1)）。一个孤立孤儿
+    #   往往正是**邻格 1:N 吸收**的产物：中文两段并进一格 → 英文那段落单。
+    #   所以豁免必须再加两个否决项：
+    #     ⑤ 块数差**未被解释**（`_blk_unexplained`）—— 见上；
+    #     ⑥ 存在**「错位嫌疑」正面证据**（`_has_misplace`）。
+    #   实测这两条正好拦住 1.1 / 8.10.1 / 1.7 三节（后者即为
+    #   成品 `[167]/[168]` 孤儿段的出处）。
     def _max_run(side: str) -> int:
         """同一节里单侧段的**最长连续串**（相邻 pair 都空同一侧）。"""
         best = cur = 0
@@ -296,7 +332,8 @@ def screen_section(key: str, sec_index: int, s, en_pool: set[str],
 
     run_en, run_zh = _max_run("en"), _max_run("zh")
     if why and _n_en_other <= 1 and _n_zh_other <= 1 \
-            and run_en <= 1 and run_zh <= 1 and multi / max(1, len(s.pairs)) <= 0.25:
+            and run_en <= 1 and run_zh <= 1 and multi / max(1, len(s.pairs)) <= 0.25 \
+            and not _blk_unexplained and not _has_misplace:
         c.detail.append(("*", "", "孤立单侧豁免",
                          f"单侧段全部孤立（EN{_n_en_other}/ZH{_n_zh_other}，无连续）"))
         c.why = ""
@@ -304,6 +341,16 @@ def screen_section(key: str, sec_index: int, s, en_pool: set[str],
         c.dropped = True
         c.verdict = "白名单：孤立单侧段（不可能毁对齐）"
         return c
+    if why and (run_en <= 1 and run_zh <= 1
+                and multi / max(1, len(s.pairs)) <= 0.25
+                and (_blk_unexplained or _has_misplace)):
+        # 本可豁免、但被两个否决项拦下 —— 记一笔，便于回归时核对条数。
+        _rs = []
+        if _blk_unexplained:
+            _rs.append("块数差未解释")
+        if _has_misplace:
+            _rs.append("反查报错位嫌疑")
+        c.detail.append(("*", "", "豁免被否决", "·".join(_rs)))
 
     # ★★ 脚注主导 → 不是对齐候选（2026-09-18 实测定论，本节最值钱的一条）。
     #
