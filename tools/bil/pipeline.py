@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 
 # 分窗大小。⚠ 2026-09-14 实测：改 win 会导致窗口 prompt 全变 → 缓存失效
@@ -37,7 +38,13 @@ _EN_FIG_RE = re.compile(r"\bFigure\s+(\d+)\b", re.I)
 # 161 处里同时出现 `1|`、`2||`、`1|[5]`、`3|3|` 四种 —— 旧实现只写了
 # `^\d+\|\d+\|?`，把单数字形态全漏了，"全书残留=0" 是假绿。
 # 规则：开头 `数字 + 竖线`，竖线 1~2 个，可再接一组 `数字 + 竖线`；循环剥。
-_FILL_PREFIX_RE = re.compile(r"^\s*\d+\s*[|｜]{1,2}\s*(?:\d+\s*[|｜]{1,2}\s*)?")
+# ⚠ 2026-09-18（§6.29）：模型给**脚注**段落补译时会带上脚注号 + 竖线，
+# 形态是 `[3|阿姆斯（Ames）…`（外面套一层方/圆括号）—— 旧正则要求行首就是
+# 数字，漏掉这一种，bookscan 就报了 1 处「行号前缀」。
+# 锚点仍是竖线 `|`：`(IIIa) 如果…` 这类正当的编号引导段不含竖线，不受影响。
+_FILL_PREFIX_RE = re.compile(
+    r"^\s*[\[［（(]?\s*\d+\s*[|｜]{1,2}\s*"
+    r"(?:\d+\s*[|｜]{1,2}\s*)?")
 
 
 def strip_fill_prefix(t: str) -> str:
@@ -74,6 +81,12 @@ class SectionResult:
     figures: list = field(default_factory=list)   # [FigureRef]
     en_visuals: list = field(default_factory=list)
     zh_visuals: list = field(default_factory=list)
+    # 被「枚举块吸附」从段落流里摘出的块：[(Block, 原段下标, 全章段序 g, 侧别)]。
+    # ⚠ 这些块的**内容不能丢** —— 中译本把英文原版的公式图内容排成了散文
+    # （侧别 "zh"），或英文把一组定义排成多段而中文合成一个公式块（"en"）。
+    # 渲染层按下面枚举的匹配公式图（FigureRef.en_no）挂到该图下面。
+    # 侧别决定渲染成 `.zh.zh_transed` 还是 `.en.en_original`。
+    enum_notes: list = field(default_factory=list)
 
 
 @dataclass
@@ -190,6 +203,52 @@ def _is_codeish(t: str) -> bool:
         return True
     han = sum(1 for ch in t if "\u4e00" <= ch <= "\u9fff")
     return han / len(t) < 0.15
+
+
+# ── 补译前哨：这类英文段**不发 LLM**（2026-09-18 用户截图点名的幻觉） ───────
+#
+# 背景（用户截图：公式 (22.70) 上面出现了 AI 补译的「22. 传播理论导论」）：
+# 英文原文那里是 `<p class="noindent1">and in</p>` —— **公式图把一句话劈开后
+# 掉下来的两词残片**（完整句是 «and in [the sum…] the sum generates a power
+# of the matrix Q»）。中文版把它并进了下一段，于是这一对被判成 `en-only` →
+# 走补译 → 模型拿到一个没有信息的残片 + 无关上下文 → **凭空编出一个书名**。
+#
+# 实测（prob p21 全书 766 个 AI 补译 pair）分类：
+#     索引条目（`词, 页码`）  366   ← 大多是「删减的中文索引」，补译有意义
+#     短残片（≤6 词、无句末） 103   ← **风险集中在这里**
+#     其余（正常缺译段落）    297
+# 残片按词数：{1:16, 2:8, 3:34, 4:26, 5:12, 6:7}
+# ⇒ **1~2 词的残片没有任何可翻译内容**：要么产出噪声（`or`→「或」、`and`→「和」），
+#   要么幻觉（`and in`→「22. 传播理论导论」）。3 词以上多数是「公式引导语」
+#   （`is equal to`→「等于」、`Likewise,`→「同理，」），补译是有意义的，不动。
+#
+# **判据零词表、跨书成立**：词数 ≤2 且不含句末标点 → 不补译。
+# 与 §6.36 同一条纪律：LLM 裁决类机制必须有下限，别拿必然噪声当输入。
+#
+# ⚠ **必须豁免「索引条目」**（`词, 页码`：`Aristotle, 4` / `admissibility, 408`）。
+# 实测全书 366 个这类 pair，**补译是正确且有价值的**（中文版索引被删减，补译
+# 让索引可用），而且它们词数也常常 ≤2 —— 一刀切会误伤。
+# 判据：含「, 数字」或「，数字」形态 → 是索引条目，照常补译。
+_FILL_MIN_WORDS = 3
+_INDEX_ENTRY_RE = re.compile(r"[,，]\s*\d+")
+
+
+def _too_short_to_translate(t: str) -> bool:
+    """英文段短到**没有可翻译内容**（≤2 词且无句末标点）→ 不发给 LLM 补译。
+
+    ⚠ 索引条目（`Aristotle, 4`）豁免 —— 那是「词 + 页码」，补译有意义。
+
+    宁可漏补（退化成旧行为：该段显示英文原文，读者仍看得懂），
+    也不许幻觉出一句与原文无关的中文 —— 那会直接误导读者。
+    """
+    s = " ".join((t or "").split())
+    if not s:
+        return True
+    if s.endswith((".", "?", "!", ":", "。", "？", "！", "：", ";")):
+        return False
+    if _INDEX_ENTRY_RE.search(s):      # 索引条目：`词, 页码`
+        return False
+    return len(s.split()) < _FILL_MIN_WORDS
 
 
 def _valid_refine_map(mapping, n, m, min_cov: float = 0.70,
@@ -316,6 +375,15 @@ def _sane_section_map(mapping, en_secs, zh_secs, max_ratio: float = 8.0,
 
 
 def _metrics(p, en_ps, zh_ps):
+    # ⚠ 下标越界**必须炸得响亮**：这对 pair 的两个下标都来自同一坐标系
+    # （局部段序），越界说明上游裁剪（peel）与这里用的列表不一致。
+    # 2026-09-18 前言章实测：越界被 `_run_parallel` 的 `except Exception`
+    # 吞掉 → **整章从成品消失**，而 stdout 指标看起来一切正常。
+    if any(not (0 <= i < len(en_ps)) for i in p.en) or \
+            any(not (0 <= j < len(zh_ps)) for j in p.zh):
+        raise IndexError(
+            f"_metrics 下标越界：en={p.en}(共 {len(en_ps)}) "
+            f"zh={p.zh}(共 {len(zh_ps)}) —— 上游戏 peel 裁剪与段落列表不同步")
     w = sum(A.en_words(en_ps[i].text) for i in p.en)
     c = sum(A.han_chars(zh_ps[j].text) for j in p.zh)
     p.r = c / max(1, w)
@@ -596,10 +664,23 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
     # 2) 补译：中文版删减/缺失的段落
     if translate:
         todo = []
+        _skipped_short = 0
         for si, s in enumerate(res.sections):
             for pi, p in enumerate(s.pairs):
-                if p.en and not p.zh:
-                    todo.append((si, pi, p))
+                if not (p.en and not p.zh):
+                    continue
+                # ★ 太短的残片不补译（见 _too_short_to_translate 注释）：
+                #   英文段只剩 1~2 个词时，LLM 拿不到任何可译内容，实测会
+                #   幻觉（`and in` → 「22. 传播理论导论」）或产出噪声
+                #   （`or` → 「或」）。宁可该段只显示英文原文。
+                _etxt = " ".join(s.en_paras[x].text for x in p.en)
+                if _too_short_to_translate(_etxt):
+                    _skipped_short += 1
+                    continue
+                todo.append((si, pi, p))
+        if _skipped_short:
+            print(f"    [补译] 跳过 {_skipped_short} 个「≤2 词的残片」"
+                  f"（无可译内容，防幻觉）")
         for i in range(0, len(todo), batch):
             chunk = todo[i:i + batch]
             texts, ctx = [], ""
@@ -1375,24 +1456,37 @@ def _split_glued_marker(pairs, en_paras, zh_paras) -> int:
     return n
 
 
-def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off):
+def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off,
+                    peel=None, peel_en=None):
     """把整章映射切成本单元的 pair 列表（局部下标），单调有序。
 
     英文段按序逐个认领映射到的中文段；中文段没被任何英文段认领的，
     按位置插成 0:1 pair（不丢内容）。
+
+    `peel` = {全章中文段序 g} 集合：这些中文块已被「枚举块吸附」摘出
+    （见 align.peel_enum_blocks），**不参与配对**。必须在这里也排除，
+    否则 LLM 路径会把它们重新拉回段落流（同一份输入两个分支结果不一致）。
+    `peel_en` = {全章英文段序 g} 反之（见 align.peel_en_defs）。
     """
+    _peel = peel or set()
+    _peel_en = peel_en or set()
     g2la = {}
     for li, i in enumerate(ei):
         base = en_off[i]
         local0 = sum(len(en_secs[x].paras) for x in ei[:li])
         for k in range(len(en_secs[i].paras)):
-            g2la[base + k] = local0 + k
+            if base + k in _peel_en:
+                continue
+            g2la[base + k] = local0
+            local0 += 1
     g2lb, b_base = {}, 0
     for j in zi:
         base = zh_off[j]
         for k in range(len(zh_secs[j].paras)):
-            g2lb[base + k] = b_base + k
-        b_base += len(zh_secs[j].paras)
+            if base + k in _peel:
+                continue                       # 已摘出的枚举块不占局部下标
+            g2lb[base + k] = b_base
+            b_base += 1
     n_b = b_base
     pairs: list = []
     claimed: set[int] = set()
@@ -1616,6 +1710,155 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
 
         if not a_paras and not b_paras and not en_figs:
             continue
+
+        # ── 枚举块吸附（2026-09-18 用户点名，见 docs/HANDOFF.md §6.30）──
+        # 中译本常把英文原版的**公式图内容**排成普通散文段（典型：1.7 节
+        # (IIIa)(IIIb)(IIIc) 在英文里是 eqn01_39a/b/c.jpg 三张图，在中文里
+        # 是三段散文）。它们当正文参与 DP 会让中文侧凭空多 3 块 → 相位滑
+        # 3 格 → "Finally…"/"Desiderata…" 全部错配、原位缺中文 → AI 补译
+        # → 同一句中文出现两遍（用户 16 张截图的那个症状）。
+        # 判据见 align.peel_enum_blocks（零 LLM，四条，双侧确认）。
+        # 吸附后：**块不丢**，改挂到对应公式组下面渲染（见 _peeled_enum）。
+        _peeled_enum = []                     # [(zh_block, 原 zh 下标, 全章段序 g)]
+        _peeled_edef = []                     # [(en_block, 全章段序 g)]
+        _peel_g: set = set()                  # 被摘出的全章段序（LLM 分支也要用）
+        if a_paras and b_paras and en_figs:
+            _drop = A.peel_enum_blocks(a_paras, b_paras, en_figs)
+            if _drop:
+                _ds = set(_drop)
+                _peeled_enum = [(b_paras[j], j, b_gidx[j]) for j in _drop]
+                _peel_g = {q[2] for q in _peeled_enum}
+                b_paras = [b for j, b in enumerate(b_paras)
+                           if j not in _ds]
+                b_gidx = [g for j, g in enumerate(b_gidx) if j not in _ds]
+        # ── 英文短定义段吸附（§6.31，对称的另一半）──────────────────────
+        # 英文把一组定义排成**多个独立段**（`A ≡ …` / `B ≡ …`），中译本却把它
+        # 们合成了**一个 array 公式块** → 中文侧少块、英文段落单 → DP 判 1:0
+        # → 触发 AI 补译、补译还把 `≡` 抄成 `≩`（用户截图「B ≩ 上午10点之前
+        # 天空变阴。」就是这么来的）。判据见 align.peel_en_defs（零 LLM，三条）。
+        # ⚠ 必须在**枚举块吸附之后**算：两次吸附都以「去掉已摘块后的 k」定位。
+        _peeled_edef = []
+        _peel_en_g: set = set()
+        if a_paras and b_paras and en_figs:
+            _zf = [v for j in zi for v in A.visual_of_sec(zh_secs[j])]
+            _zf = [v for v in _zf if not getattr(v.block, "junk", False)]
+            _de = A.peel_en_defs(a_paras, b_paras, en_figs, _zf)
+            if _de:
+                _des = set(_de)
+                _peeled_edef = [(a_paras[x], _en_off[ei[0]] + x) for x in _de]
+                _peel_en_g = {q[1] for q in _peeled_edef}
+                a_paras = [p for x, p in enumerate(a_paras) if x not in _des]
+        # ── 英文脚注段吸附（§6.33）────────────────────────────────────────
+        # 英文小节末尾常挂着原版脚注（`[1] In his presentation…`），而中译本
+        # 的注区**不在本小节内**（在章末独立注区）。脚注混在主链上会被 DP
+        # 当成正文，吞掉本该属于正文的中文段 —— 3.11.1 实测：脚注 e6 吞了
+        # z4+z5，把 e3/e5 挤成孤儿 → AI 补译 → 同一句中文两遍（用户截图）。
+        # ⚠ 关键实测：**同一小节去掉脚注（6:6）在任何 k 下都给出全 1:1 正确
+        # 解**；含脚注（8:6）则 k=1.1~1.7 全错、只有 k=2.0 才对。
+        # ⇒ 脚注是纯噪音，摘掉即修复，**不需要调任何常数**。
+        # 判据见 align.peel_en_notes（零 LLM，三条，仅认 `[n]` 强形态）。
+        _peeled_enote = []                    # [(en_block, 全章段序 g)]
+        _peel_enote_g: set = set()
+        if a_paras and b_paras:
+            _dn = A.peel_en_notes(a_paras, b_paras)
+            if _dn:
+                _dns = set(_dn)
+                _peeled_enote = [(a_paras[x], _en_off[ei[0]] + x) for x in _dn]
+                _peel_enote_g = {q[1] for q in _peeled_enote}
+                a_paras = [p for x, p in enumerate(a_paras) if x not in _dns]
+                # ⚠ 必须并进 `_peel_en_g`（英文侧同一个「已摘出全章段序」集合）：
+                # LLM 分支的 `_pairs_from_map` 只认 `peel_en`，漏掉这批脚注段
+                # 就会把它们重新拉回段流 → 局部下标按**未裁剪**的段数编号，
+                # 而 `_metrics(p, a_paras, ...)` 用的是**裁剪后**的列表 →
+                # IndexError（前言章实测：Acknowledgments 小节 EN6→3，
+                # 脚注 g=53/54/55 被重新编号成 la=3/4/5，a_paras 只有 3 段
+                # → 越界 → 整个前言章被 `_run_parallel` 静默丢弃）。
+                _peel_en_g = _peel_en_g | _peel_enote_g
+        # ── 不确定窗口 → LLM 块级裁决（§6.35，泛化路径）──────────────────
+        # ★ 这一条**不是形态判据**，而是「DP 自己拿不准的地方才问 LLM」。
+        #
+        # 前三条吸附（枚举块/短定义/脚注）都是把**某本书的排版形态**烧进
+        # 代码 —— §1.5 的「幂等性：$\left\{\begin{array}…」是第四个形态，
+        # 三条全不命中，只能再加第四条正则（用户 2026-09-18 明确反对：
+        # 「不要老是要按书调参吧？」）。
+        #
+        # 泛化做法：`probe_uncertain_zh` 在 k 的合理区间采样，找出**处置
+        # 不稳定**的中文段（一会儿判独有、一会儿判有对应）= DP 举手说
+        # 「我没把握」。这些段交给 LLM 逐块回答「英文侧是散文还是图」。
+        #
+        # 成本控制（★ 2026-09-18 p18 事故后**重写**，见 §6.36）：
+        #   * 闸门 ①：`structural_slack > 0`（中文块数多于英文）—— 中文侧不多块
+        #     就没有「凭空多出」的余地；
+        #   * 闸门 ②：**本小节必须有图表**（`en_figs` 非空）。本机制唯一的语义
+        #     依据是「英文那块是**图/公式**，中文把它写成了散文」。一个小节
+        #     如果一张图都没有，这个前提根本不成立 —— p18 实测正是漏了这道
+        #     闸门：两次 `n=81 / drop=49 / n_vis=0`（无图裸判），一次丢 49 段
+        #     译文，把 ch31 参考文献搞出重复段。**没图就别问**。
+        #   * 闸门 ③：探测真找出候选（且候选已被 `probe_uncertain_zh` 收口到
+        #     「最长连续串 ∩ ≤ slack」）。
+        # ⇒ 全节只对**极少数真正有疑点的小节**发 1 次请求。
+        #
+        # ⚠ LLM 只输出「块级 drop / keep」：不改文本、不切段内边界、
+        #   不重排（定调 3）。返回空 dict（未启用/解析失败）→ 一行不动，
+        #   退化为当前行为，绝不让对齐结果变得不可复现。
+        _peeled_judge = []                    # [(zh_block, 原 zh 下标, 全章段序 g)]
+        _judge_why = ""
+        if (llm is not None and a_paras and b_paras
+                and en_figs
+                and A.structural_slack(a_paras, b_paras) > 0):
+            _unc, _info = A.probe_uncertain_zh(a_paras, b_paras)
+            # 诊断埋点（BIL_JUDGE_TRACE=1 时打一行到 stderr，零 LLM 成本）：
+            # 用来回答「为什么 §1.5 之外还有一堆小节触发」——实测需要
+            # slack / 原始候选 / 收口后候选 三个数才能判断闸门松紧。
+            if os.environ.get("BIL_JUDGE_TRACE"):
+                _sl = A.structural_slack(a_paras, b_paras)
+                sys.stderr.write(
+                    f"[judge-trace] {a_t!r:.40} slack={_sl} "
+                    f"n_en={len(a_paras)} n_zh={len(b_paras)} "
+                    f"raw={_info.get('cand_raw')} cand={len(_unc)} "
+                    f"cap={_info.get('dropped_by_cap')} "
+                    f"clus={_info.get('dropped_by_cluster')} "
+                    f"n_vis={len(en_figs)}\n")
+                sys.stderr.flush()
+            if _unc:
+                _vis_desc = []
+                for _v in en_figs:
+                    # ⚠ fig_num 可能是 int（`_v.fig_num = _en_fig_num(...)` 有时
+                    # 给数字）→ 必须先 str()。实测漏掉这步让 chapter8 整章抛
+                    # `'int' object has no attribute 'strip'`（§6.34 的失败章
+                    # 清单机制把它拦住了，没静默丢章 —— 但也是真 bug）。
+                    _fn = str(getattr(_v, "fig_num", "") or "").strip()
+                    _cap = str(getattr(_v.block, "caption", "") or "").strip()
+                    _k = getattr(_v.block, "type", "") or "图"
+                    _vis_desc.append(
+                        f"{'公式' if _k in ('figure', 'formula') else _k}图"
+                        + (f" {_fn}" if _fn else "")
+                        + (f"：{_cap[:40]}" if _cap else "")
+                        + f"（位于第 {getattr(_v, 'after', -1) + 1} 段之后）")
+                try:
+                    # ⚠ 上下文用 **DP 配对结构**定位，不用中文下标索引英文段
+                    # （§1.5 中英差 8 块，按下标取会把邻居取错 → 实测 6/8 误判）。
+                    _uniq = sorted(set(_unc))
+                    _wins = A.judge_windows(a_paras, b_paras, _uniq, k=K)
+                    _drop_map = llm.judge_zh_blocks(_wins, visuals=_vis_desc)
+                    # 返回的下标是 `_uniq` 里的位置 → 映射回真实 zh 下标
+                    _drop_map = {_uniq[x]: True
+                                 for x in (_drop_map or {}) if x < len(_uniq)}
+                except Exception as _e:              # noqa: BLE001
+                    _drop_map = {}
+                    _judge_why = f"裁决失败：{_e!r}"
+                _dj = sorted(j for j in (_drop_map or {}) if j in set(_unc))
+                if _dj:
+                    _djs = set(_dj)
+                    _peeled_judge = [(b_paras[j], j, b_gidx[j]) for j in _dj]
+                    b_paras = [b for j, b in enumerate(b_paras)
+                               if j not in _djs]
+                    b_gidx = [g for j, g in enumerate(b_gidx)
+                              if j not in _djs]
+                    _peel_g = _peel_g | {q[2] for q in _peeled_judge}
+                    _judge_why = (f"咨询 {len(_unc)} 段 → 裁决丢弃 {len(_dj)} 段")
+                elif _unc:
+                    _judge_why = f"咨询 {len(_unc)} 段 → 全判保留"
         if not b_paras and a_paras:           # 英文小节在中文版缺失
             pairs = [A.Pair(en=[i], zh=[]) for i in range(len(a_paras))]
             ar = AU.audit_pairs(pairs, a_paras, b_paras or [])
@@ -1639,7 +1882,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
             # 上既不准（ML bad 90%）又慢（逐小节 DP 比对），直接采信 LLM。
             if llm_map is not None and _dp_bad:
                 pairs = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
-                                        _en_off, _zh_off)
+                                        _en_off, _zh_off, peel=_peel_g,
+                                        peel_en=_peel_en_g)
                 # ⚠ LLM 路径生成的配对必须补算长度比指标：audit_pairs 只读
                 # p.r，没算过就恒为 0.0 → 每一对都被判 "ratio 0.0" bad →
                 # 整章 100% FAIL（实测 think2 附录 A/B：抽样配对全对，指标
@@ -1654,7 +1898,8 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                                           r_lo=max(1.2, r_lo), r_hi=r_hi)
                 if llm_map is not None:
                     cand = _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs,
-                                           _en_off, _zh_off)
+                                           _en_off, _zh_off, peel=_peel_g,
+                                        peel_en=_peel_en_g)
                     for p in cand:                  # 同上：先补指标再比
                         _metrics(p, a_paras, b_paras)
                     # ⚠ **决策用尺必须冻结**（mode="legacy"）：这里是「DP 候选 vs
@@ -1709,6 +1954,72 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         zh_fig_i, zh_claims = _attach_figures(
             sr, en_figs, zh_vs_all, zh_fig_i, zh_pos, zh_claims,
             zh_caps=zh_caps, zh_chap=_zh_chap, para_anchor=(_g2l, _l2p))
+        # ── 枚举块归属：挂到「它所对应那组公式图」下面 ────────────────
+        # peel_enum_blocks 的判据 ④ 已经确认「偏移 k_en 处的公式图」就是这些
+        # 枚举块在英文原版里的对应物（§1.7 实测：z17/z18/z19 ↔ after=16 的
+        # eqn01_39a/b/c）。这里按 FigureRef.en_para 把它挂上去：渲染层在图
+        # **下面**渲染这些中文块，读者照样看得到 (IIIa)(IIIb)(IIIc) 的内容，
+        # 但它们不再参与段落配对。
+        # 找不到对应图时**不丢**，记进 sr.note 让门禁看得见（宁可留证据，不要静默吞内容）。
+        _enum_orphan = 0
+        for _blk, _zj, _g in _peeled_enum:
+            # 落点：本小节**最后一段英文之后的**那组图。判据 ④ 已经确认这些
+            # 枚举块对应的公式图就在附近（|after - k_en| ≤ 1），而 (IIIa-c)
+            # 这类内容在原文里正是紧随引导句的一串连排公式图（§1.7 实测：
+            # 三张图 after 全 = 16 = 引导句 e16 的下标）。
+            _figs = [f for f in sr.figures if getattr(f, "en_para", -1) >= 0]
+            if not _figs:
+                _enum_orphan += 1
+                continue
+            sr.enum_notes.append((_blk, max(_figs, key=lambda f: f.en_para),
+                                  "zh"))
+        # 英文短定义段：挂在**它所承接的那个公式块**上（en_para 最小的那组图
+        # 之后 —— 因为定义行在原文里紧挨着引出它们的公式）。§1.1 实测：e07/e08
+        # 对应的中文 array 公式块就在 e07 之前。
+        for _blk, _g in _peeled_edef:
+            _figs = [f for f in sr.figures if getattr(f, "en_para", -1) >= 0
+                     and f.en_para <= _g + 1]
+            if not _figs:
+                _figs = [f for f in sr.figures if getattr(f, "en_para", -1) >= 0]
+            if not _figs:
+                _enum_orphan += 1
+                continue
+            sr.enum_notes.append((_blk, min(_figs, key=lambda f: f.en_para),
+                                  "en"))
+        if _enum_orphan:
+            sr.note = ((sr.note + "；" if sr.note else "")
+                       + f"枚举块无对应图 {_enum_orphan} 处")
+        if _peeled_enum or _peeled_edef:
+            sr.note = ((sr.note + "；" if sr.note else "")
+                       + f"枚举块吸附 {len(_peeled_enum) + len(_peeled_edef)} 处")
+        # ── 裁决丢弃的块：同样走 enum_notes 通道（**内容不丢**）───────────
+        # LLM 判「英文侧只有图、没有散文」的中文块，从段落流里摘出的目的
+        # 只是**不再污染配对**；内容照样要出现在成品里（铁律：不静默丢内容）。
+        # 渲染成 `zh-enum`，贴在它对应的公式组下面 —— 与枚举块吸附同一条路。
+        for _blk, _zj, _g in _peeled_judge:
+            _figs = [f for f in sr.figures if getattr(f, "en_para", -1) >= 0]
+            if not _figs:
+                _enum_orphan += 1
+                # 没有公式图可挂 → 退化为「照常渲染在段流里」，
+                # 即放弃这次裁决（比丢内容好）。
+                b_paras.insert(min(_zj, len(b_paras)), _blk)
+                continue
+            # 落点：按全章段序 _g 找**最接近**的那张图（英文侧该处就是它）
+            sr.enum_notes.append((_blk, min(
+                _figs, key=lambda f: abs(getattr(f, "en_para", 0) - _g)), "zh"))
+        if _judge_why:
+            sr.note = ((sr.note + "；" if sr.note else "")
+                       + f"不确定窗口裁决：{_judge_why}")
+        # ── 英文脚注段的落点：进**英文注原文**通道（不进图下吸附）──────
+        # 这些 `[n] …` 段在英文原版里就是脚注，中文版把它们放在章末注区。
+        # 走 res.notes_en（"英文本的注释原文"）最贴合版式（铁律 10：版式
+        # 照抄英文原版）：渲染层在中文注区之后单独列一段「英文原注」。
+        if _peeled_enote:
+            for _blk, _g in _peeled_enote:
+                res.notes_en.append(getattr(_blk, "html", "")
+                                    or getattr(_blk, "text", "") or "")
+            sr.note = ((sr.note + "；" if sr.note else "")
+                       + f"英文脚注摘出 {len(_peeled_enote)} 条")
         _attach_notes(sr, a_paras)
         res.sections.append(sr)
         # ── 原位标题：把本单元各侧的小节标题记成 (段前位置, 文本) ──────

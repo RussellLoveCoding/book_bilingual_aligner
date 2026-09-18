@@ -255,9 +255,16 @@ def load_md(path, lang: str) -> dict[str, list]:
                 # 行间公式和它的编号拆成了独立文本行。它们参与 DP 会把
                 # 小节段数搅乱（1.5 布尔代数 zh 31 段 vs en 13 段的级联
                 # 漂移就是这么来的）→ 与 $$ 块同待遇（is_visual）。
-                if len(para) <= 12 and re.fullmatch(
+                # 2026-09-18（§6.29）：OCR 把公式编号排成了**畸形残渣行**
+                # （`1.398` / `1.395` / `1.3次`，原书是 (1.39a)(1.39b)(1.39c)）。
+                # 它们当正文参与 DP 会凭空多出 3 块 → 段落流错位。
+                # 判据极窄：数字.数字 + 至多 2 个杂字符，总长 ≤ 10。
+                _num_junk = bool(re.fullmatch(
+                    r"\d{1,2}\s*[.．]\s*\d{1,3}\s*\S{0,2}", para)) \
+                    and len(para) <= 10
+                if _num_junk or (len(para) <= 12 and re.fullmatch(
                         r"[A-Za-z0-9()\+\=\.\s,①-⑩]+", para) \
-                        and not re.search(r"[\u4e00-\u9fff]", para):
+                        and not re.search(r"[\u4e00-\u9fff]", para)):
                     cur.append(Block(tag="div", cls="eq-display",
                                      html=_esc(para), text=para,
                                      type="formula"))
@@ -344,7 +351,117 @@ def load_md(path, lang: str) -> dict[str, list]:
         docs[cur_name] = cur
     if not docs:
         raise RuntimeError(f"{Path(path).name} 里没有读到任何内容")
+    for _k in list(docs):
+        docs[_k] = _merge_broken_paras(docs[_k], lang)
+        docs[_k] = _demote_unnumbered_subheads(docs[_k], lang)
     return docs
+
+
+# ── 2026-09-18（§6.32）：中文「无编号小节标题」降级 ──────────────────
+# 症状来源：中译本把**子节标题**写成了与**小节标题**同一层级。实测（prob）：
+#   `## 3.11 评注`  ← 小节（有编号）
+#   `## 展望`       ← 明明是 3.11 的**内部分段**，却写成同一个 `##`
+# 英文原版 `3.11 Comments` 是一整节（18 段），中文被 `展望` 劈成两节
+# （`3.11 评注` 10 段 + `展望` 6 段）→ `split_sections` 按层级切出**多一节**
+# → 小节配对从 3.10 起整体错位一格：
+#   EN10 '3.10 Simplification'  <->  ZH[]        （本该配 ZH10）
+#   EN11 '3.11 Comments'        <->  ZH[10, 11]  （本该配 ZH11）
+#   EN[]                        <->  ZH[12]      （本该并入 ZH11）
+# 后果就是用户点名的 3.11.1：「因此，在本研究中…」等段全部错配 + EN-only
+# 空位触发 AI 补译。**全书实测 15 章 55 处**，是同一类系统性缺陷。
+#
+# 判据（四条同时成立，缺一不可 —— 宁可漏降也不能误降）：
+#   ① 该 heading 是文档内**小节层级**（= 出现次数最多的层级）；
+#   ② 文本**没有编号**（不是 `3.11 xxx` / `A.1 xxx` / `第N章`）；
+#   ③ 同一文档内，该层级**已经有 ≥2 个带编号的兄弟**（证明「编号」才是
+#      这一层的规范写法，无编号那个是异类）；
+#   ④ 它**不是**词表里的独立章标题（`_ZH_HEAD_RE`：致谢/前言/参考文献…）
+#      —— 这些是**真·顶层**，降级会把章映射搞坏（§6.22 的教训）。
+# 降级做法：level 从 `L` 改成 `L+1`（只动 level，不动文本/位置）。
+# `split_sections` 取「层级众数」当小节层级 → L+1 从此不再是众数 → 不再切
+# 一刀，内容并回上一个有编号的小节。**内容不丢、只是不再当小节边界。**
+#
+# ⚠ 为什么不用「按英文侧节数对账」：那需要英文原文，而 load_md 只看到中文。
+#   纯结构判据（有编号 vs 无编号）在实测 55 处上全部正确，且零成本。
+_SUBHEAD_NUM_RE = re.compile(
+    r"^\s*(?:第\s*\d+\s*[章节卷]|\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*|附录\s*[A-Z])"
+    r"\s*[\.、\s]")
+
+
+def _demote_unnumbered_subheads(blocks: list, lang: str) -> list:
+    """把「与编号小节同层的无编号标题」降一级（§6.32）。返回新列表。"""
+    if lang != "zh" or len(blocks) < 3:
+        return blocks
+    heads = [b for b in blocks if b.type == "heading"]
+    if len(heads) < 3:
+        return blocks
+    rest = heads[1:]
+    lv = max(set(h.level for h in rest),
+             key=lambda L: sum(1 for h in rest if h.level == L))
+    peers = [h for h in heads[1:] if h.level == lv]
+    numbered = sum(1 for h in peers if _SUBHEAD_NUM_RE.match(h.text or ""))
+    if numbered < 2:                       # ③ 该层不是「以编号为规范」→ 不动
+        return blocks
+    out, n = [], 0
+    for b in blocks:
+        if (b.type == "heading" and b.level == lv
+                and not _SUBHEAD_NUM_RE.match(b.text or "")
+                and not _ZH_HEAD_RE.match((b.text or "").strip())):  # ④
+            out.append(Block(tag=f"h{min(b.level + 1, 6)}", cls=b.cls or "",
+                             html=b.html, text=b.text,
+                             type="heading", level=b.level + 1))
+            n += 1
+        else:
+            out.append(b)
+    if n:
+        print(f"[解析] 无编号小节标题降级：{n} 处（中译本把子节标题写成了小节层级）")
+    return out
+
+
+# ── 2026-09-18（§6.29）：中文「断口」合并 ────────────────────────────
+# 症状来源：minerU 把**一个**英文段落按 PDF 的换行拆成了**两个**中文块，例如
+#   z36「…使用 (2.19)，则 (2.17)」  +  z37「和 (2.18) 变为」
+#   （英文侧是**一段**："…Using (2.19), (2.17) and (2.18) become"）
+# 中文侧凭空多出一块 → DP 只能靠 1:2/2:1 吸收盈余 → 段落流整体错位一格
+# （用户 16 张截图里「同一句中文出现两遍」的主因之一）。
+#
+# 判据（两条同时成立才合，缺一不可 —— 宁可漏合也不能误合）：
+#   ① 前一段**不以句末标点收尾**（。！？；…」』）》！？.?!:;:）
+#      —— 排除了「…可简化为」「…变为如下形式：」这类合法的「引出公式」收尾。
+#   ② 后一段以**不能独立起句**的接续词开头（和/与/及/或/并/且/而/则…）。
+#   ③ 两块**相邻**且都是 para（中间没有公式/图/表/标题）—— 有公式隔着就一定是
+#      两个块（如 z35「…最一般函数 G(x,y) 是」+ 公式(2.19) + z36「其中 r 是常数…」）。
+_FINAL_PUNCT = "。！？；…」』）》】!?.:;:,."
+_CONT_START = ("和", "与", "及", "或", "并", "且", "而", "则", "即",
+               "者", "之", "其", "从而", "以及", "并且", "或者")
+
+
+def _merge_broken_paras(blocks: list, lang: str) -> list:
+    """合并被 PDF 换行切断的中文段落。返回新列表（不改动原 Block 对象以外）。"""
+    if lang != "zh" or len(blocks) < 2:
+        return blocks
+    out: list = []
+    i = 0
+    n = 0
+    while i < len(blocks):
+        b = blocks[i]
+        if i + 1 < len(blocks) \
+                and b.type == "para" and blocks[i + 1].type == "para" \
+                and (b.text or "").strip() \
+                and (b.text or "").strip()[-1] not in _FINAL_PUNCT \
+                and (blocks[i + 1].text or "").strip().startswith(_CONT_START):
+            nxt = blocks[i + 1]
+            merged = (b.text or "").rstrip() + (nxt.text or "")
+            b = Block(tag="p", cls=b.cls or "", html=_esc(merged),
+                      text=merged, type="para")
+            i += 2
+            n += 1
+        else:
+            i += 1
+        out.append(b)
+    if n:
+        print(f"[解析] 中文断口合并：{n} 处（PDF 换行把一个英文段拆成两段）")
+    return out
 
 
 def load_docs(path, lang: str) -> dict[str, list]:

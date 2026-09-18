@@ -912,7 +912,7 @@ PAGE = """<!DOCTYPE html>
           <div class="presets">
             <button type="button" data-base="https://api.deepseek.com/v1" data-model="deepseek-chat">DeepSeek</button>
             <button type="button" data-base="https://api.openai.com/v1" data-model="gpt-4o-mini">OpenAI</button>
-            <button type="button" data-base="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen-plus">通义千问</button>
+            <button type="button" data-base="https://dashscope.aliyuncs.com/compatible-mode/v1" data-model="qwen3.7-flash">通义千问</button>
             <button type="button" data-base="https://api.moonshot.cn/v1" data-model="moonshot-v1-8k">Moonshot</button>
             <button type="button" data-base="http://localhost:11434/v1" data-model="qwen2.5:14b">本地 Ollama</button>
           </div>

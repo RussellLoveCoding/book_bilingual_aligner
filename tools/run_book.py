@@ -225,9 +225,27 @@ def main():
     else:
         results = []
         for cp in jobs:
-            r = _run_one(cp)
+            try:
+                r = _run_one(cp)
+            except Exception as e:          # noqa: BLE001
+                # ⚠ 串行分支同样不许静默丢章（与 _run_parallel 一致）
+                import traceback as _tb
+                print(f"[warn] {cp.key} 处理失败：{e}")
+                print(_tb.format_exc())
+                FAILED_CHAPTERS.append((cp.key, cp.zh_title, repr(e)))
+                continue
             P.print_report(r)
             results.append(r)
+    # ⚠ 失败章必须**醒目**列出：它们是成品里「凭空消失的一大段」。
+    if FAILED_CHAPTERS:
+        print()
+        print("=" * 68)
+        print(f"⚠ 有 {len(FAILED_CHAPTERS)} 章处理失败，**未进入成品**：")
+        for _k, _t, _e in FAILED_CHAPTERS:
+            print(f"   - {_k} {_t[:40]} → {_e}")
+        print(f"   预期章数 {len(jobs)} · 实际产出 {len(results)}")
+        print("=" * 68)
+        print()
     if llm is not None:
         if llm.enabled:
             print()
@@ -236,6 +254,12 @@ def main():
 
     if args.dump:
         dump_review(results)
+    # ⚠ 出货前硬核对：章数不符 = 成品缺章，**拒绝构建**（宁可不出，不要出残品）。
+    # 2026-09-18 前言章事故：构建照跑，成品静悄悄少了一整章。
+    if args.build and len(results) != len(jobs):
+        print(f"[拒绝构建] 产出 {len(results)} 章 ≠ 预期 {len(jobs)} 章，"
+              f"成品会缺章。请先修掉上面的失败章。")
+        raise SystemExit(4)
     if args.build:
         from bil import build
         from bil import bookmeta as BM
@@ -285,7 +309,16 @@ def main():
 
 
 def _run_parallel(fn, jobs, workers):
-    """并发跑各章，结果顺序与输入一致。单章失败不影响其他章。"""
+    """并发跑各章，结果顺序与输入一致。单章失败不影响其他章。
+
+    ⚠⚠ 2026-09-18：失败章**绝不允许静默消失**。旧实现 `out[i] = None` +
+    `[r for r in out if r is not None]` —— 任何一章抛异常（实测：前言章
+    `_metrics` IndexError）都会让**整章从成品里蒸发**，而 stdout 指标
+    （段落对/命中/AI补译）只是少算一章，看起来毫无异常。用户直到翻开
+    成品才发现「序言后面丢了一大段」。
+    现在：失败章进 `FAILED` 清单，结尾**醒目不删地打印**，并在返回前
+    把清单暴露出去（run_book 主流程会据此拒绝对外宣称成功）。
+    """
     from concurrent.futures import ThreadPoolExecutor
     out = [None] * len(jobs)
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -295,8 +328,15 @@ def _run_parallel(fn, jobs, workers):
             try:
                 out[i] = fut.result()
             except Exception as e:            # noqa: BLE001
+                import traceback as _tb
                 print(f"[warn] {jobs[i].key} 处理失败：{e}")
+                print(_tb.format_exc())
+                FAILED_CHAPTERS.append((jobs[i].key, jobs[i].zh_title, repr(e)))
     return [r for r in out if r is not None]
+
+
+# 并发跑失败的章：[(key, zh_title, 异常摘要)]。**空列表才是成功**。
+FAILED_CHAPTERS: list = []
 
 
 def dump_review(results):

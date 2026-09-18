@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -156,6 +157,43 @@ def _lex_score(targets: set, zgrams: set, n_en: int) -> float:
 def han_chars(s: str) -> int:
     # 用 finditer 计数，避免为每个段落分配 findall 的临时列表
     return sum(1 for _ in HAN.finditer(s))
+
+
+# ★ 2026-09-18（§6.29）：中文段的**公式质量**。
+#   旧口径 `han_chars` 只数汉字 —— 公式/拉丁/数字一律算 0，而英文侧的
+#   `en_words` 把 `dF(y,z)` `F1dy` `0` 这些都算成词。**两侧口径不对称**
+#   ⇒ 公式密集的中文段被系统性低估（实测 ch2 `关系 dv=dF(y,z)=… 变为如下
+#   形式：` 汉字只有 8、英文 12 词），DP 于是判定它「配不上」它的英文段，
+#   把它并进上一组 —— 这就是中文段相对英文段整体错位一格的直接原因。
+#   修法：中文侧也把非汉字的「词形」token 折算进来（1 个 token ≈ k 个汉字，
+#   与英文侧 1 个词 ≈ k 个汉字同口径）。
+#   ⚠ 只用于 DP 的代价计算；**决策尺 `audit_pairs` 仍用 han_chars**
+#   （定调：决策用尺必须冻结，不能因为改对齐就改判定口径）。
+MATH_W = float(os.environ.get("BIL_MATH_W", "1.0") or 0.0)
+
+# ★ 2026-09-18（§6.29）：段落 DP 的操作集。
+#   旧集只有 (1,1)/(1,2)/(2,1)/(1,0)/(0,1) —— **吸收不了连续 3 个以上的多余
+#   中文块**。实测 ch1 §1.39：中文侧把英文写成**公式**的 (IIIa)(IIIb)(IIIc)
+#   排成了三段散文（英文侧是 (1.39a)(1.39b)(1.39c) 三张公式），中文侧凭空多出
+#   3 块；DP 只能拆成三次 1:2 或 (0,1)，于是把「最后，我们希望…」并到上一组，
+#   它的英文段成了「假仅英文段」（用户截图 #15）。
+#   补 (1,3)/(3,1)/(1,4)/(4,1)：一次就能把 3~4 个多余中文块吸收进同组，
+#   相位不再滑。`BIL_OPS_WIDE=0` 退回旧集做对照。
+#   ⚠ 2026-09-18 实测：**默认关闭**（`BIL_OPS_WIDE=0`）。开了以后
+#   ch1 §1.7 反而更差（多出 `e10>z10111213` 这类大合并），ch6 无变化。
+#   该节真正的解法不是放宽 OPS，而是让「中文散文段 ↔ 英文公式块」能成对
+#   （见 HANDOFF §6.29 ⑧ 的遗留项）。代码留着备查。
+OPS_BASE = [(1, 1), (1, 2), (2, 1), (1, 0), (0, 1)]
+OPS_WIDE = (OPS_BASE + [(1, 3), (3, 1), (1, 4), (4, 1)]) \
+    if os.environ.get("BIL_OPS_WIDE", "0") == "1" else OPS_BASE
+
+
+def zh_mass(s: str, k: float = 1.85) -> float:
+    """中文段的对齐质量 = 汉字数 + 公式/拉丁/数字 token 折算（对称于英文侧）。"""
+    if not MATH_W:
+        return float(han_chars(s))
+    return han_chars(s) + MATH_W * k * len(
+        _WORDISH_RE.findall(HAN.sub(" ", s or "")))
 
 
 # 含字母/数字的「词」。⚠ 必须整串一次 findall：早期版本对**每个单词**
@@ -334,6 +372,20 @@ def visual_of_sec(sec):
 GAP = 1.7          # 跳过一段的代价系数（相对平均段长）
 ANCHOR = -0.45     # 每个共享数字的奖励
 ANCHOR_CAP = -1.2
+# ★ 2026-09-18（§6.29）：**非 1:1 合并的固定代价**。
+#   旧行为：只有长度失配代价，(1,2)/(2,1) 是**免费**的 —— DP 于是拿合并当
+#   「平滑器」，只要长度凑得更像就合并，代价是相位整体滑一格（用户 16 张截图
+#   的那个症状：中文段相对英文段整体错位，错位处原位缺中文 → AI 补译 →
+#   同一句中文出现两遍）。详见 docs/HANDOFF.md §6.29。
+#   加了它，1:1 才是默认，合并只在长度差确实很大时才划算。
+#   默认 0.20（2026-09-18 A/B 实测，见 docs/HANDOFF.md §6.29 ⑦；
+#   `tools/dbg_ab.py` 可复现）：配合 `MATH_W=1.0`，两个「已知有病」的小节
+#   同时从相位错变成全 1:1 ——
+#     chapter7 3.9：e18>z1819 e19>z20 e2021>z21 → e18>z18 e19>z19 e20>z20 …
+#     chapter6 2.1：e3738>z373839 e39>z-        → e37>z37 e38>z38 e39>z39
+#   ⚠ pen 必须 ≥0.20 才压得住 MATH_W 引入的额外比值噪声（0.10 时 ch7 仍错）。
+#   `BIL_MERGE_PEN=0` 可退回旧行为做对照。
+MERGE_PEN = float(os.environ.get("BIL_MERGE_PEN", "0.20") or 0.0)
 
 
 def estimate_k(paras_en, paras_zh, default=1.85, k_range=(1.25, 2.25)) -> float:
@@ -507,6 +559,409 @@ def _find_anchors(en_ps, zh_ps, emass, zmass, enums, znums,
     return out
 
 
+# ------------------------------------------------- 枚举块吸附（相位错根治）
+
+# 中文枚举编号：(IIIa) / (a) / (i) / (1a) —— 全角半角括号、可选空白。
+# ⚠ 必须要求括号内**只有编号**（fullmatch 到右括号为止），否则
+# 「（见附录 A）」这类普通插入语也会被当成枚举编号。
+_ENUM_MARK = re.compile(
+    r"^[\s\u3000]*[（(]\s*"
+    r"(?P<num>(?:[IVXLC]{1,5}[a-z]?|[a-z]{1,3}|\d{1,2}[a-z]?))"
+    r"\s*[)）][\s\u3000]*")
+
+
+def _enum_key(t: str) -> str | None:
+    """取出段落开头的枚举编号；不是枚举段返回 None。
+
+    要求编号后面**紧跟正文**（不能整段就是「(a)」两字），且长度合理。
+    """
+    if not t:
+        return None
+    m = _ENUM_MARK.match(t)
+    if not m:
+        return None
+    rest = t[m.end():].strip()
+    if len(rest) < 4:              # 只有编号、没有正文 → 不是枚举段
+        return None
+    return m.group("num")
+
+
+def _enum_family(nums: Sequence[str]) -> bool:
+    """判断一串编号是否构成「同一族的枚举序列」。
+
+    接受：同形递增（a,b,c / i,ii,iii / I,II,III / IIIa,IIIb,IIIc / 1,2,3）
+    拒绝：乱序、跨族混排（a,b,I）—— 那更可能是巧合同形。
+    """
+    if len(nums) < 2:
+        return False
+    # 统一成「前缀 + 序号」形式
+    def split(n):
+        m = re.fullmatch(r"([IVXLC]*)([a-z]*|\d*)", n)
+        if not m:
+            return None
+        pre, tail = m.group(1), m.group(2)
+        return pre, tail
+    parts = [split(n) for n in nums]
+    if any(p is None for p in parts):
+        return False
+    pre0 = parts[0][0]
+    if any(p[0] != pre0 for p in parts):     # 前缀（罗马部分）必须一致
+        return False
+    tails = [p[1] for p in parts]
+    # 罗马数字尾（iii, iv, v…）或字母尾（a,b,c）或数字尾
+    def roman_ok(ts):
+        pat = re.compile(r"^[ivxl]+$")
+        return all(pat.fullmatch(x) or pat.fullmatch(pre0.lower() + x)
+                   for x in ts if x)
+    def alpha_ok(ts):
+        return all(len(x) == 1 and x.isalpha() for x in ts if x)
+    def num_ok(ts):
+        return all(x.isdigit() for x in ts if x)
+    if not (roman_ok(tails) or alpha_ok(tails) or num_ok(tails)):
+        return False
+    return len(set(nums)) == len(nums)       # 不允许重复编号
+
+
+def peel_enum_blocks(en_ps: Sequence, zh_ps: Sequence,
+                     en_visuals: Sequence = ()) -> list[int]:
+    """找出「中文枚举块」的下标：它对应的是英文侧的**公式图**，不是散文段。
+
+    背景（2026-09-18 用户点名，docs/HANDOFF.md §6.30）
+    --------------------------------------------------
+    中译本把英文原版的**公式图内容**排成了普通散文段 —— 典型是
+    《概率论沉思录》1.7 节：(IIIa)(IIIb)(IIIc) 三条 desiderata 在英文里是
+    三张公式图（eqn01_39a/b/c.jpg，可 OCR 出 "If a conclusion can be
+    reasoned out in more than one way…"），在中文里是**三段散文**。
+
+    ⇒ 中文侧凭空多出 3 块 → DP 只能用合并吸收 → **相位滑 3 格** →
+      "Finally…" / "Desiderata…" / "At this point…" 全部错配到别人的译文，
+      原位缺中文 → AI 补译 → 同一句中文出现两遍（用户 16 张截图）。
+
+    判据（四条同时成立，零 LLM）
+    -----------------------------
+    ① 中文侧存在**连续 ≥2 段**，每段都以枚举编号开头（`(IIIa)` / `(a)` / `(i)`）；
+    ② 这些编号构成**同一族的递增序列**（见 `_enum_family`）；
+    ③ **英文侧在相同位置没有对应的枚举散文段** —— 这是最关键的一条。
+       取「该 run 之前有多少个非枚举中文段」k_en，若英文侧存在**同族同编号**
+       的连续枚举段（长度 ≥ len(run)），说明两边都是散文、一一对应，
+       **不动**（实测 chapter12 §8.9「(1) 先验信息…(2)…」、chapter18 §13.7
+       「(1) 传递性…(2) 强主导…」都是这种真·正文枚举，第一版判据误伤）；
+    ④ 英文侧该位置的**紧邻**（`|after - k_en| ≤ 1`）有 ≥ len(run) 张公式/表格
+       visual —— 即英文那里确实是用公式图排的。
+
+    ⚠ ③④ 缺一不可：
+      * 只有 ③ 会漏掉「中文枚举、英文也是散文但块数不同」的轻微情形（可接受，
+        交给 DP 本身处理）；
+      * 只有 ④ 会大量误伤真·正文枚举（第一版实测 5 章 13 处里 2 处是误伤）。
+      —— 教训同 docs/HANDOFF.md §0 铁律 11：「报门禁全绿之前，先证明尺子能
+      测出该缺陷」；这里反过来，得先证明尺子**测出来的真是缺陷**。
+
+    返回：应被**移出段落流**的 zh 下标（升序）。移出的块由调用方挂到
+    对应公式组下面渲染 —— **内容不丢，只是不再参与 DP、不再污染配对**。
+    """
+    n_z = len(zh_ps)
+    if n_z < 2 or not en_ps:
+        return []
+    nums = [_enum_key(p.text or "") for p in zh_ps]
+    if not any(nums):
+        return []
+    en_nums = [_enum_key(p.text or "") for p in en_ps]
+    # 英文侧公式/表格数量
+    vis_afters = [getattr(v, "after", -1) for v in (en_visuals or [])
+                  if not getattr(getattr(v, "block", None), "junk", False)]
+    if len(vis_afters) < 2:
+        return []
+
+    drop = []
+    i = 0
+    while i < n_z:
+        if not nums[i]:
+            i += 1
+            continue
+        j = i
+        run = []
+        while j < n_z and nums[j]:
+            run.append(j)
+            j += 1
+        if len(run) >= 2 and _enum_family([nums[x] for x in run]):
+            # k_en：该 run 之前有多少个「非枚举」中文段
+            k_en = sum(1 for x in range(i) if not nums[x])
+            got = [nums[x] for x in run]
+            # ③ 英文侧同位置是否有「同族同编号」的枚举散文段
+            en_match = False
+            if k_en < len(en_ps) and en_nums[k_en]:
+                got_en = []
+                y = k_en
+                while y < len(en_ps) and en_nums[y]:
+                    got_en.append(en_nums[y])
+                    y += 1
+                # 编号集合有交集且英文段数够 → 视为「两边都是散文枚举」
+                if len(got_en) >= len(got) and set(got_en[:len(got)]) == set(got):
+                    en_match = True
+            if en_match:
+                i = j
+                continue
+            # ④ 紧邻的公式/表格 visual 数量够
+            near = sum(1 for a in vis_afters
+                       if a >= 0 and abs(a - k_en) <= 1)
+            if near >= len(run):
+                drop.extend(run)
+        i = j
+    return sorted(set(drop))
+
+
+# 英文侧「短定义段」：`A ≡ it will start to rain by 10 AM at the latest;`
+#   `B ≡ the sky will become cloudy before 10 AM.`
+#   `Ri ≡ Red ball on the ith draw.`  /  `H0 ≡ the thermometer is …`
+#
+# ⚠ 判据演进（2026-09-18，v1 → v4，教训记在 docs/HANDOFF.md §6.31）
+#   v1「短 + 含 =/≡ + **无句末标点**」——被一个反例推翻：
+#      `A ≡ it will start to rain by 10 AM at the latest;`   ← 分号结尾，命中 ✔
+#      `B ≡ the sky will become cloudy before 10 AM.`        ← **句号结尾，漏判** ✘
+#      同一族的定义行，标点风格不一致（原书排版如此），v1 只摘半族。
+#   ⇒ 改**位置式判据**（v4）：看的是「谁在等号左边」，不是「结尾什么标点」。
+#      定义行的本质形态 = **段首一个紧凑符号**紧跟 `≡` / `=` / `:=`。
+#   全书实测（prob 原始 55 个短段含 =/≡）：
+#      v1 命中 30（其中 18 条是 `and the relation dv = dF(…)` 这类**句子碎片**）
+#      v4 命中 19（**全部是真定义行**，且把 v1 漏掉的 9 条全部捞回）
+#   —— 即 v4 不只是「更全」，是「更准」：v1 的 30 里有 18 条噪音。
+_EN_DEF_EQ_RE = re.compile(r"≡|:=|(?<![<>≤≥≠=!+\-*/])=(?!=)")
+# 段首若是这些词，说明左边是句子而非符号
+_EN_DEF_STOP = {
+    "the", "this", "that", "then", "there", "these", "those", "where",
+    "when", "but", "and", "for", "or", "if", "as", "so", "now", "since",
+    "given", "with", "from", "in", "on", "at", "by", "we", "it", "is",
+    "are", "was", "were", "let", "thus", "hence", "here", "note", "see",
+}
+
+
+def _en_def_key(t: str) -> bool:
+    """英文段是不是「定义行」（`A ≡ …` / `Ri ≡ …` / `(1) 〈β〉 = α,`）。
+
+    位置式判据（零 LLM，见上方注释的 v1→v4 演进）：
+      ① 段落短（≤ 64 字）；
+      ② `≡` / `=` / `:=` 出现在**前 18 个字符内**（定义行不会把等号拖后）；
+      ③ 等号**左侧**（去掉枚举编号 `(1)`/`(A)`/`(iii)` 后）是一个
+         **无空格的紧凑符号**且 ≤ 12 字符；
+      ④ 左侧不是常见英文句首词、也不是纯小写长单词
+         （挡掉 `where α0 ≡ max(…)` / `For n = 37100 trials`）。
+
+    ⚠ 判据 ③「无空格」是关键：它一次性挡掉了 v1 的 18 条碎片
+      （`and the relation dv = dF (y, z) = …` 的 lhs 是 `and the relation dv`，
+       含空格 → 判否）。
+    """
+    s = (t or "").strip()
+    if not s or len(s) > 64:
+        return False
+    m = _EN_DEF_EQ_RE.search(s)
+    if not m or m.start() > 18:
+        return False
+    head = s[:m.start()].strip()
+    if not head:
+        return False
+    # 去掉开头的枚举编号 `(1)` `(A)` `(A′)` `(iii)`
+    h = re.sub(r"^[\(\[\{]\s*([0-9]{1,2}|[A-Za-z]′?|[ivxIVX]{1,4})\s*[\)\]\}]\s*",
+               "", head)
+    h = re.sub(r"^[.,，。:：;；]+", "", h).strip()
+    if not h or len(h) > 12:
+        return False
+    if re.search(r"\s", h):                    # ③ 紧凑符号，不许有空格
+        return False
+    if h.lower() in _EN_DEF_STOP:              # ④ 句子开头词
+        return False
+    if re.fullmatch(r"[A-Za-z]{3,}", h) and h.islower():
+        return False
+    return True
+
+
+def peel_en_defs(en_ps: Sequence, zh_ps: Sequence,
+                 en_visuals: Sequence = (),
+                 zh_visuals: Sequence = ()) -> list[int]:
+    """找出「英文短定义段」的下标：中文侧把它们**合成了一个公式块**。
+
+    背景（2026-09-18 用户点名「第一章 Implication 从一开始错到现在」）
+    ------------------------------------------------------------------
+    英文原版把一组定义排成**多个独立正文段**：
+
+        For example, let
+        A ≡ it will start to rain by 10 AM at the latest;
+        B ≡ the sky will become cloudy before 10 AM.
+
+    中译本却把它们**塞进同一个 `\\begin{array}` 公式块**（prob_zh.md 实测）：
+
+        $$
+        \\begin{array}{l} {A \\equiv \\text{最迟在上午10点开始下雨:}} \\\\
+                          {B \\equiv \\text{天空会在上午10点之前变得多云}.} \\end{array}
+        $$
+
+    ⇒ 中文侧只有 **1 块**（那个公式块，已进 visual 流），英文侧有 **3 段**
+      （`For example, let` + A≡ + B≡）→ e07/e08 在中文侧找不到对应物 →
+      DP 逐个判 1:0 → **e08 落单 → 触发 AI 补译**，而补译把 `≡` 抄成了
+      `≩`（用户截图里那个「B ≩ 上午10点之前天空变阴。」）。
+
+    判据（三条同时成立，零 LLM）
+    -----------------------------
+    ① 英文侧存在**连续 ≥1 段**是「短定义行」（见 `_en_def_key`）；
+    ② 中文侧的**同位置**（去掉英文空位后的第 k 段）**不是**短定义行
+       —— 即中文没有逐段对应（有对应的不动，交 DP 处理）；
+    ③ 英文侧该位置**紧邻**（`|after - k_en| ≤ 1`）有公式/表格 visual
+       —— 即中文侧确实有一个公式块在承接这些定义。
+
+    返回：应被**移出英文段落流**的 en 下标（升序）。移出的英文段由调用方
+    挂到对应公式组下面渲染（英文内容同样不丢）。**两侧对称**：§6.30 处理
+    「中文多出来的枚举散文」，本函数处理「英文多出来的定义行」。
+    """
+    n_e = len(en_ps)
+    if n_e < 2 or not zh_ps:
+        return []
+    flags = [_en_def_key(p.text or "") for p in en_ps]
+    if not any(flags):
+        return []
+    zh_flags = [_en_def_key(p.text or "") for p in zh_ps]
+    vis_afters = [getattr(v, "after", -1) for v in (en_visuals or [])
+                  if not getattr(getattr(v, "block", None), "junk", False)]
+    if not vis_afters:
+        return []
+
+    drop: list[int] = []
+    i = 0
+    while i < n_e:
+        if not flags[i]:
+            i += 1
+            continue
+        j = i
+        run = []
+        while j < n_e and flags[j]:
+            run.append(j)
+            j += 1
+        # ② 中文侧同位置是否也逐段是定义行 → 是则不动（两边一一对应，
+        #    实测 14_Chapter05 §5.6 中文 md 有 `$A \equiv$ 我的马…`，不该摘）。
+        k_zh = sum(1 for x in range(i) if not flags[x])
+        if k_zh < len(zh_ps) and zh_flags[k_zh]:
+            i = j
+            continue
+        # ③ 英文侧该位置紧邻有公式/表格 visual？
+        #    ⚠ 2026-09-18 实测修正：这里原先用 `abs(a - k_zh) <= 2` 把
+        #    **英文图位**和**中文段下标**比 —— 两个坐标系不同，纯属巧合能对。
+        #    §1.1 的真凭据在**中文侧**：ZH §1.1 的 `after=6` 那个 formula
+        #    （`\begin{array}{l} {A \equiv 最迟在上午10点开始下雨} \\ {B \equiv 天空…}`）
+        #    就是吸收 A≡/B≡ 的那个 array 块。所以要在**中文 visual**里找。
+        #    容差 ±2：一个 array 块顶替了多个英文段，位置自然有漂移。
+        zh_vis = [getattr(v, "after", -1) for v in (zh_visuals or [])
+                  if not getattr(getattr(v, "block", None), "junk", False)]
+        near_zh = sum(1 for a in zh_vis if a >= 0 and abs(a - k_zh) <= 2)
+        near_en = sum(1 for a in vis_afters if a >= 0 and abs(a - k_zh) <= 2)
+        if near_zh >= 1 or near_en >= 1:
+            drop.extend(run)
+        i = j
+    return sorted(set(drop))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 英文脚注段吸附（2026-09-18 §6.33）
+# ─────────────────────────────────────────────────────────────────────────
+# 症状（用户点名「3.11.1 节」）：
+#   英文 §3.11.1 的正文是 e402..e407（6 段），章末还挂着两条**脚注**：
+#       e408 = "[1] In his presentation at the Ninth Colston Symposium, Popper…"
+#       e409 = "[2] In a similar way, exponential functions appear…"
+#   中文侧同小节只有 6 段正文（z406..z411），脚注在**别的小节**（译本的注区）。
+#   ⇒ 输入变成 8:6。DP 实测输出：
+#       e0↔z0 e1↔z1 e2↔z2 e3↔∅ e4↔z3 e5↔∅ e6↔[z4,z5] e7↔∅
+#   即**脚注 e6 把 z4+z5 吞了**（c=0.9, r=1.007 看着很"合理"），把
+#   e3/e5 挤成孤儿 → 渲染时 AI 补译 → 同一句中文两遍（用户截图症状）。
+#
+# ⚠ 关键实测（k 敏感性，8:6 输入）：
+#       k=1.1/1.2   → 2:1 合并解（e0,e1↔z0 …）   **更糟**
+#       k=1.39/1.5  → e3↔∅ e5↔∅ 孤儿解            ← pipeline 拿到的就是这个
+#       k=1.7       → e4↔∅ e5↔∅
+#       k=2.0       → e6↔∅ e7↔∅                   ← 对了！脚注被正确排除
+#   而**去掉脚注的 6:6 输入在任何 k 下都稳定给出全 1:1 正确解**。
+#   ⇒ 脚注是纯噪音，它留在主链上就会污染 DP；摘掉它 = 一举修复。
+#
+# 判据（三条同时成立，零 LLM）
+# -----------------------------
+# ① 英文段是**注区形态**：以 `[n]` / `n.` 开头（`_en_note_key`）；
+# ② 该英文段的**同位置中文**不是注区形态 —— 即中文没有逐段对应；
+# ③ 该英文段处于**尾部连续注区**：从它起到小节末，注区形态段占比 ≥ 60%
+#    —— 挡掉正文里偶然以 `[1] …` 引用编号开头的正常段落。
+#
+# 返回：应被移出英文段落流的 en 下标（升序）。移出的英文段由调用方按
+# 「英文脚注」单独渲染（内容不丢，版式照抄英文原版 —— 见铁律 10）。
+#
+# ⚠ 形态强度是**两级**的（2026-09-18 全书实测后收紧）：
+#   `[n] …`  方括号    → 脚注的强特征（英文原版脚注一律这么排）
+#   `(n) …` / `n. …`   → **弱特征**，正文枚举段也长这样，**不许单独作判据**
+#   全书粗扫 226 个「注区形态」段里，绝大多数是 `(1) the prior information…`
+#   这类**真·正文枚举**（Chapter13 的 `(1) Transitivity: …` 是决策论公理、
+#   Chapter08 的 `(1) the prior information I is the same in all;` 是正文明细）。
+#   若把弱形态也当脚注摘掉，会重演 §6.30 第一版「误伤真·正文枚举」的事故。
+_NOTE_STRONG_RE = re.compile(r"^\s*\[\s*\d{1,3}\s*\]\s+\S")
+_NOTE_WEAK_RE = re.compile(r"^\s*(?:\(\s*\d{1,3}\s*\)|\d{1,3}\s*[.、])\s+\S")
+
+
+def _en_note_key(t: str, strong_only: bool = True) -> bool:
+    """英文段是不是「脚注段」（`[1] In his presentation…`）。
+
+    `strong_only=True`（默认）只认 `[n]` 方括号形态 —— 这是英文原版脚注的
+    唯一排版约定；`(n)`/`n.` 形态在正文里同样常见，不可单独作判据。
+    """
+    s = (t or "").strip()
+    if not s:
+        return False
+    if _NOTE_STRONG_RE.match(s):
+        return True
+    if strong_only:
+        return False
+    return bool(_NOTE_WEAK_RE.match(s))
+
+
+def peel_en_notes(en_ps: Sequence, zh_ps: Sequence) -> list[int]:
+    """找出「英文脚注段」的下标：中文侧在小节内没有对应物（注区在别处）。
+
+    背景与实测见上方 §6.33 注释块。核心事实：**6:6 输入全 k 皆正确，
+    8:6（含脚注）输入全 k 皆错** —— 摘掉脚注即修复，无需调任何常数。
+
+    判据（三条同时成立，零 LLM）
+    -----------------------------
+    ① 英文段是**脚注强形态**（`[n] …`，见 `_en_note_key`）；
+    ② 该英文段的**同位置中文**不是注区形态 —— 即中文没有逐段对应；
+    ③ 该英文段处于**尾部连续注区**：从它起到小节末，注区段占比 ≥ 60%
+       —— 挡掉正文里偶然以 `[1] …` 开头、后面还接着大段正文的情形。
+    """
+    n_e = len(en_ps)
+    if n_e < 2 or not zh_ps:
+        return []
+    flags = [_en_note_key(p.text or "") for p in en_ps]
+    if not any(flags):
+        return []
+    zh_flags = [_en_note_key(p.text or "") for p in zh_ps]
+
+    drop: list[int] = []
+    i = 0
+    while i < n_e:
+        if not flags[i]:
+            i += 1
+            continue
+        j = i
+        run = []
+        while j < n_e and flags[j]:
+            run.append(j)
+            j += 1
+        # ③ 尾部连续注区：从 run 起到末尾，注区段占比 ≥ 60%
+        tail = flags[i:]
+        if sum(tail) * 5 < len(tail) * 3:
+            i = j
+            continue
+        # ② 中文同位置是否也是注区形态 → 是则两边对应，不动
+        k_zh = sum(1 for x in range(i) if not flags[x])
+        if k_zh < len(zh_flags) and zh_flags[k_zh]:
+            i = j
+            continue
+        drop.extend(run)
+        i = j
+    return sorted(set(drop))
+
+
 def align_section(en_ps: Sequence, zh_ps: Sequence,
                   k: float | None = None,
                   k_range=(1.25, 2.25),
@@ -528,12 +983,14 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
         k = sum(zc) / max(1, sum(ew))
     k = min(max(k, k_range[0]), k_range[1])
     emass = [w * k for w in ew]
-    zmass = [c for c in zc]
+    # 中文质量补上公式/拉丁/数字（见 zh_mass 长注释）：两侧口径对称后，
+    # 公式密集的短中文段才不会被判成「配不上它的英文段」而并进上一组。
+    zmass = [zh_mass(p.text, k) for p in zh_ps]
     avg = max(1.0, sum(emass) / n)
     enums = [numbers(p.text) for p in en_ps]
     znums = [numbers(p.text) for p in zh_ps]
 
-    OPS = [(1, 1), (1, 2), (2, 1), (1, 0), (0, 1)]
+    OPS = list(OPS_WIDE)
 
     def pair_cost(i, a, j, b):
         if a == 0 and b == 0:
@@ -547,6 +1004,8 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
         cost = abs(eM - zM) / avg
         ratio = (zM + 1.0) / (eM + 1.0)
         cost += 1.2 * max(0.0, abs(math.log(ratio)) - 0.35)
+        if MERGE_PEN and (a != 1 or b != 1):
+            cost += MERGE_PEN
         if a == 1 and b == 1:
             shared = enums[i] & znums[j]
             if shared:
@@ -616,6 +1075,250 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
             p.r = 0.0
             p.c = 0.0
     return pairs
+
+
+# ───────────────────────── 不确定窗口探测（2026-09-18，§6.35）────────────────
+#
+# ★ 这一节解决的是**方法论问题**，不是又一个形态判据。
+#
+# 背景（用户 2026-09-18 原话）
+# ----------------------------
+#   「不要老是要按书调参吧？还是我表达的不好，能否做成一个泛化的解决方案？
+#     适配各种电子书。它没必要说针对这个书的具体各种场景来写判据。」
+#
+#   事实核对：在这之前，仓库里已经有三条「吸附」判据 ——
+#     peel_enum_blocks (§6.30)：中文段以 `(IIIa)/(a)/(i)` 枚举编号开头
+#     peel_en_defs     (§6.31)：英文段是 `A ≡ …` 形状的短定义行
+#     peel_en_notes    (§6.33)：英文段以 `[n] …` 开头
+#   三条都是**把某本书的排版形态烧进了代码**。
+#   §1.5 的「幂等性：$\left\{\begin{array}…」是第四个形态 →
+#   三条判据全不命中 → 又要加第四条正则。这就是「按书调参」。
+#
+# 泛化的判据：不问「长什么样」，只问「DP 有没有把握」
+# --------------------------------------------------
+#   一个中文段，如果英文侧**根本没有对应的散文段**（因为英文是图/表/公式），
+#   那么无论 DP 怎么调它，都只能：
+#     (a) 判它 zh-only，或 (b) 用 (n,1) 把它吸收进邻居的组。
+#   这两种处置都不稳定 —— **对 k 敏感**。于是：
+#
+#     在 k 的合理区间内采样，若一个中文段在不同 k 下被处置的方式不一致
+#     （一会儿独有、一会儿有对应），⇒ **DP 自己举手说「我这里没把握」**。
+#
+#   这条信号是**跟书无关**的：它不关心公式是图片、LaTeX、表格还是小程序，
+#   只关心「DP 是否拿得准」。同理它也不需要我先读书。
+#
+# ⚠ 但它**只定位窗口，不定最终裁决**（见 §0 定调 2）：
+#   实测 §1.5 的多 k 分歧名单会混入 ZH[8]/ZH[11] 这类「被带偏」的段
+#   （k 是全局常数，一个段的歧义会污染整条序列）。所以探测输出交给
+#   **LLM 在窗口内做块级语义裁决**（`resolve_uncertain_zh` 只负责缩小范围）。
+#   定调 2 的原话：「DP 当先验/分块/底线，LLM 在窗口内做语义裁决；
+#   触发看『DP 不确定度 + 结构性疑点』」。
+
+# k 采样网格（相对 estimate_k 的比例）。不用绝对 k 值 —— estimate_k 本身
+# 会因为「多出来的块」被拉高（实测 §1.5：1.3905，去掉 6 块后 1.3455），
+# 所以以它为基准按比例扫，才能在书与书之间迁移。
+_PROBE_RATIOS = (0.72, 0.79, 0.86, 0.93, 1.00, 1.07, 1.14, 1.21, 1.33, 1.44)
+
+# 信号量闸门（2026-09-18 §6.36 收口）：中文比英文至少多几块，才值得问 LLM。
+# 实测依据（prob 全书 66 个 slack>0 小节）：slack=1 有 49 个，几乎全是良性
+# （小节末多一段中文 / 标题只算一侧 / 跨小节碎片）；真正的「图写成散文」是
+# **成片**的（§1.5 = 8 块、§7.2 = 9 块）。3 是「成片」的最小值，
+# 也是任何书都适用的下限（一段被改写成散文不会只有 1~2 句）。
+_MIN_SLACK = 3
+
+
+def probe_uncertain_zh(en_ps: Sequence, zh_ps: Sequence,
+                       k0: float | None = None,
+                       ratios: Sequence[float] = _PROBE_RATIOS,
+                       min_votes: int = 3) -> tuple[list[int], dict]:
+    """找出「DP 认为中文侧多出块」的候选。（零形态知识，零 LLM）
+
+    返回 (candidate_zh_indices, info)。info 供诊断/埋点，含每段的票数。
+
+    两类候选（**都必须交给 LLM 语义确认**，见下）
+    --------------------------------------------
+    A. **摇摆段**：`only` 与 `paired` 都出现过 ≥ min_votes 次。
+       同一段在不同 k 下一会儿判独有、一会儿判有对应 ⇒ DP 没把握。
+    B. **稳定独有段**：`only` 出现次数 ≥ 总采样数的 `strong_ratio`（默认 0.9），
+       即几乎所有 k 下 DP 都判它「英文侧没有对应物」。
+
+    ⚠ 为什么两类都要（2026-09-18 实测教训）：
+      只按 A 抓，会漏掉 §1.5 的 ZH[12]/[13]/[15]（三条性质）—— 它们在
+      10/10 个 k 下都被判独有，属于「稳定独有」而非「摇摆」，A 判据看不见。
+      但 B **又太宽**：`peel` 摘出的块、真·中文独有的注释段也会「稳定独有」。
+      ⇒ 所以本函数**只做范围收缩**，最终裁决必须由 LLM 逐块回答
+        「英文侧是散文还是图」（llm.judge_zh_blocks）。
+
+    ⚠ 空列表是**正常结果**：绝大多数小节 DP 很稳。全书实测（prob）54 个小节
+      里只有 3 个 slack>0，其中需要裁决的只有 §1.5。
+
+    ★★★ 2026-09-18 事故后的**收口**（p18 → p19）
+    --------------------------------------------
+    上面两条判据**单独使用会爆炸**。p18 实测：全书 `judge_zh` 触发 **91 次**、
+    弃 **207 段**（设计预期 = §1.5 的 8 段）；其中两次调用 `n=81 / drop=49`，
+    且 `n_vis=0`（该节一个图表都没有）—— LLM 拿不到「英文侧是图」的任何证据，
+    只能靠文本瞎猜，一次丢掉 49 段译文，直接把 ch31 参考文献搞成**重复段**
+    （`Shaw, D. (1976)` / `Siegmann, D. (1985)` 各出现两遍，DBG 漂移链 37→40）。
+
+    根因**不是** LLM 笨，而是**闸门太宽**：
+      ① 上游只要求 `structural_slack > 0`（中文比英文多 **1** 块就放行）；
+      ② 本函数没有任何**上限**——B 判据在 slack=8 时把 8 个多余块全标，
+         在中英块数差更大的小节（条目式：参考文献/术语表/索引）能标到 81 个。
+    ⇒ 收口三条（都零形态知识，仍可跨书迁移）：
+      **(1) 上限 = 结构余量**：候选数不得超过 `slack`（中文多出几块，就最多
+          怀疑几块）。多余块是「谁没有对应物」的直接计数，与排版形态无关。
+      **(2) 候选必须成簇**：真正的「多出来的块」是**连续一小段**（§1.5 是 8 块
+          连着）；参考文献章那种「全节散发」的独有段不是「多出来的块」，
+          是**条目本身中英不同构** —— 属于另一类问题，不该走这条路。
+          实现：只保留**最长连续候选串**，且该串长度 ≤ slack。
+      **(3) 无图表则免谈**：本机制的**唯一**语义依据是「英文侧那块是图/公式，
+          中文把它写成了散文」。一个小节如果**没有任何图表**（`n_vis=0`），
+          这个前提就不成立 —— 直接不进入 LLM，而不是让 LLM 裸判。
+          （由调用方在 pipeline 侧判 `n_vis`，本函数把该事实报在 info 里。）
+    """
+    n_e, n_z = len(en_ps), len(zh_ps)
+    info: dict = {"votes": {}, "n_k": 0, "k0": k0, "n_en": n_e, "n_zh": n_z,
+                  "strong": 0, "slack": n_z - n_e, "cand_raw": 0,
+                  "dropped_by_cap": 0, "dropped_by_cluster": 0}
+    if n_e < 2 or n_z < 2:
+        return [], info
+    slack = n_z - n_e
+    if slack <= 0:
+        # 中文不多块 ⇒ 压根没有「中文凭空多出」的余地
+        return [], info
+    if k0 is None:
+        k0 = estimate_k(en_ps, zh_ps)
+        info["k0"] = k0
+
+    votes: dict[int, dict] = {j: {"only": 0, "paired": 0} for j in range(n_z)}
+    n_k = 0
+    for r in ratios:
+        k = k0 * r
+        pr = align_section(en_ps, zh_ps, k=k)
+        seen = set()
+        for p in pr:
+            for j in (p.zh or []):
+                seen.add(j)
+                votes[j]["paired" if p.en else "only"] += 1
+        # 该 k 下没出现在任何 pair 的段（不该发生，防御）
+        for j in range(n_z):
+            if j not in seen:
+                votes[j]["only"] += 1
+        n_k += 1
+
+    strong = max(min_votes + 1, int(n_k * 0.9))
+    raw = []
+    for j in range(n_z):
+        v = votes[j]
+        if v["only"] >= strong:                       # B 稳定独有
+            raw.append(j)
+        elif v["only"] >= min_votes and v["paired"] >= min_votes:   # A 摇摆
+            raw.append(j)
+    info["votes"] = votes
+    info["n_k"] = n_k
+    info["strong"] = strong
+    info["cand_raw"] = len(raw)
+
+    # ── 收口 (0)：**信号量闸门** —— slack 太小就不值得怀疑 ────────────────
+    # ★★★ 2026-09-18 实测数据（prob 全书 66 个 slack>0 的小节）：
+    #     slack=1 : 49 个   ← 占绝对多数
+    #     slack=2 :  8 个
+    #     slack>=3:  9 个
+    #   `slack=1` 的小节几乎全是**良性**的：小节末尾多一段中文（标题、
+    #   脚注、译者注、跨小节句子碎片），或英文侧标题不计入段流。
+    #   把它交给 LLM，等于「拿一个必然噪声的疑点去问」→ 实测 70% 被回 N
+    #   → 无故丢一段中文。**真正的「图写成散文」是成片的**（§1.5 = 8 块，
+    #   §7.2 = 9 块），不会恰好 1 块。
+    #   ⇒ 闸门：`slack` 必须 ≥ `_MIN_SLACK`（默认 3）。这条**与书无关**：
+    #     它只假设「排版形态被改写成的散文不止一句」—— 对任何书都成立。
+    if slack < _MIN_SLACK:
+        info["blocked_by_min_slack"] = True
+        return [], info
+
+    # ── 收口 (2)：只留**最长连续候选串**（真正的「凭空多出的那一段」）──────
+    best: list[int] = []
+    cur: list[int] = []
+    for j in raw:
+        if cur and j == cur[-1] + 1:
+            cur.append(j)
+        else:
+            if len(cur) > len(best):
+                best = list(cur)
+            cur = [j]
+    if len(cur) > len(best):
+        best = list(cur)
+    if len(best) != len(raw):
+        info["dropped_by_cluster"] = len(raw) - len(best)
+
+    # ── 收口 (1)：上限 = 结构余量（中文多几块，就最多怀疑几块）────────────
+    if len(best) > slack:
+        info["dropped_by_cap"] = len(best) - slack
+        # 保留**最靠后**的 slack 个：多出的块通常在序列尾部被吸收
+        best = best[-slack:]
+    info["cand"] = len(best)
+    return best, info
+
+
+def judge_windows(en_ps: Sequence, zh_ps: Sequence,
+                  cand: Sequence[int], k: float | None = None,
+                  win: int = 2) -> list[dict]:
+    """给候选块生成**位置正确**的 LLM 裁决上下文。
+
+    ⚠ 存在的唯一理由（2026-09-18 实测事故）
+    ----------------------------------------
+    绝不能用中文下标去索引英文段。§1.5 中英块数差 8，`en[j-2:j]` 从第 8 块
+    起完全错位 —— ZH[12]（幂等性）拿到的「英文上文」其实是英文第 10/11 段，
+    跟它毫无关系。实测后果：8 块里 6 块被 LLM 误判为「该丢」。
+
+    正确做法：**先跑一次 DP**，用配对结构定位该块的邻居 ——
+    取「与该块所在 pair 相邻的前 win 个有英文的 pair」的英文段作上文，
+    后 win 个作下文。这样上下文永远是位置正确的（跟块数差无关）。
+
+    返回 [{"zh": 文本, "before": [英文…], "after": [英文…]}]，与 `cand` 等长。
+    """
+    if k is None:
+        k = estimate_k(en_ps, zh_ps)
+    pr = align_section(en_ps, zh_ps, k=k)
+    # zh 下标 -> pair 序号
+    j2p = {}
+    for pi, p in enumerate(pr):
+        for j in (p.zh or []):
+            j2p[j] = pi
+    out = []
+    for j in cand:
+        pi = j2p.get(j)
+        before, after = [], []
+        if pi is not None:
+            # 往上找有英文的 pair
+            q = pi - 1
+            while q >= 0 and len(before) < win:
+                if pr[q].en:
+                    before = [en_ps[i].text or "" for i in pr[q].en] + before
+                q -= 1
+            # 往下找有英文的 pair
+            q = pi + 1
+            while q < len(pr) and len(after) < win:
+                if pr[q].en:
+                    after += [en_ps[i].text or "" for i in pr[q].en]
+                q += 1
+        out.append({"zh": zh_ps[j].text or "",
+                    "before": before[-win:], "after": after[:win]})
+    return out
+
+
+def structural_slack(en_ps: Sequence, zh_ps: Sequence) -> int:
+    """块数差：中文侧比英文侧多出多少块。
+
+    **这是最廉价的「结构性疑点」指标**（不需要跑 DP）：英文原版用图/表排
+    的内容，中译本排成了散文段 → 中文侧块数凭空多出。全书实测（prob）：
+    只有 3 个小节 slack>0（§1.7=3、§1.5=8、§1.6=1）—— 即这个指标本身
+    就把「需要看的小节」从 54 个收缩到 3 个。
+
+    ⚠ slack>0 **不等于**有缺陷：中译本把两段合成一段也会让 slack 变负，
+      把一段拆成两段会让 slack 变正。它只是「值得看一眼」的信号。
+      真正的裁决必须看内容（LLM 窗口裁决）。
+    """
+    return len(zh_ps) - len(en_ps)
 
 
 # ---------------------------------------------------------------- 倾斜修正（E4）
@@ -767,7 +1470,7 @@ def fix_skew(pairs, en_ps, zh_ps, k: float, r_lo=1.2, r_hi=3.0,
         for p in conv:
             if p.en and p.zh:
                 eM = sum(en_words(en_ps[x].text) * k for x in p.en)
-                zM = sum(han_chars(zh_ps[x].text) for x in p.zh)
+                zM = sum(zh_mass(zh_ps[x].text, k) for x in p.zh)
                 p.r = zM / max(1.0, sum(en_words(en_ps[x].text) for x in p.en))
                 dev = abs(math.log((zM + 1.0) / (eM + 1.0)))
                 p.c = max(0.05, min(1.0, 1.0 - dev / 0.9))

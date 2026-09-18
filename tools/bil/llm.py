@@ -106,7 +106,130 @@ class RateLimiter:
             time.sleep(max(0.01, wait))
 
 
+# ───────────────────────── zh 块级裁决（2026-09-18，§6.35）────────────────
+# 「不确定窗口」内，逐块判定这些中文段是否该被丢弃（= 英文侧是图/公式，
+# 而非独立散文段）。见 align.probe_uncertain_zh 的长注释。
+#
+# ★ 提示词设计约束（用户 2026-09-18 原话）
+# -----------------------------------------
+#   「llm 判决的高效和缓存命中，就是设计 llm 的输入要简洁，输出也是，
+#     这样高效也省钱。此外我的 llm 模型是 qwen3.7-flash 太过复杂的他不会，
+#     因为用其他模型贵，所以你要设计好提示词和如何提问 llm」
+#
+# 据此定下五条：
+#   ① **逐块二元问答**，不做多块 JSON —— 弱模型多块输出极易漏项/崩格式；
+#   ② **单字符输出** `Y` / `N`，解析容错到「挑出第一个 Y/N」；
+#   ③ **输入只给该块 + 邻域**，不给全节（弱模型长上下文里会迷失）；
+#   ④ **每个块一次请求**，键 = 该块文本 + 邻域 → 复跑时逐块命中缓存
+#      （改一处只失效一块，不像整节请求那样全废）；
+#   ⑤ 提示词**全中文、短句、无嵌套条件** —— flash 级模型读不了长规则。
+_JUDGE_SYSTEM = (
+    "你判断：中文段落是否由英文的图片或公式改写而来。\n"
+    "若中文这段的内容，英文里是用**图片/公式**表示的，"
+    "英文正文并没有相应的文字段落，回答 N。\n"
+    "否则（英文里有对应的文字段落）回答 Y。\n"
+    "拿不准就回答 Y。只回答一个字母，不要解释。"
+)
+
+
 class LLM:
+
+    def _judge_user(self, zh: str, before: list[str], after: list[str],
+                    visuals: list[str]) -> str:
+        """拼**单块**裁决的 user 段。
+
+        ⚠ 必须**确定性**：同样的输入必须拼出同样的字符串，否则缓存永不命中
+        （见 `_key`）。所以：
+          * 邻居取**固定条数**（不按长度截断到变量长度）；
+          * 每段文本按**固定上限**截断（截断点稳定）；
+          * 不带行号、不带时间、不带任何运行期变量。
+        """
+        def _clip(s: str, n: int) -> str:
+            s = (s or "").replace("\n", " ").strip()
+            return s if len(s) <= n else s[:n] + "…"
+
+        lines = []
+        if before:
+            lines.append("英文上文：")
+            lines += [f"  {_clip(t, 180)}" for t in before]
+        if visuals:
+            lines.append("英文此处有这些图/公式：")
+            lines += [f"  {_clip(v, 60)}" for v in visuals]
+        if after:
+            lines.append("英文下文：")
+            lines += [f"  {_clip(t, 180)}" for t in after]
+        lines.append("\n要判断的中文段落：")
+        lines.append(_clip(zh, 400))
+        lines.append("\n英文里这一段的对应物是文字段落（Y），还是图片/公式（N）？")
+        return "\n".join(lines)
+
+    def judge_zh_block(self, zh: str, before: list[str],
+                       after: list[str], visuals: list[str],
+                       title: str = "") -> bool | None:
+        """**单块**裁决：这段中文是否「英文侧只有图/公式，没有散文」。
+
+        返回 True（英文侧是图 → 该丢弃）/ False（有对应散文 → 保留）/
+        None（未启用或解析失败 → **不裁决**，调用方保持原样）。
+
+        逐块独立请求的设计理由见上方 `_JUDGE_SYSTEM` 的注释（含用户原话）。
+        """
+        if not self.enabled or not (zh or "").strip():
+            return None
+        user = self._judge_user(zh, before, after, visuals)
+        out = self.chat(_JUDGE_SYSTEM, user)
+        self._trace("judge_zh", hit_only=0, n_before=len(before),
+                    n_after=len(after), n_vis=len(visuals))
+        if not out:
+            return None
+        # 单字符输出的**容错解析**：flash 级模型有时回「N。」「答案是 N」
+        # 「No」→ 从前往后挑第一个出现的 Y/N（大小写不敏感）。
+        m = re.search(r"[YyNn]", out)
+        if not m:
+            return None
+        return m.group(0).upper() == "N"
+
+    def judge_zh_blocks(self, zh_blocks: list[dict],
+                        visuals: list[str] | None = None) -> dict:
+        """对一批疑似块逐块裁决。**每块自带上下文**（调用方负责提供）。
+
+        ⚠ 为什么上下文由调用方给（2026-09-18 实测教训）：
+          早期版本签名是 `(en_lines, zh_lines)`，内部用**中文下标**去索引
+          **英文段**（`en_lines[j-2:j]`）。中英块数不等时（§1.5 差 8 块）
+          这个索引从第 8 块起就**完全错位** —— ZH[12] 的「英文上文」被取成
+          英文第 10/11 段，压根不是它的邻居。实测后果：8 块里 6 块被误判 N。
+          ⇒ 上下文的**定位**必须由懂对齐的人给（pipeline 用 DP 的 pair 结构
+            取「前一个配对组的英文」），llm 层不许自己猜下标。
+
+        zh_blocks: [{"zh": 块文本, "before": [英文上文…], "after": [英文下文…]}]
+        返回 {**位置下标**（在 zh_blocks 里的序号）: True}（True = 该丢弃）。
+        """
+        if not self.enabled or not zh_blocks:
+            return {}
+        reqs = []
+        for i, d in enumerate(zh_blocks):
+            z = (d.get("zh") or "").strip()
+            if not z:
+                continue
+            reqs.append((i, self._judge_user(
+                z, list(d.get("before") or []), list(d.get("after") or []),
+                list(visuals or []))))
+        res: dict[int, bool] = {}
+        if not reqs:
+            return res
+        if len(reqs) >= 4:
+            outs = self.chat_many([(_JUDGE_SYSTEM, u) for _, u in reqs])
+        else:
+            outs = [self.chat(_JUDGE_SYSTEM, u) for _, u in reqs]
+        for (i, _u), out in zip(reqs, outs):
+            if not out:
+                continue
+            m = re.search(r"[YyNn]", out)
+            if m and m.group(0).upper() == "N":
+                res[i] = True
+        self._trace("judge_zh", n=len(reqs), drop=len(res),
+                    n_vis=len(visuals or []))
+        return res
+
     def __init__(self, base_url=None, api_key=None, model=None,
                  cache_dir=None, temperature=0.0, timeout=180,
                  workers=32, rpm=2500, max_retry=4, no_thinking=None,

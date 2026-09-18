@@ -68,6 +68,9 @@ body { margin: 0 5%; line-height: 1.5; }
                     padding-bottom: .45em; }
 /* 未被配对覆盖、兜底渲染的中文段：左细线标出，便于人工挑错 */
 .zh-orphan { border-left: 2px solid rgba(255,183,77,.5); padding-left: .5em; }
+/* 枚举块吸附（§6.30）：中译本把英文原版公式图的内容排成了散文，从段落流摘出、
+   挂在对应公式组下面。左细线同 orphan，但颜色区分（蓝），便于门禁/人工识别。 */
+.zh-enum { border-left: 2px solid rgba(100,181,246,.55); padding-left: .5em; }
 h2.ct { line-height: 1.35; }
 /* 引用块（英文原书用 blockquote 排格言/诗歌，中文侧跟随同格式） */
 blockquote { margin: .9em 0 .9em 1.2em; padding-left: .9em;
@@ -512,6 +515,7 @@ def _disp_tex(html_str: str) -> str:
 
 _EQS_COLLECTED = False             # 本进程已预渲染过（build_html+build_epub 共用）
 _DROPPED_ZH_ONLY: list = []        # 被丢弃的「中文独有正文段」样本（防静默）
+_JUDGE_FRAG: list = []             # 被「英文侧未收尾」判据拦下的伪标题片段（§6.36）
 
 
 def _collect_eqs(results) -> None:
@@ -1102,6 +1106,69 @@ def _looks_like_zh_title(z: str) -> bool:
     return looks_like_zh_title(z)
 
 
+# 中文**句子残片**的特征词（2026-09-18 §6.35）。
+# 这些是「公式图把正文切断后掉下来的半句话」的开头 —— 实测
+# `因为`（紧跟公式 (3.33)）、`面的语句应该是`（紧跟 (22.26)）。
+# 判据只在「紧跟公式表」的位置上启用，且只用来**否决标题**（宁可漏）。
+_FRAG_START = re.compile(
+    r"^(因为|所以|因此|于是|但是|然而|不过|而且|并且|另外|同时|反之|"
+    r"也就是说|换句话说|可见|从而|其实|当然|注意|总之|同样|此外|例如|"
+    r"面的|上面|上述|下面|其中|由此|代入|整理|展开|化简|若|设|即|等于|"
+    r"的|则|而且|因为|这就是|这表明|这说明)")
+# 句末语气/停顿（真标题不会有）
+_FRAG_END = re.compile(r"[。，、；：,;:…]$")
+
+
+def _looks_like_fragment(z: str) -> bool:
+    """短中文段是不是「被公式切断的正文残片」（而非标题）。
+
+    ⚠ 只在**紧跟公式表/公式图**的位置上用作否决判据（见 `_after_eq` 处），
+    不是通用标题判据。宁可漏判残片（退化成旧行为），也不许误伤真标题。
+    """
+    s = (z or "").strip()
+    if not s:
+        return False
+    return bool(_FRAG_START.match(s) or _FRAG_END.search(s))
+
+
+# ★ 跨书泛化的「伪标题」判据（2026-09-18 §6.36）。
+#
+# 背景：`_FRAG_START` / `looks_like_zh_title` 的连接词黑名单是**词表**——
+# 每换一本新书，就会冒出词表没收录的残片开头词。实测 p20 新冒出来两个：
+#   `验几率是`（原文 `…仅取决于阶乘[公式图]验几率是`）
+#   `第三个观测值的预测概率密度为`（原文 `…观测值 x1 和 x2 ，那么[公式图]第三个…`）
+# 两者都是**公式图把一句中文从中间劈开**后掉下来的尾巴，词表拦不住
+# （既不以「因为/所以」开头，也没有句末标点）。这正是用户反对的
+# 「按书调参」——修一个词，下本书再冒一个。
+#
+# **主判据**（在调用处，`_after_eq` 分支里）：短中文段紧跟公式时，若英文侧
+# 在**同一位置登记了标题**（`en_heads_at`），它就是真标题（`历史题外话` ↔
+# `4.6.1 Historical digression`）；没有标题则说明英文那边是散文句 → 是残片。
+# 这是结构性、零词表、任何双语书都成立的判据。
+#
+# **兜底判据**（本函数）：英文侧没有标题登记时，再看该 zh 段之前的英文块
+# 是不是「一条正在进行的散文句」——是则确定是残片。两道合起来既不误杀
+# 真标题，也不放过词表外的残片。
+_EN_TERMINAL_RE = re.compile(r"[.!?:;。！？：；][\"'”’)\]]*\s*$")
+
+
+def _en_looks_like_running_prose(t: str) -> bool:
+    """英文块像**未结束的散文句**（→ 其后紧跟的短中文段多半是残片）。
+
+    判据（全部结构/长度，无词表）：
+      ① 去空白后长度 > 60（标题短，句子长）；
+      ② 不以句末终结符收尾（`.` `?` `!` `:` `;` 及右引号/括号）——
+         未收尾 = 句子还在继续；
+      ③ 含空格（是多词短语，不是一个词条）。
+    """
+    s = " ".join((t or "").split())
+    if len(s) <= 60:
+        return False
+    if " " not in s:
+        return False
+    return not _EN_TERMINAL_RE.search(s)
+
+
 def _cap_consumed(sec, p) -> bool:
     """该 pair 的中文侧是否整体是「已被图表 caption 吸收的纯标号段」。
 
@@ -1308,9 +1375,62 @@ def render_chapter(res, prefix=""):
                     # 往前看 4 个 part：公式表的收尾是 `</table></div>`（不含
                     # `eqtable` 字样），只看最后一个会漏 —— 「面的语句应该是」
                     # 就是这么漏过去的。
+                    #
+                    # ⚠ 2026-09-18（§6.35）**收窄**：原判据一票否决，把
+                    # **真标题** 也误伤了 —— §1.5 的「命题」「陷阱」紧跟在
+                    # `eqn01_12/13.jpg` 公式图之后，于是被判成残片、降级成
+                    # 普通段落（成品实测：`<p class="zh zh_transed">命题</p>`
+                    # 而不是 h4；EN 侧 `A tricky point` 的 zh 标题整条缺席）。
+                    # 新增一条**反向豁免**：段本身如果是「一个词/名词性短语」
+                    # 形态（无标点、不含连接词、无句末语气），那即便紧跟公式，
+                    # 也仍是标题 —— 残片（`因为` `面的语句应该是`）与真标题
+                    # （`命题` `陷阱`）的区别不在位置，在**是否像句子**。
                     _after_eq = any("eqtable" in x or 'class="eq' in x
                                     or "</table>" in x for x in parts[-4:])
-                    if _looks_like_zh_title(_zplain) and not _after_eq:
+                    _title_ish = _looks_like_zh_title(_zplain)
+                    if _title_ish and _after_eq and _looks_like_fragment(_zplain):
+                        _title_ish = False
+                    # ★ §6.36 泛化补充：词表拦不住的残片，用**英文侧的句子性**
+                    #   拦（跨书成立，零词表）。判据 = 本 zh-only pair 在源文里的
+                    #   前一个英文块是不是「未结束的散文句」。
+                    #   只在 `_after_eq`（紧跟公式）时才启用 —— 真标题也可能
+                    #   紧跟在正文段之后，那种情形不该否决。
+                    #   实测三条：
+                    #     `验几率是`            ← EN `…are, writing m ≡`（未收尾）✔否决
+                    #     `第三个观测值的预测概率密度为` ← EN `…which we referred…`（未收尾）✔否决
+                    #     `无差别是基于知识还是无知？` ← EN 是上一段的收尾句（`…methods of
+                    #        inductive reasoning.` 已收尾）→ 不否决，标题保留 ✔
+                    if _title_ish and _after_eq:
+                        # ★ §6.36 泛化判据（零词表、跨书成立）：
+                        #   短中文段紧跟公式时，判它是不是**真标题**，
+                        #   唯一可靠的信号是**英文侧在同一位置有没有标题**。
+                        #   `en_heads_at` 已经把英文原版的 `class="hN"` /
+                        #   `<h*>` 全部登记成 (段前位置, 文本)，直接用。
+                        #   实测三条（p21）：
+                        #     历史题外话    ↔ EN `4.6.1 Historical digression` 有 → 保留 ✔
+                        #     无差别是…无知？ ↔ EN `18.11.1 Is indifference…`      有 → 保留 ✔
+                        #     验几率是      ↔ EN 该处**没有标题**（是散文句）      → 降级 ✔
+                        #     第三个观测值…为 ↔ 同上                             → 降级 ✔
+                        #   这比「英文前一句是不是未收尾」强得多：后者会把
+                        #   `历史题外话` 误杀（它的前一句恰是公式引导语）。
+                        _j0 = p.zh[0]
+                        _has_en_head = any(
+                            _j0 - 1 <= _hp <= _j0 + 1
+                            for _hp, _t in (getattr(sec, "en_heads_at", None)
+                                            or []))
+                        if not _has_en_head:
+                            _prev_en = ""
+                            for _x in reversed(range(p.zh[0])):
+                                _b = (sec.en_paras[_x]
+                                      if _x < len(sec.en_paras) else None)
+                                if _b is not None and (getattr(_b, "text", "")
+                                                       or "").strip():
+                                    _prev_en = _b.text
+                                    break
+                            if _en_looks_like_running_prose(_prev_en):
+                                _title_ish = False
+                                _JUDGE_FRAG.append(_zplain[:40])
+                    if _title_ish:
                         # 小标题：保留（导航需要）
                         parts.append(_head_block(
                             "h4", "st", "", E.norm_cjk_spacing(_zplain)))
@@ -1512,6 +1632,30 @@ def render_chapter(res, prefix=""):
                     parts.append(h)
                     print(f"    [公式兜底] {res.key} ({_no}) 未按源位落出"
                           f" → 补在本小节末尾")
+        # ── 枚举块（枚举块吸附）：渲染在其对应公式组下面 ────────────────
+        # 这些中文块是「英文原版用公式图排版、中译本却排成散文」的内容
+        # （典型 §1.7 的 (IIIa)(IIIb)(IIIc) = 原版 eqn01_39a/b/c.jpg）。
+        # 它们已从段落配对里摘出（否则会让中文侧多出块 → 整段相位滑移），
+        # 但**内容不能丢** —— 用户要看到它们，只是不该参与配对。
+        # 落点由 pipeline 决定（FigureRef.en_para 最大的那组图之后）。
+        for _item in (getattr(sec, "enum_notes", None) or []):
+            _blk, _fref, _side = (_item if len(_item) == 3
+                                  else (_item[0], _item[1], "zh"))
+            _txt = (_blk.text or "").strip()
+            if not _txt:
+                continue
+            # ⚠ 这些块**不在** sec.zh_paras / sec.en_paras 里（已被摘出），
+            # 不属于下面「段未渲染」自检的统计范围，无需记账，也不会误报。
+            if _side == "en":
+                _h = _blk.html or _esc(_txt)
+                _h = _en_math(_h)
+                parts.append(f'<p class="en en_original zh-enum">'
+                             f'{_h}</p>')
+            else:
+                parts.append(f'<p class="zh zh_transed zh-enum">'
+                             f'{_zh_math(_blk.html or _esc(_txt))}</p>')
+            print(f"    [枚举块] {res.key} 小节「{(sec.en_title or '章首')[:18]}」"
+                  f"{_side} 吸附「{_txt[:24]}」→ 挂到公式组下方")
         # ── 兜底：**没被任何 pair 覆盖的中文段必须照常渲染**。
         # 用户实测：「(III) 具有一致性.」在成品里整句消失 —— 它悬在配对之外，
         # 渲染层谁也没管它。宁可多一段（看得见、可挑错），也不能静默丢内容。
@@ -1629,6 +1773,22 @@ def render_chapter(res, prefix=""):
             parts.append(_note_entry(n, f'{_esc(txt)}'
                                      f'<span class="en-note-tag">英文原注</span>',
                                      cls="note-en"))
+        parts.append("</div>")
+    # ── 英文原版脚注（§6.33：从小节主链摘出的 `[n] …` 段）────────────
+    # 这些段在英文原版里就是脚注，中译本的注区在**章末**、不在本小节内，
+    # 留在主链上会被 DP 当正文吞掉中文段（3.11.1 实测）→ 摘出后在这里
+    # 按英文原版版式单独列出（铁律 10）。不依赖 res.notes 是否存在。
+    _notes_en = getattr(res, "notes_en", None) or []
+    if _notes_en:
+        parts.append('<div class="notes notes-en-orig"><h3>英文原注 / Notes'
+                     ' (original)</h3>')
+        for _inner in _notes_en:
+            _html = _inner if "<" in _inner else _esc(_inner)
+            parts.append(f'<aside class="note note-en" epub:type="footnote">'
+                         f'<ol class="duokan-footnote-content" '
+                         f'style="list-style:none">'
+                         f'<li class="duokan-footnote-item">'
+                         f'<p>{_en_math(_html)}</p></li></ol></aside>')
         parts.append("</div>")
     return "\n".join(parts)
 
@@ -2912,4 +3072,7 @@ def build_book(results, title="Nexus 中英双语版", singles=True,
         print(f"  [zh-only 丢弃] {len(_DROPPED_ZH_ONLY)} 段中文独有正文段未进"
               f"双语版（用户 2026-09-17 定调），样本："
               f"{_DROPPED_ZH_ONLY[:3]}")
+    if _JUDGE_FRAG:
+        print(f"  [伪标题拦下] {len(_JUDGE_FRAG)} 段「紧跟公式的句子残片」未被"
+              f"提升为标题（§6.36 英文侧句子性判据），样本：{_JUDGE_FRAG[:5]}")
     return made
