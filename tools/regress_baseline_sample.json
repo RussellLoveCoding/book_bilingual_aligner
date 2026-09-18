@@ -1,0 +1,26 @@
+{
+  "think2": {
+    "pairs": 33,
+    "matched": 33,
+    "ai_mt": 0,
+    "missing": 0,
+    "warn": 1,
+    "sec": 0.9
+  },
+  "ml": {
+    "pairs": 228,
+    "matched": 209,
+    "ai_mt": 0,
+    "missing": 19,
+    "warn": 32,
+    "sec": 5.5
+  },
+  "prob": {
+    "pairs": 483,
+    "matched": 437,
+    "ai_mt": 0,
+    "missing": 46,
+    "warn": 58,
+    "sec": 4.5
+  }
+}

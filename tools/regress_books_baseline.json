@@ -1,0 +1,78 @@
+{
+  "prob": {
+    "dir": "diag/prob_p22",
+    "file": "Probability Theory the Logic of Science_双语.epub",
+    "probe": {
+      "h2_ct": 66,
+      "h4_st": 61,
+      "pairs": 6154,
+      "eqtable": 1745,
+      "eqref": 1824,
+      "only_en": 806,
+      "only_zh": 0,
+      "mtflag": 744,
+      "orphan": 5,
+      "fake_title": 0,
+      "boxlabel_orphan": 0,
+      "boxlabel_fakezh": 0,
+      "boxlabel_rendered": 0
+    }
+  },
+  "think2": {
+    "dir": "build",
+    "file": "思考，快与慢（第二版）_双语.epub",
+    "probe": {
+      "h2_ct": 86,
+      "h4_st": 0,
+      "pairs": 1984,
+      "eqtable": 0,
+      "eqref": 0,
+      "only_en": 0,
+      "only_zh": 0,
+      "mtflag": 2,
+      "orphan": 0,
+      "fake_title": 0,
+      "boxlabel_orphan": 0,
+      "boxlabel_fakezh": 0,
+      "boxlabel_rendered": 0
+    }
+  },
+  "nexus": {
+    "dir": "build",
+    "file": "智人之上：从石器时代到AI时代的信息网络简史_双语.epub",
+    "probe": {
+      "h2_ct": 28,
+      "h4_st": 0,
+      "pairs": 1163,
+      "eqtable": 0,
+      "eqref": 0,
+      "only_en": 0,
+      "only_zh": 0,
+      "mtflag": 16,
+      "orphan": 0,
+      "fake_title": 0,
+      "boxlabel_orphan": 0,
+      "boxlabel_fakezh": 0,
+      "boxlabel_rendered": 0
+    }
+  },
+  "ml": {
+    "dir": "diag/ml_uni",
+    "file": "133653_机器学习实战：基于Scikit-Learn、Keras和TensorFlow（原书第3版）_【法】奥雷利安_双语.epub",
+    "probe": {
+      "h2_ct": 4,
+      "h4_st": 31,
+      "pairs": 210,
+      "eqtable": 0,
+      "eqref": 0,
+      "only_en": 38,
+      "only_zh": 0,
+      "mtflag": 40,
+      "orphan": 1,
+      "fake_title": 0,
+      "boxlabel_orphan": 0,
+      "boxlabel_fakezh": 0,
+      "boxlabel_rendered": 12
+    }
+  }
+}
