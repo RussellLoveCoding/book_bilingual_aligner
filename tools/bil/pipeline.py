@@ -463,7 +463,7 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
 
     # 1) 窗口细化：体检不达标的小节整节重对（分窗，见 _refine_windowed）
     if refine:
-        for s in res.sections:
+        for _si, s in enumerate(res.sections):
             if not s.pairs:
                 continue
             # ⚠ 闸门不能只看 DP 自评的 rate（自证：DP 凑出来的对子长度都挺配，
@@ -480,6 +480,23 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 continue
             if not s.zh_paras or len(s.en_paras) > max_section:
                 continue
+            # ★★ P1 白名单（勘误流水线，`BIL_ERRFIX=1` 才开）：
+            #   结构性疑点里**有一大半是假缺陷**（2026-09-18 实测 183→74 节）：
+            #     · 孤立单侧段 —— DP 单调对齐，孤立的空侧不可能毁整节；
+            #     · 内容反查确认独有 —— 信号在另一侧全章查无 = 本来就该没有；
+            #     · 书目/索引 —— 中文版本就不译；
+            #     · 脚注主导 —— 英文脚注内联进主文流、中文在自己的注释区，
+            #       **LLM 搬不了脚注**，送它只会把正确的正文对改坏。
+            #   反查池用「该章全部 section 的英文段」（单节池会把节内切分
+            #   错误反过来污染判据）。详见 `docs/勘误流水线设计.md` §二点五。
+            if ERRFIX:
+                from . import errfix as _EF
+                _cand = _EF.screen_section(
+                    "", _si, s, _errfix_pool(res), chapter_title=title,
+                    chapter_has_en=any(x.en_paras for x in res.sections))
+                if _cand.dropped:
+                    print(f"    [细化-跳过] {_cand.log()}")
+                    continue
             print(f"    [细化] {s.en_title[:24] or '(章首)'} rate={s.audit.rate:.2f}"
                   f" 疑点={_why or '仅rate'}")
             out = _refine_windowed(llm, s)
@@ -816,6 +833,27 @@ ACCEPT_LLM = int(os.environ.get("BIL_ACCEPT_LLM", "2") or "2")
 #   0 = 不采纳（默认，保守）
 #   1 = 长度尺子验收（已校准：精确率 78%、误判 0，但漏「长度正常内容错」）
 #   2 = 长度尺子 + **LLM 校对 skew** 双验收（补语义盲区）
+
+# ★ 勘误流水线 P1 白名单开关（`docs/勘误流水线设计.md` §二点五）。
+#   2026-09-18 实测：结构性疑点 183 节里 **109 节是假缺陷**（孤立单侧段 /
+#   内容反查确认独有 / 书目索引 / 脚注主导）。开着它只把**真候选**送 LLM：
+#   省钱（少跑 59.6%）且**避免把已正确的正文对改坏**（脚注那批尤其危险）。
+#   默认 **1（开）** —— 它只减候选、不改判据语义，是纯收益。
+ERRFIX = os.environ.get("BIL_ERRFIX", "1") != "0"
+
+
+def _errfix_pool(res) -> set:
+    """该章**全部小节**英文段的可反查信号池（内容反查的查表目标）。
+
+    ⚠ 必须用「全章」而非「本节」：节内切分错误会反过来污染判据
+    （本节英文池若本来就缺了那段，反查必然查无 → 误判成"真独有"）。
+    """
+    from . import errfix as _EF
+    pool: set = set()
+    for s in getattr(res, "sections", []) or []:
+        for p in s.en_paras:
+            pool |= _EF.content_signals(getattr(p, "text", "") or "")
+    return pool
 
 
 def _is_refinement(cand, cur) -> bool:

@@ -177,6 +177,18 @@ class Candidate:
     dropped: bool = False         # 被白名单扣掉
     detail: list = field(default_factory=list)
 
+    def log(self) -> str:
+        """一行日志摘要（构建日志里要能直接看出**为什么**跳过）。
+
+        ⚠ 必须带上 `sec_index` + 块数 + 触发原因 —— 2026-09-18 排查「中文独有章
+          触发了 8 次但只有 5 个中文独有章」时，旧日志只有 `(章首)` + 判定，
+          **完全无法定位是哪一节**，只能回头翻代码推理。日志自证是硬要求。
+        """
+        return (f"sec{self.sec_index} {self.title[:24] or '(章首)'}"
+                f"  EN{self.n_en}/ZH{self.n_zh}"
+                f"  疑点={self.why or '仅rate'}"
+                f"  → {self.verdict}")
+
 
 def screen_section(key: str, sec_index: int, s, en_pool: set[str],
                    chapter_title: str = "", chapter_has_en: bool = True

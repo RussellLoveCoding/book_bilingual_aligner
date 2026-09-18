@@ -93,10 +93,12 @@ def main():
                         if len(p.en) > 1 or len(p.zh) > 1)
             mp = multi / max(1, len(s.pairs))
             blkdiff = bool(n_en and abs(n_en - n_zh) / max(1, n_en) > 0.08)
-            # 分档
+            # 分档 ⚠ C 是「**仅**多对占比」，多对超线时不该被 B 抢走
+            #   （否则 B 档会混进「单侧+多对双信号」的节，C 的过滤意图被架空；
+            #    2026-09-18 修，详见 dbg_p2_run.py `_tier` 的注释）。
             if blkdiff or be >= 2 or bz >= 2:
                 tier = "A 强（块数差/成串单侧）"
-            elif cand.only_en or cand.only_zh:
+            elif (cand.only_en or cand.only_zh) and mp <= 0.25:
                 tier = "B 中（非孤立单侧）"
             elif mp > 0.25:
                 tier = "C 弱（仅多对占比）"
