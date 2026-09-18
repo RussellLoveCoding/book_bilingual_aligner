@@ -809,8 +809,37 @@ def _rewrite(html_str: str, n_notes: int, prefix: str = "",
     return E.NOTEREF_RE.sub(sub, html_str)
 
 
-_CAP_TEXT_RE = re.compile(r"^\s*(?:表|图|Table|Figure)\s*\d+(?:\s*[-–—]\s*\d+)?\s*$|"
-                            r"^\s*(?:表|Table)\s*\d+[-–—]\d+")
+# ---- 图表题注识别（2026-09-18 重写）------------------------------------
+# ⚠ 旧实现（保留在下方注释里）**对英文题注系统性失明**，实测全书 EN 命中 0 个：
+#     _CAP_TEXT_RE = r"^\s*(?:表|图|Table|Figure)\s*\d+(?:\s*[-–—]\s*\d+)?\s*$"
+#                    r"|^\s*(?:表|Table)\s*\d+[-–—]\d+"
+#   两条分支都要求**破折号**衔接（`Table 29-1`），而英文原版用的是**点号**：
+#   `Table 3.1.` / `Table 8.2.` —— 于是 16 个英文题注里 0 个被认出，中文侧
+#   的 `表 3-1 …` 却能命中 13 个 → 两侧题注识别能力不对称，题注行的
+#   居中/小字排版、以及「不提升为 h4 小标题」的判据在英文侧全部失效。
+#
+# 新判据 = 前缀 + 三条闸门（逐条都能在全书 46 个候选上人工核对）：
+#   ① 长度 ≤ 110 字。实测分布完全可分：真题注 EN ≤70 / ZH ≤83，
+#      正文引用 EN ≥168 / ZH ≥131 —— 中间留了很宽的安全带。
+#   ② 剥掉「关键词+编号」前缀后，段内句末标点 ≥2 → 正文段
+#      （`Figure 4.1 shows… . Suppose we had decided…` 是两句话）。
+#      ⚠ 前缀里的那个点号（`Table 3.1.`）**不算句子边界**，必须先剥掉再看。
+#   ③ 剥完前缀 body > 70 字且**没有 `(a)/(b)` 子标号** → 正文引用
+#      （`Figure 3.1 compares three hypergeometric distributions with N = 15…`）。
+#      子标号是题注的强特征（`图 6-2 (a) A 先生…(b) B 先生…` body 77 字仍是题注）。
+_CAP_KEY = r"(?:表|图|Table|Figure)"
+_CAP_NUM = r"\d+\s*[.\-–—]\s*\d+"
+_CAP_HEAD_RE = re.compile(rf"^\s*{_CAP_KEY}\s*{_CAP_NUM}")
+_CAP_PREFIX_RE = re.compile(
+    rf"^\s*{_CAP_KEY}\s*{_CAP_NUM}\s*[.。:：\-–—]?\s*")
+_CAP_SUB_RE = re.compile(r"[(（]\s*[a-hA-H]\s*[)）]")
+# 题注的编号后面要么直接是标点/空白+大写/汉字，要么什么也没有；
+# 若紧跟**小写英文词**（`Table 3.1 lists the results…`）→ 正文引用，不是题注。
+_CAP_PROSE_RE = re.compile(rf"^\s*{_CAP_KEY}\s*{_CAP_NUM}\s+[a-z]")
+# 公式编号 `(15.34)` / `(3.29)` 里的点号不是句子边界 —— 数句数前先挖掉。
+_CAP_EQREF_RE = re.compile(r"\(\s*\d+\.\d+[a-z]?\s*\)")
+# 兼容旧引用点（`_CAP_TEXT_RE` 曾被 import 过）
+_CAP_TEXT_RE = _CAP_HEAD_RE
 
 
 # 中文「公式图 OCR」段：英文原版用**图片**排公式（`eqn01_39a.jpg`），中文 md 把
@@ -833,8 +862,27 @@ def _is_formula_ocr(t: str) -> bool:
 
 
 def _is_caption_text(t: str) -> bool:
-    """图表题注（表29-1 / 图1-2 / Table 29-1 …）：居中、小字排版。"""
-    return bool(_CAP_TEXT_RE.match((t or "").strip()))
+    """图表题注（表29-1 / 图1-2 / Table 29-1 / Table 3.1. …）：居中、小字排版。
+
+    判据见上方注释（长度 ≤110 + 句数 + `(a)(b)` 子标号豁免）。
+    ⚠ 英文侧原先恒为 False（旧正则只认破折号编号），已修。
+    """
+    s = (t or "").strip()
+    if not _CAP_HEAD_RE.match(s):
+        return False
+    if len(s) > 110:
+        return False
+    if _CAP_PROSE_RE.match(s):          # `Table 3.1 lists the results…`
+        return False
+    body = _CAP_PREFIX_RE.sub("", s)
+    body = _CAP_EQREF_RE.sub(" ", body)   # `(15.34)` 的点号不算句子边界
+    sub = bool(_CAP_SUB_RE.search(s))
+    n = len(re.findall(r"[.!?。．！？]", body))
+    if n >= 2 and not sub:
+        return False
+    if len(body) > 70 and not sub:
+        return False
+    return True
 
 
 def _looks_like_title(zh: str, en: str) -> bool:
@@ -1243,8 +1291,15 @@ def render_chapter(res, prefix=""):
                             "h4", "st", "", E.norm_cjk_spacing(_zplain)))
                     elif _is_caption_text(_zplain):
                         # 图表题注：保留（挂图需要）
+                        # ⚠ 2026-09-18：class 必须带 `zh` —— 早先只写 "caption"，
+                        # 于是 ① `.zh` 的中文字体（宋体族）+ font-weight:500
+                        # **全部丢失**（题注用西文字体排中文）；② `.ord-*` 的
+                        # 左右重排规则（`.pair > .zh`）认不出它；③ `dbg_order`
+                        # 的侧别判据把这类段当「无侧别」→ 把「题注↔题注」的
+                        # 正常 pair 误报成「仅英文段」（37→45 的假警报）。
                         parts.append(_multi_paras(
-                            zh_html, "p", "caption" + _exercise_cls(_zplain)))
+                            zh_html, "p", "zh caption"
+                            + _exercise_cls(_zplain)))
                     elif _zh_only_chapter:
                         # 整章中文独有（「出版信息」「后记」「译后记」「译者致谢」）：
                         # **照常渲染**，不走下面的丢弃规则 —— 那些章本来就没有英文侧，
@@ -1289,6 +1344,15 @@ def render_chapter(res, prefix=""):
                     _b = sec.en_paras[x]
                     _t, _c = _en_elem(_b, _epi)
                     _c += _exercise_cls(getattr(_b, "text", ""))
+                    # ⚠ 2026-09-18：英文题注此前**从不带 caption 类** ——
+                    # `_en_elem()` 只按块类型出 class，唯一看题注的地方
+                    # （`_is_caption_text(_zplain)`）判的是**中文**，英文侧
+                    # 完全没走这条路。于是 `Table 8.1. Experiment A.` 渲染成
+                    # 普通正文段（`<p class="en en_original">`），既没居中也没小字，
+                    # 与中文侧 `表 8-1 实验 A` 的 caption 排版对不上（用户点名
+                    # 「标题中文对齐错」的一类）。此处补齐：英文题注同样给 caption。
+                    if _is_caption_text(getattr(_b, "text", "")):
+                        _c += " caption"
                     _h = _rewrite(_b.html, n_notes, prefix, note_texts)
                     if _b.type != "code":       # 代码里的 $ 不是公式
                         _h = _en_math(_h)
@@ -1352,7 +1416,9 @@ def render_chapter(res, prefix=""):
                     # 其余逐段独立成元素（不并段，2026-09-16）
                     _emitted_zh.update(p.zh)
                     if _is_caption_text(_zplain):
-                        parts.append(_multi_paras(zh_html, tag, "caption"))
+                        # 同 1292 处：必须带 `zh`（中文字体 + 重排 + 侧别判据）
+                        parts.append(_multi_paras(zh_html, tag,
+                                                  "zh caption" + _exercise_cls(_zplain)))
                     else:
                         _zc = ("zh zh_transed epigraph"
                                if sec is res.sections[0] and pi <= 3
