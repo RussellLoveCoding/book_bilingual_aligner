@@ -1585,6 +1585,12 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
 
     zh_fig_i = 0
     zh_claims = [False] * len(zh_pos)     # 已被认领的中文图（避免一章内重复使用）
+    # ── 全章中文段序 -> (小节, pair 下标) 索引 ──────────────────────────
+    # 供「中文多出来的图」按**原位**落点（见下方 leftover_zh 的注释）。
+    # 两条列表同序（按段序升序），用二分查找取最近锚点。
+    import bisect as _bisect
+    _zh_anchor_g: list[int] = []
+    _zh_anchor_at: list = []
     for ei, zi in sec_pairs:
         ei, zi = list(ei or []), list(zi or [])
         a_paras = [p for i in ei for p in en_secs[i].paras]
@@ -1695,6 +1701,11 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
         for _m, _p in enumerate(sr.pairs):
             for _j in (_p.zh or []):
                 _l2p[_j] = _m
+        for _l, _g in enumerate(b_gidx):
+            _pp = _l2p.get(_l)
+            if _pp is not None:
+                _zh_anchor_g.append(_g)
+                _zh_anchor_at.append((sr, _pp))
         zh_fig_i, zh_claims = _attach_figures(
             sr, en_figs, zh_vs_all, zh_fig_i, zh_pos, zh_claims,
             zh_caps=zh_caps, zh_chap=_zh_chap, para_anchor=(_g2l, _l2p))
@@ -1801,19 +1812,37 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                         _f.write(f"   pair[{_pi}] en={_p.en} zh={_p.zh}\n")
         sr.zh_heads_at = _zh_heads_at
 
-    # 中文多出来的图（通常是被漏掉位置的插图）：追加到最后一个有正文的小节
-    leftover_zh = [v for _idx, (v, _p) in enumerate(zh_pos)
+    # ⚠ 2026-09-18 重写：原来**一律挂在最后一小节的最后一个 pair 上**，
+    # 而「最后一个小节」几乎总是**章末脚注节** —— 于是中文版没配上对的
+    # 公式（$$ 块自渲染图）全部堆到章末注区，用户看到的就是「每章开头 /
+    # 上一章注释里散落着公式图」（实测 9 处 / 6 个文件，全在章末）。
+    # 正解：zh_pos 里已经带了这条图在**全章中文段序**里的原位 g（= 它紧跟
+    # 的那一段，align.py:284 `after = len(paras) - 1`），用与「已配对的图」
+    # 完全相同的 `g -> pair` 索引就能落回原位；取不到就退到**最近的**锚点，
+    # 而不是章末。
+    if _zh_anchor_g:
+        _srt = sorted(zip(_zh_anchor_g, _zh_anchor_at), key=lambda t: t[0])
+        _zh_anchor_g = [t[0] for t in _srt]
+        _zh_anchor_at = [t[1] for t in _srt]
+    leftover_zh = [(v, g) for _idx, (v, g) in enumerate(zh_pos)
                    if not zh_claims[_idx]]
     if leftover_zh and res.sections:
         tgt = next((s for s in reversed(res.sections) if s.pairs), res.sections[-1])
-        for v in leftover_zh:
+        for v, g in leftover_zh:
+            _sr, _pi = tgt, len(tgt.pairs) - 1
+            if _zh_anchor_g:
+                _k = _bisect.bisect_left(_zh_anchor_g, g)
+                _c = [i for i in (_k - 1, _k) if 0 <= i < len(_zh_anchor_g)]
+                if _c:
+                    _sr, _pi = _zh_anchor_at[
+                        min(_c, key=lambda i: abs(_zh_anchor_g[i] - g))]
             # ⚠ zh_html 必须带上：中文独有公式（$$ 块）没有 src，只带 src 会
             # 把这条公式整条丢掉（渲染层靠 zh_html 自渲染成 PNG）
-            tgt.figures.append(FigureRef(
+            _sr.figures.append(FigureRef(
                 en_src="", zh_src=v.block.src,
                 zh_html=(v.block.html or "") if not v.block.src else "",
                 caption_en="", caption_zh=v.block.caption,
-                after=len(tgt.pairs) - 1))
+                after=_pi, zh_para=g))
     # 章节内正文的注释 id 顺序：中文版注区不够长时，用它取英文本原注兜底
     seen: list[str] = []
     for s in res.sections:
