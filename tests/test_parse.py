@@ -79,6 +79,59 @@ check("disp-para → quote（不是 heading）", sem("disp-para"), "quote")
 check("disp-quote → quote", sem("disp-quote"), "quote")
 check("noindent → para", sem("noindent"), "para")
 
+# ═══ 勘误白名单判据（bil.errfix）══════════════════════════════════════
+# 这四条规则决定「哪些候选**不**送 LLM」—— 判错方向的代价是双向的：
+# 放进来 = 花钱且可能把好数据改坏；踢出去 = 真错位永远没人管。
+# 所以每条都钉住边界（2026-09-18 P1 实测：183 → 76 节）。
+from bil import errfix as EF                # noqa: E402
+
+print("\n书目/索引白名单（章级 + 小节级都要认）：")
+check("章标题 Bibliography",
+      EF.is_nontranslated_section("", "Bibliography", "chapter32"), True)
+check("章 key=chapter32（标题为空时靠它）",
+      EF.is_nontranslated_section("", "", "chapter32"), False)
+check("章 key=index",
+      EF.is_nontranslated_section("", "", "index"), True)
+check("小节中文名 人名索引",
+      EF.is_nontranslated_section("人名索引", "", "chapter29"), True)
+check("正文小节不误伤",
+      EF.is_nontranslated_section("2.1 The product rule", "", "chapter7"), False)
+
+print("\n脚注判据（只认段首，正文引用不算）：")
+check("[3] These are: … → 脚注", EF._is_footnote("[3] These are: (1)"), True)
+check("① 圈码 → 脚注", EF._is_footnote("① 这是脚注"), True)
+check("正文里引 (2.13) → 不是", EF._is_footnote("见 (2.13) 的推导"), False)
+check("正文段 → 不是", EF._is_footnote("The calculations which we"), False)
+
+print("\n连接语碎片判据（带内容的段不能豁免）：")
+check("也可以", EF._is_connective("也可以"), True)
+check("Likewise,", EF._is_connective("Likewise,"), True)
+check("含号码 → 不是碎片", EF._is_connective("见 (2.13)"), False)
+check("完整正文句 → 不是碎片",
+      EF._is_connective("这就是为什么我们必须考虑先验信息"), False)
+
+print("\n内容反查信号（编号 + 引号拉丁串 + 长拉丁词）：")
+_s = EF.content_signals('见 (2.13) 与 Jaynes 的 "Probability Theory"')
+check("抽出编号 2.13", "2.13" in _s, True)
+check("抽出引号串", "q:probability theory" in _s, True)
+check("抽出长拉丁词 jaynes", "w:jaynes" in _s, True)
+check("停用词 the 不入池", "w:the" in EF.content_signals("the and of"), False)
+check("中文无信号", EF.content_signals("这就是概率论的基本原理"), set())
+
+print("\n归属判定（查得到 = 错位嫌疑 / 查不到 = 真独有）：")
+_pool = EF.content_signals("See Jaynes (2003) and Eq. (2.13) for details")
+check("中文段信号在英文池里 → 错位嫌疑",
+      EF.classify_onesided_para("参见 Jaynes 的论述与 (2.13)",
+                                _pool).kind, "错位嫌疑")
+check("中文段信号查无 → 真独有",
+      EF.classify_onesided_para("这是 Le Cam 关于渐近性的注记 (3.7)",
+                                _pool).kind, "真独有")
+check("无信号段 → 拿不准（不是真独有）",
+      EF.classify_onesided_para("这是中文译本独有的译者导读",
+                                _pool).kind, "拿不准")
+check("无信号段 → 拿不准（短连接语）",
+      EF.classify_onesided_para("或者", _pool).kind, "拿不准")
+
 print()
 if _fail:
     print(f"❌ {len(_fail)} 项失败：")
