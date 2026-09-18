@@ -19,7 +19,8 @@ import json
 import os
 from pathlib import Path
 
-_V = 12  # v2：md 改为「只认 # 标题」，废弃含裸段落的旧缓存
+_V = 14  # v14：① CSS class 标题接受字母后缀（h2a/h2b）；② md 裸行附录子节
+         #      标题（`A.1 …`）认成 h2 → 附录 A/B/C 的小节树重建
          # v3：块级保真（pre→code / 提示框 box / 列表 in_list），旧缓存无这些字段
          # v4：章首清理（页码块/重复章名丢弃、引语署名并入引语）
          # v5：正文段内的行内公式图（<img class="mi">）不再当插图搬出去

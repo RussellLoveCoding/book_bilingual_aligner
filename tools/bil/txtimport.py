@@ -77,6 +77,42 @@ def _bare_head(line: str, lang: str) -> bool:
     return bool(_ZH_HEAD_RE.fullmatch(t))
 
 
+# 附录子节标题（裸行，无 `#` 标记）：`A.1 柯尔莫哥洛夫概率系统` /
+# `B.3 Willy Feller on measure theory` / `C.2 …`。
+#
+# ⚠ 2026-09-18 实测（本仓库目前**最大的一处假缺陷**）：
+#   中文 md 的附录 A/B/C 里，子节标题全部是**裸行**（`A.1 …`），既没有 `#`
+#   也不满足 `_bare_head`（长度 >12、以拉丁字母开头）→ 整份附录被解析成
+#   **1 个小节**（附录A 88 段、附录B 138 段），而英文侧是 6/11 个小节。
+#   于是小节配对必然全错：EN 的 A.1~A.5 逐个配到「空」，中文 88 段全堆在
+#   最后一个空标题小节里 → 成品里附录A **整篇显示为「只有英文」**，
+#   看起来就像「中文版没译附录」，实际译文**完整存在**（`A.1 柯尔莫哥洛夫
+#   概率系统` 连同四条公理都有）。
+#   这是 `bookscan 整篇缺中文 1025 段` 的主要来源之一。
+#
+# 判据写窄（只认「单个大写字母 + 句点 + 数字」开头，且整行 ≤60 字、无句末
+# 标点），避免把正文里的 `A.1` 引用误判成标题。
+_APX_SUBHEAD_RE = re.compile(r"^([A-Z])\.(\d{1,2})(?:\.\d{1,2})?\s+\S")
+
+
+def _bare_subhead(line: str, lang: str) -> str:
+    """裸**子节**标题（附录 A.1 / B.3 …）。命中返回标题文本，否则空串。
+
+    只做「是不是子节标题」的判断，层级由调用方定（一律 level=2）。
+    """
+    if lang != "zh":
+        return ""
+    t = (line or "").strip()
+    if not t or len(t) > 60:
+        return ""
+    if not _APX_SUBHEAD_RE.match(t):
+        return ""
+    # 句末标点 = 正文句子（「A.1 表明了……」），不是标题
+    if t.endswith((".", "。", ",", "，", ";", "；", ":", "：")):
+        return ""
+    return t
+
+
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -226,6 +262,12 @@ def load_md(path, lang: str) -> dict[str, list]:
         elif _bare_head(line, lang):
             # 裸标题行（无 md 标记的节标题）：与 `#` 标题同等对待，开新单元。
             open_doc(norm_heading(line.strip()), 1)
+        elif (sub := _bare_subhead(line, lang)):
+            # 裸**子节**标题（附录 `A.1 …`）：在当前单元内插一个 level=2 的
+            # heading 块。**不**开新单元 —— 它属于本附录，不是新章。
+            flush()
+            cur.append(Block(tag="h2", cls="", html=_esc(sub),
+                             text=sub, type="heading", level=2))
         else:
             # md 引用标记（minerU 题词用「> / > >」）剥掉——它们是排版
             # 记号不是内容，留着会原样漏进成品（2026-09-17 ch1 实测）
