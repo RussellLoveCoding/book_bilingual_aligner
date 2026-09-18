@@ -36,6 +36,13 @@ zh/en **完美交替**（ZH, EN, ZH, EN…），一个同侧串都没有 ⇒ **q
 「顺序倒置」—— 实测 prob 全书 37 个"en 在前"**全部**是 `only_en`，
 **双侧 pair 的顺序其实是 100% 正确**。两条判据正交，混一起就是假警报。
 
+⚠⚠ **2026-09-18 第二个假警报（同一天、同一个坑）**：中文题注段曾写成
+`<p class="caption">` —— **既无 `zh` 也无 `en`** → 本工具的 `_kside()`
+返回 `""` → 该 pair 被算成 `only_en`。实测把它误报成「仅英文 45 段」，
+比真实的 27 段多算了 18 段。**教训：任何新写的段必须带侧别 token**
+（`zh` / `en`），否则所有按 class 认侧别的工具都会失明。
+（生产侧已改 `zh caption`；本工具另加 `_CAP_ONLY_RE` 兜底认纯 `caption`。）
+
 用法（tools/ 下）：
   bash _run.sh dbg_order.py <成品.html>             # 全书 + 逐文档统计
   bash _run.sh dbg_order.py <成品.html> --doc ch02  # 只看某个文档
@@ -52,6 +59,11 @@ from collections import Counter
 _Z_RE = re.compile(r'class="[^"]*\bzh\b', re.I)
 _E_RE = re.compile(r'class="[^"]*\ben\b', re.I)
 _KID_RE = re.compile(r"<(p|blockquote|pre|li|table)\b([^>]*)>", re.I)
+# ⚠ 兜底：题注段若**只**带 `caption`（无侧别 token），按「中文侧」算 ——
+# 中文题注比英文题注多（译版补了图/表），且英文题注一律带 en。
+# 生产侧已统一为 `zh caption` / `en en_original caption`，这里只为兼容
+# 旧产物与防止同类回归（见文件头第二段教训）。
+_CAP_ONLY_RE = re.compile(r'class="caption"', re.I)
 
 
 def _kside(attrs: str) -> str:
@@ -59,6 +71,8 @@ def _kside(attrs: str) -> str:
         return "zh"
     if _E_RE.search(attrs or ""):
         return "en"
+    if _CAP_ONLY_RE.search(attrs or ""):
+        return "zh"          # 无侧别的纯 caption → 按中文侧算（见上）
     return ""
 
 
