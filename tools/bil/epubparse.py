@@ -277,6 +277,19 @@ def strip_tags(s: str) -> str:
 _CLASS_HEAD_RE = re.compile(r"(?:^|[\s_-])h([1-6])(?:[a-z])?(?:[\s_-]|$)", re.I)
 _CLASS_TITLE_RE = re.compile(
     r"(?:^|[\s_-])(?:chapter|section|part)[\s_-]?title(?:[\s_-]|$)", re.I)
+# ⚠ 2026-09-18 修（用户点名「序言~第二章 标题中文对齐错」的根因）：
+# 英文原版**卷头标题**用 `fm-title` / `fm-title1` / `fm-title2`（fm = front matter），
+# 上面两条判据**都不匹配** —— `_CLASS_HEAD_RE` 要求类名里有 `hN`，
+# `_CLASS_TITLE_RE` 要求 chapter/section/part 前缀，而 `fm-title2` 两者皆无
+# → 卷头标题落到 `return "para"`，**被当成正文段吞掉**。
+# 中文侧（`prob_zh.md`）是 raw markdown `### 前言` / `### 编者序`，标题健在
+# → **英文少一个标题、中文多一个** → 该标题之下的小节配对**整体左偏一格**。
+# 实测全书只有 5 处，且全在卷头，其余 1782 个无 class 的 `p`、1418 个 `para`、
+# 1315 个 `noindent1` **都不匹配本式**（零副作用，已离线核对）：
+#   fm-title2 Contents / Editor’s foreword / Preface
+#   fm-title  PROBABILITY THEORY      ·  fm-title1  THE LOGIC OF SCIENCE
+_CLASS_FM_TITLE_RE = re.compile(
+    r"(?:^|[\s_-])fm[\s_-]?title\d*(?:[\s_-]|$)", re.I)
 _CLASS_QUOTE_RE = re.compile(
     r"(?:^|[\s_-])(?:disp[\s_-]?(?:quote|para|source)|epigraph|extract)(?:[\s_-]|$)",
     re.I)
@@ -385,7 +398,8 @@ def _semantic_type(tag: str, attrs: dict, inner: str) -> str:
     cls = (attrs.get("class") or "").lower()
     if cls and _CLASS_QUOTE_RE.search(cls):
         return "quote"
-    if cls and (_CLASS_HEAD_RE.search(cls) or _CLASS_TITLE_RE.search(cls)) \
+    if cls and (_CLASS_HEAD_RE.search(cls) or _CLASS_TITLE_RE.search(cls)
+                or _CLASS_FM_TITLE_RE.search(cls)) \
             and _looks_like_heading(strip_tags(inner)):
         return "heading"
     if tag == "blockquote":

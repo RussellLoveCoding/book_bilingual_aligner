@@ -19,7 +19,12 @@ import json
 import os
 from pathlib import Path
 
-_V = 14  # v14：① CSS class 标题接受字母后缀（h2a/h2b）；② md 裸行附录子节
+_V = 15  # v15：卷头标题 `fm-title` / `fm-title1` / `fm-title2`（front matter）判 heading
+         #      —— 用户点名「序言~第二章 标题中文对齐错」的根因：英文侧吞掉标题、
+         #      中文侧（raw md `### 前言`）有 → 该标题之下小节配对整体左偏一格。
+         #      实测全书 5 处，全在卷头（Contents / Editor's foreword /
+         #      PROBABILITY THEORY / THE LOGIC OF SCIENCE / Preface）。
+         # v14：① CSS class 标题接受字母后缀（h2a/h2b）；② md 裸行附录子节
          #      标题（`A.1 …`）认成 h2 → 附录 A/B/C 的小节树重建
          # v3：块级保真（pre→code / 提示框 box / 列表 in_list），旧缓存无这些字段
          # v4：章首清理（页码块/重复章名丢弃、引语署名并入引语）
