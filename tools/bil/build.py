@@ -150,11 +150,17 @@ h4.st.en-h { font-style: italic; }
    上下紧挨着、视觉上仍是一组。中文字号给足，别缩成看不清的小字。
    ⚠ 拆成兄弟元素后 em 相对父级 body（=1em）解析，不再相对前面的英文标题！
    要维持「中文 ≈ 英文标题的 80%」就得换算回 body 基准：
-   英文 h2=1.5em → 中文 0.8×1.5=1.2em；英文 h3=1.14em → 中文 0.86×1.14≈0.98em。 */
-h2.ct.en-h, h3.st.en-h { margin-bottom: .22em; }
-h2.ct.zh-h { margin: 0 0 .35em; line-height: 1.5; }
-h3.st.zh-h { font-size: 1em; font-weight: normal; margin: 0 0 .3em;
+   英文 h2=1.5em → 中文 0.8×1.5=1.2em；英文 h3=1.14em → 中文 0.86×1.14≈0.98em。
+
+   ⚠⚠ 2026-09-18：DOM 次序改为**中文在前、英文在后**（见 `_head_block`），
+   紧挨规则必须**跟着翻面** —— 否则中文标题会带着 .35em 的下间距把英文
+   顶开、英文的 .22em 上紧贴又作用到下一段正文，两行标题散成两块。
+   约定：**上面那个标题 `margin-top:0` + 小下间距，下面那个正常下间距**。 */
+h2.ct.zh-h, h3.st.zh-h { margin-bottom: .22em; }
+h2.ct.en-h { margin: 0 0 .35em; line-height: 1.5; }
+h3.st.zh-h { font-size: 1em; font-weight: normal; margin: 0 0 .22em;
              line-height: 1.5; text-align: center; }
+h3.st.en-h { margin: 0 0 .3em; line-height: 1.5; }
 /* 中文小标题：字号 = 英文（用户两轮都报「中文标题比英文小」，别再缩） */
 h3.st.zh-h { opacity: .95; }
 /* 章号（原版 chapter-number：160% 加粗居中） */
@@ -441,19 +447,31 @@ def _head_block(tag: str, cls: str, en: str, zh: str,
     换行 —— 微信读书排版下两行挤在一起，阅读器也只认得一个标题条目。
     拆开后两个都是 h2/h3，目录里是两条、排版各自独立；单语版也能整元素删除。
     zh_raw=True：zh 已是**渲染好的 html**（如章名里的行内公式），不再转义。
+
+    ⚠⚠ 2026-09-18：**发射次序改成「中文在前、英文在后」**（原为 en 先 zh 后）。
+    这是一处**用户肉眼可见**的版式不一致（用户报「标题中文对齐错误」）：
+
+        正文 pair ：`_reorder_pairs(zh_first=True)` → DOM 是 zh 先、en 后
+        标题     ：本函数恒发 en 先、zh 后    → 与正文相反
+
+    同一个 xhtml 里两种顺序 ⇒ 中文读者看到
+
+        [Editor’s foreword]   ← 英文标题
+        [编者序]              ← 中文标题
+        [中文正文…]            ← 正文却是中文在前
+        [English text…]
+
+    即**中文标题被英文标题和中文正文夹在中间**、与自己的正文脱节 ——
+    这就是「标题对齐错」的真实形态（`ord-zh` 的 CSS `order` 只管 `.pair`
+    的子树，管不到标题，所以阅读器不会替我们纠正）。
+    `_reorder_pairs` 只重排 `.pair` 内部，标题在 pair 之外，故必须在此处
+    自己按同一约定发射。**约定：DOM 顺序一律「中文在前」。**
     """
     out = []
     aid = f' id="{_esc(anchor)}"' if anchor else ""
     # ⚠ 标题里的行内公式一律渲染（用户 2026-09-17 #4：章名/小节名的 $…$ 与
     # 正文同待遇）。此前只有章名走 _zh_math，小节标题原样吐 `### 11.2 最小化
     # $\sum p_i^2$`（实测 ch12 标题里就是这句）。
-    if (en or "").strip():
-        _en = en.strip()
-        if "$" in _en:
-            _en = _en_math(_esc(_en))
-            out.append(f'<{tag} class="{cls} en-h"{aid}>{_en}</{tag}>')
-        else:
-            out.append(f'<{tag} class="{cls} en-h"{aid}>{_esc(_en)}</{tag}>')
     if (zh or "").strip():
         if zh_raw:
             _zh = zh.strip()
@@ -462,6 +480,13 @@ def _head_block(tag: str, cls: str, en: str, zh: str,
         else:
             _zh = _esc(zh.strip())
         out.append(f'<{tag} class="{cls} zh-h">{_zh}</{tag}>')
+    if (en or "").strip():
+        _en = en.strip()
+        if "$" in _en:
+            _en = _en_math(_esc(_en))
+            out.append(f'<{tag} class="{cls} en-h"{aid}>{_en}</{tag}>')
+        else:
+            out.append(f'<{tag} class="{cls} en-h"{aid}>{_esc(_en)}</{tag}>')
     if not out:                      # 两边都空（不该发生）给个占位
         out.append(f'<{tag} class="{cls}">&nbsp;</{tag}>')
     return "\n".join(out)
@@ -2113,6 +2138,11 @@ def _annotate_sections(piece: str, pid: str):
 
     条目 = [(锚点 id, 标签)]，标签是「中文 · English」（与 _head_block 同序）。
     只有 en-h 或只有 zh-h 的标题照样登记（单侧小节也要能在目录里跳）。
+
+    ⚠ 2026-09-18：`_head_block` 改成**中文在前**后，相邻的 en-h/zh-h 对变成
+    「zh-h 先、en-h 后」。这里**两种次序都认**（不写死先后）—— 免得下次再
+    调次序时目录静默塌掉（旧版只认 en 先 zh 后，改序后一处配不上就退化成
+    「单侧条目」，目录里会只剩中文或只剩英文）。
     """
     toks = list(_NAV_H3_RE.finditer(piece))
     if not toks:
@@ -2123,9 +2153,13 @@ def _annotate_sections(piece: str, pid: str):
         t = toks[i]
         cl = t.group(1).split()
         nxt = toks[i + 1] if i + 1 < len(toks) else None
-        if "en-h" in cl and nxt is not None \
-                and "zh-h" in nxt.group(1).split():
+        _ncl = nxt.group(1).split() if nxt is not None else []
+        # 相邻两标题恰好是同一侧对的两种次序 → 收成一组
+        if "en-h" in cl and "zh-h" in _ncl:            # en 先 zh 后（旧序）
             groups.append(([t, nxt], t.group(2), nxt.group(2)))
+            i += 2
+        elif "zh-h" in cl and "en-h" in _ncl:          # zh 先 en 后（现序）
+            groups.append(([t, nxt], nxt.group(2), t.group(2)))
             i += 2
         else:
             groups.append(([t],
@@ -2166,19 +2200,23 @@ def _piece_label(piece: str, lang: str, k: int) -> str:
 
     取该片开头的**同一对** en-h/zh-h（旧实现分别取「第一个 zh-h」和
     「第一个 en-h」，两条可能来自不同标题 → 目录里出现张冠李戴）。
+
+    ⚠ 2026-09-18：`_head_block` 改为中文在前后，相邻对是「zh-h 先、en-h 后」。
+    这里两种次序都认（与 `_annotate_sections` 同口径）。
     """
     toks = list(_NAV_H3_RE.finditer(piece))
     for i, t in enumerate(toks):
         cl = t.group(1).split()
+        nxt = toks[i + 1] if i + 1 < len(toks) else None
+        _ncl = nxt.group(1).split() if nxt is not None else []
         if "en-h" in cl:
-            nxt = toks[i + 1] if i + 1 < len(toks) else None
-            zh = (nxt.group(2) if nxt is not None
-                  and "zh-h" in nxt.group(1).split() else "")
+            zh = nxt.group(2) if "zh-h" in _ncl else ""
             lab = _nav_label(_plain_nav(zh), _plain_nav(t.group(2)))
             if lab:
                 return lab
         elif "zh-h" in cl:
-            lab = _nav_label(_plain_nav(t.group(2)), "")
+            en = nxt.group(2) if "en-h" in _ncl else ""
+            lab = _nav_label(_plain_nav(t.group(2)), _plain_nav(en))
             if lab:
                 return lab
     return f"(cont. {k})" if lang == "en" else f"（续{k}）"
