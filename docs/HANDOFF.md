@@ -18,7 +18,8 @@ wsl.exe -- bash /mnt/c/<项目>/tools/_run.sh run_book.py \
   --all --build --llm --ai-fill-missing --skip-flag --out <输出目录>
 # ③ 门禁（人眼级，不看 stdout 指标）
 python tools/dbg_bookscan.py <成品.epub>          # 应全 0
-python tools/dbg_qa.py <成品.html> 20            # 当前 32 项
+python tools/dbg_qa.py <成品.html> 20            # 当前 103 项
+python tools/dbg_order.py <成品.html>            # ★ 对内顺序（qa 测不到，见 §6.20）
 ```
 
 **必须先复制 `.env`**：LLM key 不在库里（`.gitignore` 第 2 行 `.env`），
@@ -181,6 +182,11 @@ tools/mk_review_bundle.py 成品 HTML → 给外部模型（Gemini 等）评审�
                           （逐对导出 + 章号对照表 + 原书英文全文；秒级零 LLM）
 tools/dbg_bookscan.py     ★ 整本成品扫描门禁（前缀/泄漏/缺中文/nav）
 tools/dbg_qa.py           ★ 人眼级门禁（连续同侧段/宽组/标记泄漏/重复标题）
+                          ⚠ **它的 ① 号判据测不到「每对内部谁在前」**（序言那类
+                          zh/en 完美交替的倒置，恒返回 0）。见 §6.20。
+tools/dbg_order.py        ★★ 对内顺序尺子（零 LLM、1 秒）：逐 pair 判 zh/en 谁在前，
+                          全书 + 逐文档统计，`--list` 列出所有 en-在前的 pair。
+                          **和 `dbg_qa.py` 测的是正交维度，两把都要跑。**
 tools/dbg_eqpos.py        公式位置 vs 英文原版（按编号比对）
 tools/dbg_eqcheck.py      成品公式守恒/编号唯一/死链（exit 0 = 全绿）
 tools/dbg_sec.py          倒出指定小节全部配对全文（人审错位专用）
@@ -774,6 +780,68 @@ think2/ml 无变化 · prob `matched 498→505` / `warn 56→47`。
 （`warn 1→0` 是白名单**挡住**了那次改动）。
 
 **门禁（prob_p2c 成品）**：bookscan `0/0/371` · qa `103` · eqcheck `exit 0`。
+
+
+### 6.20 ★★ 用户点名「序言中英倒置 / 标题对齐错」——**我的门禁是瞎的**（2026-09-18 13:3x）
+
+**用户原话**：「序言部分也有 中英文段落倒置 对齐错误；标题中文对其错误。你能看见吗」
+
+**先回答"能不能看见"**：**不能。** 我此前报的 `qa 103` 里**一条都没覆盖这两类**，
+是用户肉眼发现的。**这是我这一轮最该记下来的教训。**
+
+#### ① ⚠ 根因：`dbg_qa.py` 量的是「同侧粘连」，不量「**每对内部谁在前**」
+
+`dbg_qa.py` ①号判据只抓「≥3 个**同侧**段连成一坨」。而序言的错法是
+**zh/en 完美交替**（`ZH, EN, ZH, EN…`），**一个同侧串都没有** ⇒ 恒返回 0。
+**实测确认**（构造该序列喂给 qa 的判据）：抓到 **0 条**。
+
+⇒ 两把尺子测的是**正交维度**，我只有一把。**这是判据设计的漏项，不是疏忽。**
+
+**新增 `tools/dbg_order.py`**（零 LLM、1 秒）：逐 `.pair` 判「第一个带侧别的
+子元素是 zh 还是 en」，全书统计 + 逐文档报警。
+
+#### ② ★ 实测结果 —— 与我的预期**不一致**，以实测为准
+
+```
+ch1     6 zh在前 / 0 en在前   ← ch1 在 HTML/EPUB 里其实是 zh 在前（正确）
+ch2    50 / 5
+ch31  320 / 208   ⚠
+ch32  216 / 218   ⚠
+ch35    0 / 371   ⚠
+全书  5105 zh在前 / 1031 en在前  = 16.8%
+```
+
+⚠ **注意 `ch1` 是 6/0**：用户在阅读器里看到的 ch1 倒置，**不是 DOM 顺序问题**
+—— 而是 `style.css` 里 `.ord-zh .pair > .zh { order: 1 }` 那套 **flex `order`
+依赖 CSS**（`build.py:230` 的注释里写过「阅读器不支持 flex order 时退化成
+DOM 顺序」，`_reorder_pairs` 就是为了防这个）。若某阅读器/某章
+`ord-zh` 类没落到，就整体翻成 **en 在前**。
+⇒ **`ch31 / ch32 / ch35` 那 1031 个 en-在前 pair 才是真异常**，优先查这三个。
+
+#### ③ 另一类真错（与顺序无关，是**对齐**）：`Preface` 标题被吞成正文段
+
+`ch02`（前言）pair 0 的原始 HTML：
+
+```html
+<p class="zh zh_transed">本书的读者应该：(1) 熟悉应用数学…</p>
+<p class="en en_original"><a id="page_xvii"/>Preface</p>          ← 英文「Preface」标题
+<p class="en en_original">The following material is addressed to readers…</p>
+```
+
+**一个中文段配了两个英文段**，其中一个（`Preface`，带 `<a id="page_xvii"/>`
+页码锚点）**本该是英文侧的节标题**，被解析成正文段 → 与后一段一起并给了
+中文段 ⇒ 中文侧看起来"对错了位置"。同类还有 `E. T. Jaynes` / `July, 1996`
+（前言末尾的署名，`<30` 字符的短英文段）—— 见 §6.17「先查解析器」。
+**这是解析层（页码锚点下的标题未识别）问题，不是对齐算法问题。**
+
+#### ④ 纪律（写进 `勘误流水线设计.md` §四点五）
+
+> **报「门禁全绿」之前，必须先证明尺子能测出该缺陷。**
+> 一把测不出已知缺陷的尺子，绿不绿都没有信息量。
+> 本轮 `qa 103` 就是这样一把尺子 —— 数字是真的，**覆盖是假的**。
+
+**下一步**：先修 `dbg_order.py` 扫出的 ch31/ch32/ch35（1031 个 pair），
+再修 `ch02` 的 `Preface` 标题识别。**两件都还没做**（用户还没点头）。
 
 
 **(4) 全书写真正的「英文多、中文少」清单（`diag_bysec.py`，按小节统计）**
