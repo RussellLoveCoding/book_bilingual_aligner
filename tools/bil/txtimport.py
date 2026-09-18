@@ -113,6 +113,58 @@ def _bare_subhead(line: str, lang: str) -> str:
     return t
 
 
+# **缩进小标题**（2026-09-18 新增）：源稿里以「一个前导空格」开头的短行。
+#
+# ⚠ 实测背景（prob_zh.md，本仓库又一例「看起来像漏译、其实是解析」）：
+#   中文源里有 29 处小标题写成**带一个前导空格的独立段**：
+#       `\n\n 我曾经犯的错误\n\n多年以来，由于使用非正常先验的贝叶斯计算…`
+#   它们既不是 `#` 标题（`_MD_HEAD_RE` 不认），也不满足 `_bare_head`
+#   （长度 >12 或不在词表里）→ 走 `flush()` 变成普通 `para`，
+#   且 `flush` 里 `" ".join(x.strip() …)` 把前导空格也吃掉了 →
+#   「我曾经犯的错误」与下段正文**融合成一个块**。
+#
+#   后果是**段落数少 1**，于是段落 DP 的预算错位，在局部退化成 (1,2)/(2,1)，
+#   把相邻英文段挤成「孤儿」→ 成品里出现 8 处「仅英文散文段」，
+#   看起来像「中文漏译」。实际译文**完整存在**，只是被并进了邻段。
+#   （实证：pair[3304] 的英文 `For many years, the present writer…`
+#    其译文「我曾经犯的错误多年以来…」出现在 pair[3306]。）
+#
+# 判据三连（在 8500 段的全文件上验证 **29 命中 / 0 误伤**）：
+#   ① 行首有空白（半角空格 / 全角空格 / Tab）
+#   ② 去空白后 ≤24 字
+#   ③ 不含句读标点（含则排除 —— 唯一反例 `' 无差别是基于知识还是无知？'`
+#      就是被这条挡住的）
+#   对照组：无前导空格的「短+无句读」有 398 处（`## 出版信息`/ISBN/版权页…），
+#   **全都没有前导空格** → 不会被本条误提。故①是必要的独立信号。
+_INDENT_HEAD_MAX = 24
+_INDENT_PUNCT_RE = re.compile(r"[。！？；：，、.!?;:,]")
+# 缩进行若以这些开头，是别的 md 结构（标题/列表/表格/引用/围栏），
+# 不能当小标题 —— 上游分支没覆盖「缩进的 md 标题」（`_MD_HEAD_RE` 要求
+# `#` 在第 0 列），这里补一手兜底。
+_INDENT_OTHER_RE = re.compile(r"[#>\|\-*+`~]")
+
+
+def _indent_subhead(raw: str, lang: str) -> str:
+    """缩进小标题（「一个前导空格的短行」）。命中返回标题文本，否则空串。
+
+    ⚠ 只对中文生效：英文原版的子标题是标准 `<h*>`，没有实测样本，
+      不做无依据的放宽。
+    ⚠ 不处理 `>` 引用 / `![` 图片 / `$$` 公式 —— 它们由调用方更早分流。
+    """
+    if lang != "zh":
+        return ""
+    if not raw or raw[0] not in " \u3000\t":
+        return ""
+    t = raw.strip()
+    if not t or len(t) > _INDENT_HEAD_MAX:
+        return ""
+    if _INDENT_PUNCT_RE.search(t):
+        return ""
+    if _INDENT_OTHER_RE.match(t):
+        return ""
+    return t
+
+
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -268,6 +320,14 @@ def load_md(path, lang: str) -> dict[str, list]:
             flush()
             cur.append(Block(tag="h2", cls="", html=_esc(sub),
                              text=sub, type="heading", level=2))
+        elif (isub := _indent_subhead(raw, lang)):
+            # 缩进小标题（前导空格的短行，见 `_indent_subhead` 长注释）。
+            # 在当前单元内插 level=2 的 heading 块，与 `_bare_subhead` 同级。
+            # ⚠ 必须是 `raw`（带缩进）而不是 `line`（已 rstrip）：前导空格
+            #   就是判据本身。
+            flush()
+            cur.append(Block(tag="h2", cls="", html=_esc(isub),
+                             text=isub, type="heading", level=2))
         else:
             # md 引用标记（minerU 题词用「> / > >」）剥掉——它们是排版
             # 记号不是内容，留着会原样漏进成品（2026-09-17 ch1 实测）

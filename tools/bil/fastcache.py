@@ -19,7 +19,7 @@ import json
 import os
 from pathlib import Path
 
-_V = 15  # v15：卷头标题 `fm-title` / `fm-title1` / `fm-title2`（front matter）判 heading
+_V = 16  # v16：中文 md 的「缩进小标题」（前导空格的短行）提升为 heading
          #      —— 用户点名「序言~第二章 标题中文对齐错」的根因：英文侧吞掉标题、
          #      中文侧（raw md `### 前言`）有 → 该标题之下小节配对整体左偏一格。
          #      实测全书 5 处，全在卷头（Contents / Editor's foreword /
