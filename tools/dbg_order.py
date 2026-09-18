@@ -48,6 +48,25 @@ zh/en **完美交替**（ZH, EN, ZH, EN…），一个同侧串都没有 ⇒ **q
   bash _run.sh dbg_order.py <成品.html> --doc ch02  # 只看某个文档
   bash _run.sh dbg_order.py <成品.html> --list      # 真·顺序倒置的 pair
   bash _run.sh dbg_order.py <成品.html> --listone   # 仅英文段（缺中文）
+  bash _run.sh dbg_order.py <成品.html> --heads     # 只跑标题次序判据
+
+## 第三条判据：标题次序（2026-09-18 补）
+
+前两条判据只看 `.pair` 内部，**完全测不到标题**（标题在 pair 之外）。
+用户报「标题中文对齐错误」，根因是：
+
+    正文 pair ：`_reorder_pairs(zh_first=True)` → DOM 是 zh 先、en 后
+    标题     ：`_head_block` 曾是恒发 en 先、zh 后 → **与正文相反**
+
+同一个 xhtml 里两种顺序，读者看到「英文标题 / 中文标题 / 中文正文 /
+英文正文」—— 中文标题被英文标题和中文正文夹住、与自己的正文脱节。
+`ord-zh` 的 CSS `order` 只作用于 `.pair` 子树，管不到标题。
+改 `_head_block` 为 zh 先后，本判据 342 → 0。见 `scan_headings()`。
+
+⚠ **三个判据正交，缺一不可**：
+  ① `.pair` 内部顺序（`scan`）
+  ② 单侧段（`only_en` / `only_zh`）
+  ③ **标题顺序**（`scan_headings`）—— 本节新增，专门补 ①② 的盲区
 """
 from __future__ import annotations
 
@@ -137,6 +156,65 @@ def scan(html: str) -> dict[str, Counter]:
     return res
 
 
+_H_RE = re.compile(r"<h([234])\b([^>]*?)>(.*?)</h\1>", re.S)
+
+
+def scan_headings(html: str) -> dict:
+    """量**标题**的中英先后 —— `scan()` 只管 `.pair`，测不到标题。
+
+    这是 2026-09-18 补的第三条判据（用户报「标题中文对齐错误」）：
+
+        .pair  内部 ：`_reorder_pairs(zh_first=True)` → DOM 是 zh 先、en 后
+        h2/h3/h4    ：`_head_block` 曾是恒发 en 先、zh 后 → **与正文相反**
+
+    ⇒ 中文读者看到「英文标题 / 中文标题 / 中文正文 / 英文正文」：中文标题
+    被英文标题与自己的正文夹在中间。`ord-zh` 的 CSS `order` 只作用于
+    `.pair` 子树，**管不到标题**，阅读器不会纠正 —— 所以必须由尺子抓。
+
+    判据：按 DOM 序取出全部 h2/h3/h4，以「中间夹着 `.pair` 或较长文本」
+    为切点**分组**（相邻紧挨的标题算一组，即同一个小节的两行标题）；
+    组内若 zh-h 与 en-h 都有，看谁在前。
+
+    返回 {"pairs": 组数, "zh_first": n, "en_first": n, "bad": [样本]}。
+    """
+    hs = [(m.start(), m.group(0)) for m in _H_RE.finditer(html)]
+    groups: list[list[tuple[int, str]]] = []
+    cur: list[tuple[int, str]] = []
+    for pos, h in hs:
+        if cur:
+            gap = html[cur[-1][0] + len(cur[-1][1]):pos]
+            # 中间有正文对、或有其它可见内容 → 不是同一组标题
+            if '<div class="pair"' in gap or len(gap.strip()) > 40:
+                groups.append(cur)
+                cur = []
+        cur.append((pos, h))
+    if cur:
+        groups.append(cur)
+
+    zh_first = en_first = 0
+    bad: list[tuple[str, str]] = []
+    for g in groups:
+        sides = []
+        for _, h in g:
+            mm = re.search(r'class="([^"]*)"', h)
+            cl = mm.group(1) if mm else ""
+            if "en-h" in cl:
+                sides.append(("en", re.sub(r"<[^>]+>", "", h)))
+            elif "zh-h" in cl:
+                sides.append(("zh", re.sub(r"<[^>]+>", "", h)))
+        s = [x[0] for x in sides]
+        if "en" not in s or "zh" not in s:
+            continue
+        if s.index("zh") < s.index("en"):
+            zh_first += 1
+        else:
+            en_first += 1
+            if len(bad) < 12:
+                bad.append((sides[0][1], sides[1][1]))
+    return {"pairs": zh_first + en_first, "zh_first": zh_first,
+            "en_first": en_first, "bad": bad}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -149,9 +227,29 @@ def main() -> int:
                     help="列出**全部** en 在前的 pair，并标注所属文档与类别")
     ap.add_argument("--min", type=int, default=3,
                     help="某文档 en_first 达到该数才单独报警")
+    ap.add_argument("--heads", action="store_true",
+                    help="只跑标题次序判据（h2/h3/h4 的 zh-h/en-h 谁在前）")
     args = ap.parse_args()
 
     html = open(args.src, encoding="utf-8").read()
+
+    # ── 标题次序判据（2026-09-18 新增；见 scan_headings 的 docstring）──
+    hd = scan_headings(html)
+    if hd["pairs"]:
+        print("★ 标题次序（h2/h3/h4 的双语标题对）")
+        print(f"   双语标题对 {hd['pairs']} 组 · 中文在前 {hd['zh_first']}"
+              f" · 英文在前 {hd['en_first']}")
+        if hd["en_first"]:
+            print(f"   ❌ 有 {hd['en_first']} 组**英文标题在前** —— 与正文"
+                  f"（中文在前）不一致，中文标题会与自己的正文脱节")
+            for a, b in hd["bad"]:
+                print(f"       {a[:34]!r} -> {b[:30]!r}")
+        else:
+            print("   ✅ 全部中文在前，与正文同向")
+        print()
+    if args.heads:
+        return 0
+
     res = scan(html)
 
     tot = Counter()
