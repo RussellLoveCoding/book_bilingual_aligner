@@ -1,5 +1,32 @@
 # CODEBUDDY.md — 双语 epub 流水线 · 接手须知
 
+> ## 🟦 国际版 WorkBuddy 接手（必读，先看这段）
+>
+> 你（国际版）会在本项目根建 **`.workbuddy-ai/`**；而本项目的**代码/脚本/文档
+> 到处写死的是 `.workbuddy/`**（上一台是中文版 WorkBuddy）。两者是**不同目录**，
+> 但下面这些东西**必须继续用 `.workbuddy/`，不要去 `.workbuddy-ai/` 找**：
+>
+> | 东西 | 位置（**固定**） | 说明 |
+> |---|---|---|
+> | **源书** | `.workbuddy/tmp/books/` | `prob_en.epub` / `prob_zh.md` / `nexus_*` / `think2_*`。**gitignored，必须手动搬** |
+> | **历史日志** | `.workbuddy/memory/*.md` | 上一台的全部逐日工作记录（**gitignored**，不在库里！） |
+> | 诊断临时产物 | `.workbuddy/tmp/` | 一堆 `*.log` / 验收脚本 |
+>
+> ⇒ **你的 `.workbuddy-ai/` 只管你自己的会话状态；`.workbuddy/` 是项目数据，
+> 照旧读写，别另起炉灶、别把源书复制进 `.workbuddy-ai/`。**
+> 两者都已在 `.gitignore` 里（`.workbuddy/` 第 6 行、`.workbuddy-ai/` 末行）。
+>
+> ⚠ **`.workbuddy/memory/` 不在 git 里** —— 如果你拿到的是**另一台机器/另一次
+> clone**，那份日志可能没跟过来。**这时以 `docs/HANDOFF.md`（已入库）为唯一权威**，
+> 它把跨会话必须知道的东西全写进去了（当前指标、未完成、坑、`_V` 版本表）。
+>
+> **搬项目到新机器时的最小清单**：① 复制 `.env`（LLM key，含 `LLM_MODEL=qwen3.7-flash`）
+> ② 复制 `.workbuddy/tmp/books/`（源书，版权+体积，不入库）
+> ③（可选）复制 `.workbuddy/memory/`（日志，便于查历史）。
+> **缓存不用搬**：在 WSL `~/.cache/bil`，同一台机器自动共享；缓存＝钱，别清。
+>
+> 详细流程见 **`docs/HANDOFF-国际版.md`**。
+
 把「英文原书 + 中译本」合成**段段对照的双语 epub**（输入 epub/txt/md 皆可，成品格式随输入）。
 核心难点是跨语言对齐：中译本常重排章节、合并/拆分段落、漏译整段。
 
