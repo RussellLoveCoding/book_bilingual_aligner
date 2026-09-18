@@ -174,6 +174,59 @@ def _content_docs(docs: dict, keys: dict) -> list:
     return out
 
 
+def _first_title(blocks) -> str:
+    return next((b.text for b in blocks if b.type == "heading"), "")
+
+
+_ACK_WORD = re.compile(r"^致谢|acknowledg", re.I)
+_PREFACE_WORD = re.compile(r"^(前言|序言|自序|导言|preface|foreword|introduction)", re.I)
+
+
+def _fold_preface_ack(en_docs: dict, zh_docs: dict) -> dict:
+    """中文版把「致谢」**单独成档**、英文版却是**前言的末小节** → 章映射
+    只能把它判成「中文独有章」。
+
+    实测（prob，2026-09-18）：ZH `md004 致谢`（4 段，紧跟 `md003 前言`），
+    EN 侧没有任何 acknowledgments 文档，`Acknowledgments` 是
+    `08_fm-chapter1`（Preface）**内部**的末小节。后果：① Jaynes 的致谢
+    在成品里出现**两遍**（独有章整页中文 + 前言章里 EN-only/AI 补译）；
+    ② 前言章尾部的英文致谢段全部失去中文对照。
+
+    修法：映射**之前**把这类单元折回前言。三条判据**同时**成立才折
+    （缺一不可，防误伤译者自写的致谢）：
+      ① EN 侧**没有** acknowledgments 独立文档（有 → 应该让它们对上，不折）；
+      ② 某个 EN **前言类**文档**内部**确实有 `Acknowledgments` 行
+         （证明「致谢属于前言」是英文原版的结构，不是我的猜测）；
+      ③ ZH 致谢单元的前一个单元是 前言/序言 一类。
+    排在 参考文献/索引 附近的**译者致谢**不满足 ③ → 照常保持独立成章。
+    """
+    if any(_ACK_WORD.match(_first_title(b).strip()) for b in en_docs.values()):
+        return zh_docs                       # ① 英文有独立致谢文档 → 不折
+    _en_inline = any(
+        _PREFACE_WORD.match(_first_title(b).strip())
+        and any(_ACK_WORD.match((x.text or "").strip()) for x in b
+                if getattr(x, "type", "") != "heading"
+                or x is not next(iter(b)))
+        for b in en_docs.values())
+    if not _en_inline:
+        return zh_docs                       # ② 英文前言里没有致谢小节 → 不折
+    order = [p for p, b in zh_docs.items()
+             if any(x.type != "heading" for x in b)]
+    _zh_titles = {p: _first_title(zh_docs[p]).strip() for p in order}
+    for _i, p in enumerate(order):
+        if not _ACK_WORD.match(_zh_titles[p]):
+            continue
+        if _i == 0 or not _PREFACE_WORD.match(_zh_titles[order[_i - 1]]):
+            continue                         # ③ 前一个单元不是前言类 → 不折
+        prev = order[_i - 1]
+        zh_docs[prev] = list(zh_docs[prev]) + list(zh_docs[p])
+        del zh_docs[p]
+        print(f"[章映射] 中文「{_zh_titles[p]}」折回前一个单元"
+              f"「{_zh_titles[prev]}」（英文版致谢是前言的末小节，非独立文档）")
+        return zh_docs
+    return zh_docs
+
+
 def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
                  llm=None, en_toc: dict | None = None,
                  zh_toc: dict | None = None) -> list[ChapterPair]:
@@ -189,6 +242,9 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     en_toc/zh_toc：epub 目录（{文件名: 目录标题}）。正文里的章标题可能只有
     「第2章」甚至不是 heading（真实章名排在开篇插图之后）——目录是零成本的
     完整章名来源，优先用它。"""
+    # ⚠ 先做「致谢折回前言」（见 _fold_preface_ack）：不折的话章映射只能把
+    # 它判成中文独有章，同一内容在成品里出现两遍（prob 实测）。
+    zh_docs = _fold_preface_ack(en_docs, zh_docs)
     en_keys = {p: key_of_en(b, p) for p, b in en_docs.items()}
     zh_keys = {p: key_of_zh(b) for p, b in zh_docs.items()}
     zh_by_key = {}
