@@ -844,6 +844,89 @@ DOM 顺序」，`_reorder_pairs` 就是为了防这个）。若某阅读器/某�
 再修 `ch02` 的 `Preface` 标题识别。**两件都还没做**（用户还没点头）。
 
 
+### 6.21 ★★ 序言~第二章的「标题对齐错」= 解析器丢了 `fm-title*` 卷头标题（2026-09-18 13:5x）
+
+用户点名范围：「**序言部分到第二章**」的 ①中英段落倒置 ②**标题对齐错误**。
+本节把 ② 查到根因（① 见 §6.20 ②）。
+
+#### ① 根因：英文原版卷头标题的 class 是 `fm-title*`，解析器**一个都不认**
+
+英文 epub 里卷头标题长这样（`prob_en.epub`）：
+
+```html
+<p class="fm-title2"><a id="page_xvii"/>Preface</p>          ← 08_fm-chapter1.html
+<p class="fm-title2"><a id="page_xvii"/>Editor’s foreword</p> ← 07_fm-chapter.html
+<p class="fm-title2">Contents</p>                             ← 06_toc.html
+<p class="fm-title">PROBABILITY THEORY</p>                    ← 02_half-title.html
+<p class="fm-title1">THE LOGIC OF SCIENCE</p>                 ← 02_half-title.html
+```
+
+`_semantic_type()`（`epubparse.py:375`）判 heading 的两条路**都不匹配**：
+
+| 判据 | 正则 | `fm-title2` 为什么不过 |
+|---|---|---|
+| `_CLASS_HEAD_RE` | `(?:^\|[\s_-])h([1-6])(?:[a-z])?(?:[\s_-]\|$)` | 类名里**没有 `hN`** |
+| `_CLASS_TITLE_RE` | `(?:chapter\|section\|part)[\s_-]?title` | **没有 chapter/section/part 前缀** |
+
+⇒ 落到 `return "para"` —— **卷头标题被当成正文段**。
+
+**中文侧却是有标题的**（`prob_zh.md` 里是 raw markdown `### 前言` / `### 编者序`），
+⇒ **英文少一个标题、中文有一个** ⇒ 该标题起的小节配对**整体左偏一格**。
+这正是用户看到的「标题中文对其错误」。
+
+#### ② 量：全书只有 **5 处** `fm-title*`，全是卷头
+
+```
+[fm-title2] Contents
+[fm-title2] Editor’s foreword
+[fm-title]  PROBABILITY THEORY
+[fm-title1] THE LOGIC OF SCIENCE
+[fm-title2] Preface          ← 用户报的「前言」
+```
+
+**零副作用**：其余 1782+ 个无 class 的 `p`、1418 个 `para`、1315 个 `noindent1`
+**都不受影响**（它们不匹配 `fm-title` 任何形态）。
+
+#### ③ 拟修（**已离线验证，尚未落库**）
+
+在 `_semantic_type` 里加第三条判据（与另两条并列，仍要过
+`_looks_like_heading` 兜底）：
+
+```python
+_CLASS_FM_TITLE_RE = re.compile(
+    r"(?:^|[\s_-])fm[\s_-]?title\d*(?:[\s_-]|$)", re.I)
+```
+
+离线验证结果（`_semantic_type` 直接调用）：
+
+| class | text | 现判 | 修判 |
+|---|---|---|---|
+| `fm-title2` | Preface | para | **heading** |
+| `fm-title2` | Editor's foreword | para | **heading** |
+| `fm-title2` | Contents | para | **heading** |
+| `fm-title` | PROBABILITY THEORY | para | **heading** |
+| `fm-title1` | THE LOGIC OF SCIENCE | para | **heading** |
+| `chapter-title` | Chapter 1 | heading | heading ✓ 不变 |
+| `h2a` | 13.12.1 'Objectivity' | heading | heading ✓ 不变 |
+
+⚠ **这是解析行为改动** ⇒ 落库时 **`_V` 必须 +1**（现 14 → 15），
+且要重跑 `dbg_bookscan` / `dbg_qa` / `dbg_order` / `dbg_eqcheck` / `regress`。
+⚠ 用户铁律：解析类改动＝全书 prompt 失效，**攒到 00:30–08:30 半价时段做**。
+**本轮只做了诊断与验证，没有改 `epubparse.py`。**
+
+#### ④ 同族：`ch02` 的 pair0「1 中文段 + 2 英文段」
+
+```
+ZH  本书的读者应该：(1) 熟悉应用数学…
+EN  <a id="page_xvii"/>Preface          ← 就是上面那个被吞的标题
+EN  The following material is addressed to readers…
+```
+
+**一旦 ① 修好，`Preface` 变回 heading，这个「1zh/2en」自然消失。**
+同类还有前言末尾署名 `E. T. Jaynes` / `July, 1996`（`en_original` 短段），
+以及 `ch02-s6 Acknowledgments`（nav 里有、正文里整节只有英文无中文）。
+
+
 **(4) 全书写真正的「英文多、中文少」清单（`diag_bysec.py`，按小节统计）**
 
 | 小节 | zh | en | Δ | 性质 |
