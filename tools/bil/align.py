@@ -1034,7 +1034,27 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
     enums = [numbers(p.text) for p in en_ps]
     znums = [numbers(p.text) for p in zh_ps]
 
+    # §6.57（2026-09-19）：**代码块不许吃中文**。
+    #
+    # 用户定调 ③④：代码不译、代码/图/公式以英文原版为准。§6.50 只堵住了
+    # 「回译」那条路（不给代码块补中文），**DP 本身并不知道这件事** ——
+    # 代码块照样作为可对齐单元参与配对。ML 全书实测：
+    #   697 个「英文侧全是代码」的 pair 里，**213 个配上了中文，白吃掉 238 段中文**
+    #   实例：`>>> housing.info()` ↔ 「在本书中，当代码示例包含…」、
+    #        `import matplotlib…` ↔ 「图2-8：每个数值属性的直方图」、
+    #        `from zlib import crc32…` ↔ 「不幸的是，房屋数据集没有标识符列…」
+    # 每吃掉一段，后面的正文就整体错开一格 —— 这是 ML 正文缺中文 22% 的一大来源。
+    #
+    # 判据用**结构性信号** `p.type == "code"|"pre"`，不用词表猜代码长什么样（铁律 11）。
+    en_is_code = [(getattr(p, "type", "") or "").lower() in ("code", "pre")
+                  for p in en_ps]
+
     OPS = list(OPS_WIDE)
+
+    # §6.57：代码块配中文的惩罚。取「比任何正常代价都大」的常数即可 ——
+    # 目的是让 `b=0`（英文块空着）**严格更便宜**，而不是制造 INF 把 DP 逼到
+    # 无解（`bp[i][j] is None` 的兜底路径会丢内容，代价更大）。
+    CODE_NOZH = 100.0
 
     def pair_cost(i, a, j, b):
         if a == 0 and b == 0:
@@ -1043,6 +1063,10 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
             return GAP * sum(zmass[j:j + b]) / avg
         if b == 0:
             return GAP * sum(emass[i:i + a]) / avg
+        # §6.57：英文侧**全是代码块** → 不许消耗中文段。
+        # 挂上去的是图注 / 代码约定说明 / 正文，全都是别的段落该用的中文。
+        if a > 0 and all(en_is_code[i:i + a]):
+            return GAP * sum(emass[i:i + a]) / avg + CODE_NOZH
         eM = sum(emass[i:i + a])
         zM = sum(zmass[j:j + b])
         cost = abs(eM - zM) / avg
