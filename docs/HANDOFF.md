@@ -4155,3 +4155,186 @@ USE_LEXICON = bool(int(os.environ.get("BIL_USE_LEXICON", "0") or "0"))
 `ls` 通配展开后的字符串，也不认 `\c\...` 反斜杠形态）。
 修法：`PY="${PY:-python}"` + `PROJECT_W="$(... pwd -W)"`，产物路径一律走 `C:/...`。
 本轮的取证方式是**成品 HTML 直读**（小节标题流逐位对照）。
+---
+
+## §6.73 本轮交接单（2026-09-19 · `fbd979e`）
+
+### 一、这轮干了什么（用户四条指令）
+
+| # | 指令 | 状态 |
+|---|---|---|
+| ① | `BIL_USE_LEXICON` 改成 0 | ✅ `align.py:71` 默认 `"0"`，注释重写为三条硬证据 |
+| ② | webui 保持一致性 | ✅ `app.py` 三处修复（架构口径 / fill 默认 / 对照顺序提示） |
+| ③ | tidy 代码 + commit | ✅ 提交 `fbd979e`（18 files, +313/−1495），**未 push** |
+| ④ | tidy 工作目录 | ✅ 工程 6.6G → 1.6G，`diag/` 125→74 项，`tmp/` 453→24 项 |
+| ⑤ | 写交接单 | ✅ 本节 |
+
+### 二、★ 先回答用户的第一句话：「智人之上成品没加上 LLM 修复敏感内容删改」
+
+**这是事实，根因已定位 —— 但本轮没有改代码，因为需要你拍板。**
+
+#### 根因（两层）
+
+**第一层：跑四本的脚本把审查修复整步跳过了。**
+
+`tools/run_four_par.sh` 的执行体带 `--skip-flag`：
+
+```sh
+python tools/run_book.py \
+  --en "$B/$EN" --zh "$B/$ZH" --all --build --no-llm-chapters --skip-flag \
+  --out "$PROJ_W/diag/${NAME}_${SUF}"
+```
+
+而 `tools/run_book.py:214`：
+
+```python
+if not args.skip_flag:
+    apply_error_repair(...)      # ← 审查检测+修复的唯一入口
+```
+
+⇒ **只要带 `--skip-flag`，`apply_error_repair` 一次都不会被调用**，四本成品全都
+没有审查修复。这不是 bug，是这个脚本的定位（**快跑/回归**），但它产出的东西
+会被误当成「正式成品」。
+
+**第二层：即便去掉 `--skip-flag`，审查删节也检测不到。**
+
+`tools/bil/pipeline.py:936` 的 `apply_error_repair` 第一件事是：
+
+```python
+for p in res.pairs:
+    if not p.en or not p.zh:
+        continue          # ← 只收「中英都在」的 pair
+```
+
+而**审查删改的表现恰恰是「中文侧缺了」** —— 缺中文的 pair 在循环开头就被
+`continue` 掉了。也就是说：**这个函数对「审查删改」这种病天然失明**，
+它擅长的是「中英都在但中英对不上」（skew/offset），不是「中文被删」。
+
+#### 正确跑法（当前能力边界内）
+
+```sh
+# 单本，带审查修复
+python tools/run_book.py \
+  --en .workbuddy/tmp/books/nexus_en.epub \
+  --zh .workbuddy/tmp/books/nexus_zh.epub \
+  --all --build --no-llm-chapters \
+  --ai-repair-censor \
+  --out diag/nexus_censor
+```
+
+关键点：
+* **不要**加 `--skip-flag`；
+* 必须加 `--ai-repair-censor`（`run_book.py:97`，默认关）；
+* 计费：`apply_error_repair(bool)` 会对**每对双侧 pair** 过一次 LLM，
+  nexus 1174 pair ⇒ 按 `--batch` 分批。**预估 >¥0.5，跑之前先确认**（铁律 5）。
+
+#### 建议（等你拍板，本轮没动）
+
+要让「审查删改」真能被修，需要改 `apply_error_repair` 的入口条件：
+把「缺中文的 pair」也纳入送检（它们才是删改的现场），并让 LLM 依英文原文
+**补出被删的中文**（这条链路已有：`llm.repair_censored` → `p.zh_fix` →
+渲染 `censorship_fix` class）。
+
+这是**改代码**，不是「跑一下」——你之前明确说过「不是让你修复我的程序」，
+所以我停在这里汇报，**没有擅自动手**。
+
+### 三、① `BIL_USE_LEXICON` 默认改 0（已完成）
+
+```python
+USE_LEXICON = bool(int(os.environ.get("BIL_USE_LEXICON", "0") or "0"))
+```
+
+三条证据（详见 `§6.68` 与 `align.py` 顶部注释）：
+1. **不参与段落定稿** —— 生产路径两处 `align_section(a,b,k=K)` 都不传 `lex`；
+2. **把 ml 对齐改错** —— ch6 章首 `EN[4]` 与 `ZH[5]` 的标题对应整条消失；
+3. **贵 49%** —— 37.13s → 18.82s。
+
+**改默认值后的回归取证**（`diag/*_v71` 对拍关词表基线 `diag/*_par2`）：
+
+| 项目 | 结果 |
+|---|---|
+| epub 逐文件 sha256 | ml 555 / think2 99 / prob 2154 / nexus 56 个文件，**只有 `content.opf` 时间戳不同** |
+| `gates_uni.sh` 四项 | 四本输出**逐字符相同**（仅目录名不同） |
+| `dbg_drift` | 四本**逐字节相同**（仅路径行不同） |
+| 单测 | **15 passed / 0 failed** |
+| 并行耗时 | **73s**（ml 72 · nexus 57 · think2 36 · prob 31） |
+
+`BIL_USE_LEXICON=1` 可开回历史行为对拍。
+
+### 四、② webui 一致性（已完成，三处）
+
+| 问题 | 修法 |
+|---|---|
+| **静默产 legacy 排版** —— `BIL_ARCH` 模块默认 `legacy`，webui 裸启动不设环境变量，而 CLI 侧 `run_four_par.sh` 显式设 `unified` ⇒ 两边产物形态不同（en/zh 先后、行间元素落位） | `main()` 里导入 `bil` **之前** `os.environ.setdefault("BIL_ARCH","unified")`；加 `--legacy-arch` 回退；启动 banner 打印当前架构 |
+| **`fill` 默认与 CLI 相反** —— CLI `--ai-fill-missing` 默认关，webui 默认开 | 三处同步改关：界面去 `checked`、`opts.get("fill", False)`、`fields.get("fill", "0")` |
+| **「对照顺序」在统一架构下失效**（英文骨架恒在前） | 加 `<span class="pill">统一架构下由架构决定</span>` + `title` 说明 |
+
+> 已验证：默认启动 banner 显示 `unified`，`--legacy-arch` 显示 `legacy`，
+> `BIL_ARCH=unified` 显式覆盖仍生效。
+
+### 五、③ 代码 tidy（已完成，行为零漂移）
+
+| 删除项 | 理由 |
+|---|---|
+| `GAP_MODEL` / `GAP_CONST` / `GAP_MASS` / `gap_cost()` | 备选模型 `c`，四本 A/B **否决**（prob 中文 −6423 字）、默认关、无上线可能。5 个调用点**内联回** `GAP * mass / avg` ⇒ 行为逐位不变，只留否决记录注释 |
+| `tools/bil/uni_style.py`（整文件） | 全库**无人 import**；其 `_TIGHT_CSS` 已被 `build.py` 内联的 `.arch-unified` 规则取代，是过期孤儿 |
+| 4 个 `_V_prev` 死变量 | 只写不读、重绑定 4 次、0 引用 ⇒ 收成一段版本沿革注释；`_V = 36` 不变，**缓存键不受影响** |
+| `pipeline.py` 两处「词表不接入」实验注释 | 结论已上移 `§6.68`，原地留注释是噪声 |
+| `import shutil`（`app.py`） | 未使用 |
+| 8 个一次性调试脚本 | `dbg_gapmisplace` / `dbg_prose_drift` / `dbg_secphase` / `dbg_zh_mass` / `probe_align_side` / `probe_head_idx` / `probe_pair_seq` / `rulers8`，全库无引用 |
+
+### 六、④ 工作目录 tidy（已完成）
+
+| 位置 | 前 | 后 | 说明 |
+|---|---|---|---|
+| `diag/` | 3.4G / 125 项 | **1.1G / 74 项** | 删 `prob_p3..p22` 试点(20)、`v62~v67c` 历史版本(22)、`ser`/`par`/`trial`/`uni` 重复跑(22)。**保留** `par2`/`v70`/`v71` 三套四本 + `*_final` + `样章` + 全部证据 html/png/md |
+| `.workbuddy/tmp/` | 2.2G / 453 项 | **284M / 24 项** | 删 `tmp/diag`(1.5G 旧布局产物)、重复产物目录、108 个 log；432 个探针脚本 → `_probes/`，166 个输出 → `_scratch/`；**保留 `books/` 书源** |
+| 工程总计 | 6.6G | **1.6G** | |
+
+新增入库：`tools/run_four_par.sh`（并行四本回归）、`tools/probe_ctx.py`。
+`.gitignore` 新增忽略 `tests/t1` `tests/t2` `tests/gold`（评测中间产物，证据留档不入库）。
+
+#### ⚠ `run_four_par.sh` 的 Windows 路径坑（已修）
+`PROJ="$(cd ... && pwd)"` 在 Git Bash 下给 `/c/...`，**原生 Python 打不开**
+⇒ 四本全部 `FileNotFoundError`。修法与 `gates_uni.sh` 同：再取一次
+`pwd -W` 的 `C:/...` 形态，凡交给 `python` 的路径一律用它。
+
+### 七、★ 本轮踩到并向你报备：git 仓库一度「假成功」
+
+**现象**：`git commit` 返回 **rc=0**，但 `git rev-parse HEAD` 报
+`fatal: ambiguous argument 'HEAD'`，`.git/refs/heads/` 为空。
+
+**根因**：`.git/gc.log.lock` 是一个**陈旧的 gc 锁**，它让 git 的 ref 写入
+**静默失败**（返回 0 但不落盘）。同时 reflog 报
+`references pruned commits` —— 有 gc 在删对象。
+
+**处置**：
+1. `rm -f .git/gc.log.lock`（清锁）；
+2. 确认**提交对象本身完好**（`git cat-file -p fbd979e` 正常，parent 指向 `31b10c7`）；
+3. 直接写 ref：`git rev-parse fbd979e > .git/refs/heads/feat/unified-immersive`；
+4. 顺带恢复 `/` 分支 `main → 096240b`；
+5. 核实：`git for-each-ref` 两个本地分支 + `git log --oneline` 链条完整。
+
+> **这就是铁律 13 的价值**：`rc=0` 不等于落盘。任何 `git commit` 之后
+> 必须 `git rev-parse HEAD` + `cat .git/refs/heads/<branch>` 双核实。
+
+**遗留风险**：`.git/gc.log.lock` 可能再次生成（若有自动 gc）。
+下次 commit 若又出现「rc=0 但 HEAD 不可解」，直接查这个锁。
+
+### 八、当前仓库状态
+
+```
+HEAD = fbd979e  §6.68 USE_LEXICON 默认改 0 + webui 口径对齐 CLI + tidy
+       31b10c7  §6.67-6.72 nexus 审查：跳节算子修复 + 两把新尺子 + 三条否决记录
+       3d35678  §6.62 行间元素落位改造 + §6.63 代码块语法高亮
+分支：feat/unified-immersive（当前）, main
+工作区：干净
+push：**未推**（按你之前的要求，push 由你自己来）
+```
+
+### 九、下一步建议（按优先级）
+
+1. **智人之上补审查修复** —— 需要先决定：是否动 `apply_error_repair` 的入口
+   条件（把「缺中文 pair」纳入送检）。**这是改代码，等你拍板。**
+2. **push** `fbd979e`（你自行执行）。
+3. 若要在别的书上做 A/B 对拍，`BIL_USE_LEXICON=1 sh tools/run_four_par.sh` 即可。
