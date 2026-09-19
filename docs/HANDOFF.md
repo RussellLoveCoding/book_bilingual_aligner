@@ -3822,7 +3822,7 @@ for bucket in slots:          # slots[i] = 第 i 个英文锚点后面挂的行�
 
 ## §6.64 nexus（智人之上）中文源书到位 —— 可做了
 
-### 此前状态（`docs/接手-下一步.md` C 项）：「这台机器上**没有中文源书**」
+### 此前状态（旧接手文档 C 项，该文档已并入本文件并删除）：「这台机器上**没有中文源书**」
 判据是 `nexus_en.epub` 与 `nexus_en_原版.epub` 字节数相同（5,671,582）。
 **该结论对英文侧成立，但漏了 Downloads 里的中文版** —— 用户 2026-09-19 指出。
 
@@ -4500,3 +4500,100 @@ origin/feat/unified-immersive = bf12cbb（本地缓存值，push 前应先 fetch
    换后**必须**用 EN-004 / EN-156 重测，不许再拿纯数字段下结论。
 3. `diag/` 若还要再瘦身，需删 `ml_v72`/`prob_v72`/`think2_v72`/`样章`
    （`output/` 已有副本），但会失去回滚余量 —— **等你拍板**。
+
+### 九、★ 接手入口（下一个模型 / 新开任务先读这一节）
+
+> 本文件是**唯一**交接文档（2026-09-19 起 `docs/接手-下一步.md` 已并入此处并删除）。
+> **SHA 一律 `git log --oneline -3` 现查**，别信任何文档里写的。
+
+#### 开工三步（别跳）
+
+```bash
+git log --oneline -3        # 应看到 02398b4 / c70175a / d772bf9
+ls output/                  # 8 个成品 + ch5_test/（4 个测试材料）
+git status --short          # 应是空的
+```
+
+若 `git log` 报 "does not have any commits yet"：ref 又没落盘（已触发 **5 次**）。
+去 `.git/logs/HEAD` 捞最新 SHA，然后：
+
+```bash
+mkdir -p .git/refs/heads/feat
+printf '%s\n' <SHA> > .git/refs/heads/feat/unified-immersive
+```
+
+`git update-ref` 在本机**静默失败**（rc=0 但文件不落地），别信它。
+**`git reset --hard` 同样会清 ref** —— 不只是 commit。
+
+#### 当前唯一任务：换 LLM 补回「因审查被删改」的内容
+
+功能**早就实现了**（`llm.py` 的 `flag_errors` → `repair_censored`，带学术声明），
+**不需要重写**，只要换一个肯翻译的模型再跑。
+
+- **qwen3.7-flash 已被否决，勿再试**：漏译 `Communist Party` → 追问拒答 →
+  `DataInspectionFailed`。
+- **换模型**：改 `.env` 两行（`LLM_BASE_URL` / `LLM_MODEL`），
+  **只改不读**（不要把内容写进任何输出）。
+- **跑流水线必须显式带** `--llm --ai-repair-censor`，
+  且**不要**带 `--skip-flag`（`run_book.py:216` 会整步短路）。
+- **测试点**：`output/ch5_test/` 的 **EN-004**（第 10 行，判据：必须译出「共产党」）
+  和 **EN-156**（第 314 行，帕夫利克·莫罗佐夫段，中译本整段删除）。
+  ⚠ **不许拿纯数字段下结论** —— 曾因此误判「qwen 老实」。
+
+#### 硬约束（违反会被骂）
+
+1. **不要动对齐 / DP 代码**，除非有真 bug 硬证据，且必须**四本一起回归** +
+   先过「中文保有量」一票否决线。历史教训：为追查审查问题改过 DP，虽改对了两个真 bug，
+   但**动机是错的**，用户明确不满。**先确认是不是对齐问题，再动刀。**
+2. **不要碰凭证**：不读 `~/.ssh`、不读凭据管理器、不读含 token 的环境变量。`.env` 只改不读。
+3. **push 由用户自己执行**，不要代跑。
+4. **花钱纪律**：单次 >¥0.5 先问。跑前估、跑后报（读 `tools/.cache/llm/trace.jsonl`，
+   **必须先 `if d.get("hit"): continue`**，否则把读缓存当成真调用，凭空多报几百次）。
+5. **铁律 13**：`git commit` rc=0 ≠ ref 落盘，必须复核。
+6. **铁律 14**：改解析行为必须 `fastcache._V += 1`。
+
+#### 踩坑清单
+
+1. **指标好 ≠ 内容对**。ML 曾挂着假中文，`dbg_bookscan` 照样报「缺中文 0」。
+2. **产物是哪条路建的，靠指纹不看记忆**：
+   `grep -o 'class="pair"><p class="[a-z]*' <成品.html> | head -3`
+   → `en` 在前 = unified，`zh` 在前 = legacy。
+3. **先验尺再信数**。3 次事故都是「尺子自己错」：编号被标记空格切断、
+   图注信号没做方向区分、拿**臆想的译文**去源书检索（0 命中就误判「源书没有」）。
+   **检索词必须来自结构性标记（公式号/示例号），不能来自猜的译文。**
+4. **Windows → WSL 传参吃掉反斜杠/竖线/heredoc**。`Figure\s+1-2` → `Figures+1-2`；
+   `-c 'python - <<EOF'` 直接语法错。**只能写真实 .py 文件再调 `tools/_run.sh`**。
+5. **Git Bash 的 `pwd` 给 `/c/...`，原生 Python 打不开** —— 交给 Python 的路径
+   必须走 `pwd -W` 的 `C:/...` 形态。
+6. **safe-delete 两个坑**（清理 `diag/` 时）：一次传 >8 个路径会 `BULK_GUARD_ERROR`
+   **一个都不删**（分批 ≤8 或逐个删）；`[ -e path ]` 在 guard 报错时**误判「已删」**
+   （验证用 `ls`）；`rm -rf <目录>` 走 genie-trash 可能 fail-closed（先删内容再 `rmdir`）。
+7. **怎么判断「某功能有没有被瞎改」**：`git log -S "<关键词>"` 找引入点 →
+   `git log --oneline -- <文件>` 看谁碰过 → 对可疑 commit **亲眼看 diff**
+   （commit message 出现关键词 ≠ 改了代码，`fbd979e` 就是只删了 23 行注释）→
+   终极验证用 Python **按缩进切函数体**再 diff（别用 `sed` 到下一个 `def`，
+   会把模块级常量卷进来造成假差异）。
+
+#### 命令备忘
+
+```bash
+# 建一本（带 LLM 审查修复；注意不要加 --skip-flag）
+bash tools/run_book.py --en <英文epub> --zh <中文epub> --out <输出目录> \
+     --llm --ai-repair-censor
+
+# 四本并行回归
+bash tools/run_four_par.sh
+
+# 四道门禁
+bash tools/gates_uni.sh diag/ml_v72 diag/prob_v72 diag/think2_v72
+
+# 章映射体检（改映射前后必跑）
+bash tools/_run.sh dbg_chmap.py --book ml --no-llm
+
+# 单测
+bash tools/_run.sh tests/test_section_skip_op.py
+```
+
+⚠ 全书**不加** `--ai-fill-missing`（避免 LLM 整本开火）。
+⚠ `diag/` 现有 264M，`ml_v72` / `prob_v72` / `think2_v72` / `nexus_orig` /
+`样章` / `review` 是成品源，**别当垃圾删**。
