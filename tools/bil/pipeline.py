@@ -2381,26 +2381,6 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
 
     zh_fig_i = 0
     zh_claims = [False] * len(zh_pos)     # 已被认领的中文图（避免一章内重复使用）
-    # ── L1 对译词表：**暂不接入**（§6.69，2026-09-19 实测否决）────────────
-    # 假设：`align.USE_LEXICON`/`LEX_W` 声明了但生产路径从未传 `lex` 进来
-    # （`build_lexicon` 只在 bench_align.py / bench_mac.py 被调用），
-    # 段落对齐实际只有「长度 + 数字」两个信号。猜想接上词表能修 nexus ch5
-    # Kulaks 的跳段错位（1:0 代价正比于英文段长度 → DP 偏爱跳最短的那段，
-    # 而「译本删了哪一段」与长度无关）。
-    #
-    # 实测（四本全书 v66 vs v65）：
-    #   * **隔离单元实验**里确实修对了：`EN[5]↔ZH[5]`（emass 174.7 vs 174.0，
-    #     近乎完美）保住，词表能看见「Altogether↔总共」「kulaks↔富农」；
-    #   * **但真实构建路径的单元是 `EN[13,14] ↔ ZH[13]`（合并后 20E/8Z）**，
-    #     接入词表后 ZH 反而**多滑一格**：v65 里 `Kulak status…` 正确拿到
-    #     `就像10岁的"男巫"…`，v66 变成 `Altogether…` 拿走它、`Kulak status…`
-    #     拿到下一节的中文 → **净退化**。
-    #   * 全书指标混合：nexus gapmisplace 2→1（好）、ml 1→2（坏）、
-    #     prob/think2 不变；但 nexus 的 drift A（缺中文）19→20、ml 的
-    #     drift A 1378→1478、qa 类问题 ml 272→193（好）—— **方向不一致**。
-    # 结论：**不接入**。留此注释是为了记录「查过、有证据、已否决」，
-    # 避免下次重复踩坑。若要再试，必须先解决「合并单元内部 20E/8Z 的
-    # 跳段定位」这个更底层的问题（见 §6.68）。
     # ── 全章中文段序 -> (小节, pair 下标) 索引 ──────────────────────────
     # 供「中文多出来的图」按**原位**落点（见下方 leftover_zh 的注释）。
     # 两条列表同序（按段序升序），用二分查找取最近锚点。
@@ -2632,9 +2612,6 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                     _metrics(p, a_paras, b_paras)
                 n_fix = 0
             else:
-                # ⚠ 2026-09-19 §6.69：这里**不传 lex**。试过接 L1 对译词表，
-                # 全书四本 A/B 显示净退化（nexus Kulaks 段 ZH 多滑一格），
-                # 详见本函数上方 `_CH_LEX` 段的完整实测记录。留原样。
                 pairs = A.align_section(a_paras, b_paras, k=K)
                 pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
                                           r_lo=max(1.2, r_lo), r_hi=r_hi)

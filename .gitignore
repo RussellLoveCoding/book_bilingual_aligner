@@ -37,6 +37,11 @@ review_ch1.md
 # 诊断样章 / 成品（可由 run_book 重新生成，二进制体积大不入库）
 diag/
 
+# 评测/实验的中间产物（T1 估算、T2 盲筛、gold 真值快照 —— 证据留档，不入库）
+tests/t1/
+tests/t2/
+tests/gold/
+
 # LLM/解析缓存（迁至 WSL 原生盘 ~/.cache/bil，tools/.cache 是符号链接；机器本地，不入库）
 tools/.cache
 tools/.cache.win-backup/

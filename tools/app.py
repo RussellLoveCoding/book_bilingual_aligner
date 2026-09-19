@@ -21,7 +21,6 @@ import html as _html
 import json
 import os
 import re
-import shutil
 import sys
 import threading
 import time
@@ -503,7 +502,7 @@ def _run_job(en_path: Path, zh_path: Path, title: str, use_llm: bool,
             res.en_zip, res.zh_zip = ze, zz
             if llm is not None:
                 st = P.apply_llm(res, llm, title=cp.en_title,
-                                 translate=bool(opts.get("fill", True)))
+                                 translate=bool(opts.get("fill", False)))
                 ec = P.apply_error_repair(
                     res, llm, title=cp.en_title,
                     check_censor=bool(opts.get("censor", False)))
@@ -877,9 +876,9 @@ PAGE = """<!DOCTYPE html>
   </div>
   <div class="row" style="margin-top:16px">
     <div class="field">
-      <label>对照顺序</label>
-      <select id="ord">
-        <option value="zh" selected>中文在前，英文在后（推荐）</option>
+      <label>对照顺序<span class="pill">统一架构下由架构决定</span></label>
+      <select id="ord" title="统一架构（默认）下英文骨架恒在前，此项不生效；仅 --legacy-arch 时可用">
+        <option value="zh" selected>中文在前，英文在后（legacy 默认）</option>
         <option value="en">英文在前，中文在后</option>
       </select>
     </div>
@@ -909,10 +908,11 @@ PAGE = """<!DOCTYPE html>
         需勾选 LLM；科普/技术书没有审查删改，开了只会误判，默认关。</em></span>
     </label>
     <label class="tg" id="tgFill">
-      <input type="checkbox" id="fill" checked><i></i>
+      <input type="checkbox" id="fill"><i></i>
       <span><b>缺失段 AI 补译</b>
         <em>中文版未收录的段落（多为前后附页）用 AI 译出并标「AI译」。
-        需勾选 LLM。</em></span>
+        需勾选 LLM。<b>默认关</b>——与 CLI 的 <code>--ai-fill-missing</code>
+        一致：技术书/科普书其实没有真缺失，开了纯浪费 token。</em></span>
     </label>
     <label class="tg">
       <input type="checkbox" id="mono"><i></i>
@@ -1662,7 +1662,7 @@ class Handler(BaseHTTPRequestHandler):
         chapters = [c.strip() for c in chs_raw.split(",") if c.strip()] or None
         use_llm = fields.get("llm") == "1"
         opts = {"censor": fields.get("censor") == "1",
-                "fill": fields.get("fill", "1") == "1",
+                "fill": fields.get("fill", "0") == "1",
                 "mono": fields.get("mono") == "1",
                 "style": {"order": fields.get("order") or "zh",
                           "dim": fields.get("dim") or "en"}}
@@ -1844,12 +1844,30 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--legacy-arch", action="store_true",
+                    help="用 legacy 排版（中文在上、英文在下）。默认走统一架构"
+                         "（沉浸式翻译式：英文骨架在前 + 译文紧随），与"
+                         "run_book.py / run_four_par.sh 的产物口径一致。")
     args = ap.parse_args()
+
+    # ★ 2026-09-19：**webui 必须与 CLI 同口径**。
+    #   `BIL_ARCH` 的模块默认是 `legacy`（`build.py:3206` 为「保证回归零变化」），
+    #   而 CLI 侧 `run_four_par.sh` 显式设了 `unified`。webui 用
+    #   `python tools/app.py` 裸启动、从不设环境变量 ⇒ 会**静默产出 legacy**，
+    #   与用户手上的四本成品（全部 unified）形态不一致：en/zh 的先后、
+    #   行间元素落位都不同。这里在导入 bil 之前把口径钉死成 unified。
+    #   `--legacy-arch` 可显式回退（保留给对拍/排障）。
+    if args.legacy_arch:
+        os.environ["BIL_ARCH"] = "legacy"
+    else:
+        os.environ.setdefault("BIL_ARCH", "unified")
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
     print(f"\n  双语电子书合成 · 本地网页版")
     print(f"  → {url}")
+    print(f"  排版架构：{os.environ.get('BIL_ARCH')}"
+          f"{'（沉浸式：英文骨架 + 译文紧随）' if os.environ.get('BIL_ARCH') == 'unified' else '（legacy：中文在上）'}")
     print(f"  按 Ctrl+C 停止\n")
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()

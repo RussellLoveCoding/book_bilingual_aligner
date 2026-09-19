@@ -36,7 +36,43 @@ LATIN = re.compile(r"[A-Za-z]{3,}")
 #   时 0.945），超过文献里用神经嵌入的 Vecalign（0.873）。
 # 两个开关都可在运行时置 False 做 A/B 对拍。
 USE_ANCHORS = False
-USE_LEXICON = True
+# ★★ 2026-09-19（§6.68）：**默认已关**（原为 True）。三条硬证据一致指向关闭：
+#
+#   ① **词表根本没参与段落定稿**。生产路径的两个 `align_section` 调用点
+#      （`pipeline.py` 的 `align_section(a_paras, b_paras, k=K)`）**都不传
+#      `lex`** —— 词表只在 `align_sections` 内部的「小节级粗对齐打分」里
+#      晃一圈就被丢弃，段落最终仍由「长度 + 数字」两个信号定稿。
+#      故关掉它**不可能**影响段落级结果，只影响小节映射。
+#
+#   ② **它把对齐改错了**（不只是「无用」）。四本成品逐 pair 全量 diff，
+#      ml 唯一 3 处差异全在 ch3/ch6，且用英文原版 + 中文译本双向确认真值后：
+#        · `ch6` 章首：开词表时 `EN[1]↔ZH[6]`、`EN[2]↔缺`、`EN[3]↔ZH[7]`，
+#          **`EN[4]` 标题与 `ZH[5]` 中文标题的对应整条消失**（4 项全错）；
+#          关词表后 `EN[1..5] ↔ ZH[2..6]` **全对**。
+#        · `ch3` `3.3`：两版都错但错法不同（开＝中文小标题挂空；
+#          关＝错位 1 格），打平。
+#        · `Appendix C`：正文相同，开词表多 2 个「空 EN+缺中文」空壳 pair。
+#
+#   ③ **它很贵**。cProfile + monkeypatch 逐函数计时（19 篇 nexus 文档的
+#      小节级对齐）：`USE_LEXICON=True` **37.13s** → `False` **18.82s**
+#      （**−49%**）。差额 18.31s 落点：`build_lexicon` 5.65s
+#      （`for w in et: for g in zt: co[(w,g)] += 1` 无预筛，实测
+#      `len(et)×len(zt)` 累计 48 万、实际落到 **≈1.6 亿次** tuple-key dict
+#      自增，全烧在 CPython 解释器循环）＋ `_lex_score` 2.70s（272 万次）
+#      ＋ `_lex_targets`/`_zh_bigrams` 1.79s ＋ 嵌套整章粗对齐 ≈8s。
+#
+#   门禁 A/B（开 vs 关）：中文保有量 ml **+199**、其余 ±0（过一票否决线）；
+#   `dbg_drift` / `dbg_bookscan` / `dbg_eqcheck` / `dbg_qa` **全不退化**
+#   （前三者四本逐字节相同，ml 漂移链逐章明细逐字节相同）。
+#
+#   改默认值后的回归取证（`diag/*_v70` vs 关词表基线 `diag/*_par2`）：
+#   四本 epub 逐文件 sha256 **只有 `content.opf` 的构建时间戳不同**，
+#   正文逐字节相同；`gates_uni.sh` 四项输出逐字符相同；单测 15 passed。
+#
+#   `BIL_USE_LEXICON=1` 可开回历史行为做 A/B 对拍（保留 `LEX_W` 供复用）。
+#   ⚠ 历史注释里那个 MAC F1 0.730 → 0.945 的收益，只在 `bench_align.py`
+#   这类**直接调 `align_section(..., lex=...)`** 的评测里成立；生产路径拿不到。
+USE_LEXICON = bool(int(os.environ.get("BIL_USE_LEXICON", "0") or "0"))
 LEX_W = 1.5      # L1 对译词覆盖率奖励权重（MAC 语料上 0.6→0.900、1.5→0.945）
 ANCHOR_BONUS = 0.5   # L0 软锚点奖励（只影响 1:1 候选，不切矩阵）
 
@@ -454,23 +490,11 @@ GAP = 1.7          # 跳过一段的代价系数（相对平均段长）
 #   不设下限**（如直接常数 `GAP`、或按「跳的是不是语义完整段落」），
 #   而不是「常数 + 质量项」；且必须先过「中文汉字总数不下降」这条一票
 #   否决线。详见 docs/HANDOFF.md §6.70。
-GAP_MODEL = os.environ.get("BIL_GAP_MODEL", "mass").lower()
-GAP_CONST = float(os.environ.get("BIL_GAP_CONST", "1.2") or 1.2)
-GAP_MASS = float(os.environ.get("BIL_GAP_MASS", "0.5") or 0.5)
-
-
-def gap_cost(mass: float, avg: float) -> float:
-    """单侧跳段（1:0 / 0:1）的代价。
-
-    `mass` 是被跳一侧的质量（emass 或 zmass）。
-    * `mass`（默认）：`GAP * mass / avg` —— 历史行为，纯质量比例。
-    * `c`：`GAP_CONST + GAP_MASS * mass / avg` —— 常数 + 小质量项。
-    """
-    if avg <= 0:
-        return GAP
-    if GAP_MODEL == "c":
-        return GAP_CONST + GAP_MASS * mass / avg
-    return GAP * mass / avg
+#
+# ★ 2026-09-19 tidy：备选模型 `c` 的**代码已删**（`GAP_MODEL`/`GAP_CONST`/
+#   `GAP_MASS`/`gap_cost()`）。它默认关、被否决后不再有上线可能，只留
+#   上面这段否决记录（「查过、有证据、勿再上线」）。调用点一律内联回
+#   `GAP * mass / avg`，与历史行为逐位一致 —— 删的是死分支，不是行为。
 ANCHOR = -0.45     # 每个共享数字的奖励
 ANCHOR_CAP = -1.2
 # ★ 2026-09-18（§6.29）：**非 1:1 合并的固定代价**。
@@ -530,9 +554,9 @@ def _pair_raw_cost(p: Pair, ew, zc, k: float, avg: float) -> float:
     eM = sum(ew[i] * k for i in p.en)
     zM = sum(zc[j] for j in p.zh)
     if not p.zh:
-        return gap_cost(eM, avg)
+        return GAP * eM / avg
     if not p.en:
-        return gap_cost(zM, avg)
+        return GAP * zM / avg
     return abs(eM - zM) / avg + 1.2 * max(0.0, abs(math.log((zM + 1) / (eM + 1))) - 0.35)
 
 
@@ -1150,13 +1174,13 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
         if a == 0 and b == 0:
             return 0.0
         if a == 0:
-            return gap_cost(sum(zmass[j:j + b]), avg)
+            return GAP * sum(zmass[j:j + b]) / avg
         if b == 0:
-            return gap_cost(sum(emass[i:i + a]), avg)
+            return GAP * sum(emass[i:i + a]) / avg
         # §6.57：英文侧**全是代码块** → 不许消耗中文段。
         # 挂上去的是图注 / 代码约定说明 / 正文，全都是别的段落该用的中文。
         if a > 0 and all(en_is_code[i:i + a]):
-            return gap_cost(sum(emass[i:i + a]), avg) + CODE_NOZH
+            return GAP * sum(emass[i:i + a]) / avg + CODE_NOZH
         eM = sum(emass[i:i + a])
         zM = sum(zmass[j:j + b])
         cost = abs(eM - zM) / avg
