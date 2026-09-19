@@ -112,6 +112,99 @@ pre.en { white-space: pre-wrap; word-break: break-word;
   font-size: .84em; line-height: 1.45; text-align: left;
   background: rgba(128,128,128,.10); padding: .55em .7em;
   border-radius: 4px; margin: .4em 0; }
+/* ===== 代码块语法高亮（Pygments token）—— 2026-09-19 §6.63 =================
+   ⚠ 用户报：「人家的代码块是有语法高亮的，你现在生成的没有，不知道是不是
+   英文书的问题」。**不是英文书的问题，是我们把 CSS 丢了。**
+   实测（ML 3RD）：
+     · 源 epub `OEBPS/epub.css` 里**就有** 69 条 Pygments 规则
+       （`#sbo-rt-content pre code.kn{color:#069;font-weight:bold}` 等）；
+     · 我们的成品 HTML 里 `<code class="kn">` 这些 token **全都在**
+       （11612 个 n / 8675 个 p / 6925 个 o …），**但 CSS 里一条定义都没有**
+       → 浏览器全部回落到默认黑色 → 看着就是「没有高亮」。
+   ⇒ 修法：照抄原书配色（铁律 7「版式照抄英文原版」），但**去掉祖先限定**
+     `#sbo-rt-content` —— 那个容器我们没有，带着它规则一条都命中不了
+     （本轮踩过的坑：直接复制原文 CSS 等于没复制）。
+   ⚠ token 名与 Pygments 内置短名一一对应，`n`/`p`/`o` 是最高频的三个
+     （各上万次），它们原来没有颜色（`p` 是纯黑），保留原书原样即可。
+   ========================================================================= */
+pre code.hll { background-color: #ffc; }
+pre code.c { color: #09F; font-style: italic; }
+pre code.err { color: #A00; }
+pre code.k { color: #069; font-weight: bold; }
+pre code.o { color: #555; }
+pre code.cm { color: #35586C; font-style: italic; }
+pre code.cp { color: #099; }
+pre code.c1 { color: #35586C; font-style: italic; }
+pre code.cs { color: #35586C; font-weight: bold; font-style: italic; }
+pre code.gd { background-color: #FCC; }
+pre code.ge { font-style: italic; }
+pre code.gr { color: #F00; }
+pre code.gh { color: #030; font-weight: bold; }
+pre code.gi { background-color: #CFC; }
+pre code.go { color: #000; }
+pre code.gp { color: #009; font-weight: bold; }
+pre code.gs { font-weight: bold; }
+pre code.gu { color: #030; font-weight: bold; }
+pre code.gt { color: #9C6; }
+pre code.kc { color: #069; font-weight: bold; }
+pre code.kd { color: #069; font-weight: bold; }
+pre code.kn { color: #069; font-weight: bold; }
+pre code.kp { color: #069; }
+pre code.kr { color: #069; font-weight: bold; }
+pre code.kt { color: #078; font-weight: bold; }
+pre code.m { color: #F60; }
+pre code.s { color: #C30; }
+pre code.na { color: #309; }
+pre code.nb { color: #366; }
+pre code.nc { color: #0A8; font-weight: bold; }
+pre code.no { color: #360; }
+pre code.nd { color: #99F; }
+pre code.ni { color: #999; font-weight: bold; }
+pre code.ne { color: #C00; font-weight: bold; }
+pre code.nf { color: #C0F; }
+pre code.nl { color: #99F; }
+pre code.nn { color: #0CF; font-weight: bold; }
+pre code.nt { color: #309; font-weight: bold; }
+pre code.nv { color: #033; }
+pre code.ow { color: #000; font-weight: bold; }
+pre code.w { color: #bbb; }
+pre code.mf { color: #F60; }
+pre code.mh { color: #F60; }
+pre code.mi { color: #F60; }
+pre code.mo { color: #F60; }
+pre code.sb { color: #C30; }
+pre code.sc { color: #C30; }
+pre code.sd { color: #C30; font-style: italic; }
+pre code.s2 { color: #C30; }
+pre code.se { color: #C30; font-weight: bold; }
+pre code.sh { color: #C30; }
+pre code.si { color: #A00; }
+pre code.sx { color: #C30; }
+pre code.sr { color: #3AA; }
+pre code.s1 { color: #C30; }
+pre code.ss { color: #A60; }
+pre code.bp { color: #366; }
+pre code.vc { color: #033; }
+pre code.vg { color: #033; }
+pre code.vi { color: #033; }
+pre code.il { color: #F60; }
+pre code.g { color: #050; }
+pre code.l { color: #C60; }
+pre code.n { color: #008; }
+pre code.nx { color: #008; }
+pre code.py { color: #96F; }
+pre code.p { color: #000; }
+pre code.x { color: #F06; }
+/* 深色模式下把「纯黑」的 token 抬亮，否则 p/ow/gp 这些在暗底上不可读。
+   ⚠ 只调**亮度不足以阅读**的几个（原书是浅底印刷配色）；彩色 token
+   （#069 蓝 / #C30 红 / #F60 橙）在深浅两种底色下都够读，不动。 */
+@media (prefers-color-scheme: dark) {
+  pre code.p, pre code.ow, pre code.go { color: #e6e6e6; }
+  pre code.n, pre code.nx { color: #9ad2ff; }
+  pre code.c1, pre code.cm, pre code.cs { color: #8fb8d0; }
+  pre code.c { color: #7fc8ff; }
+  pre code.w { color: #666; }
+}
 /* 列表项：还原原版的项目符号/编号位置 */
 li.en { display: list-item; list-style: disc outside; margin: 0 0 .3em 1.5em; }
 /* 提示框（原版 <div data-type="warning|note|tip">）：左色条 + 淡底 */
@@ -3116,6 +3209,26 @@ _IS_UNIFIED = (_ARCH == "unified")
 # 不插入译文的元素（用户明确要求：代码不译、代码/图片/公式以英文原版为准）
 _NO_ZH_TYPES = ("code", "pre")
 
+# ★ 行间元素（inter-block）—— 2026-09-19 §6.62
+#   图 / 表 / 代码块 / 行间公式 / 分隔线等「不配译文、独立成行」的元素。
+#   它们的正确位置**不是**「所有英文之后」，而是
+#   「它所锚定的那个英文元素 → 该英文的译文 → 它自己」。
+#   理由（用户原话）：「看中文的人，假如原文指出『下面这张图片…』，
+#   那么读者会疑惑，图片在哪，原来在上面」。
+_INTER_TAGS = {"figure", "table", "pre", "hr", "video", "svg", "iframe", "object"}
+_INTER_CLASSES = {"codebox", "code", "lstlisting", "sourcecode", "highlight"}
+
+
+def _is_inter(k: str) -> bool:
+    """判定一个顶层元素是不是「行间类」（图/表/代码/行间公式）。"""
+    tag_m = re.match(r"<([a-zA-Z][\w:-]*)", k)
+    tag = tag_m.group(1).lower() if tag_m else ""
+    if tag in _INTER_TAGS:
+        return True
+    cls_m = re.search(r'class="([^"]*)"', k)
+    cset = set((cls_m.group(1) if cls_m else "").split())
+    return bool(cset & _INTER_CLASSES)
+
 
 def _inject_zh(kids: list) -> str:
     """统一架构发射：英文元素原样，译文紧跟其后（兄弟节点）。
@@ -3124,14 +3237,22 @@ def _inject_zh(kids: list) -> str:
       * legacy  → `ZH + EN`（中文被当成平级块前置）
       * unified → `EN + ZH`（译文紧挨着它的原文，**英文骨架在前**）
 
-    规则（一张表，不是两套代码）：
-      1. 提示框标签 `h6.box-label` → **提到最前**（用户截图 #2：Note 在上面）
-      2. 英文元素原样保留（`en`/`en_original` 类），一个字不改
-      3. 中文元素整体紧跟英文之后（仍是兄弟节点，只是次序反过来）
-      4. 无英文侧时（zh-only 段）保持中文原位 —— 没有可依附的骨架
+    ⚠ 行间元素（图/表/代码/公式）的落位 —— 2026-09-19 §6.62
+      旧行为 = `labels + ens + others + zhs`：把**所有**行间元素堆到
+      「全部英文之后、全部译文之前」，于是渲染成
+          EN / figure / ZH
+      中文读者读到「下面这张图」时会先看到图、再看到中文句子里的指代，
+      视觉上「图跑到了译文上面」。
+
+      新行为 = 逐个行间元素**归属到它前面最近的那个英文条目**，
+      插在该条目**对应的译文之后**（若该条目没有译文，则紧跟英文本身）：
+          ZH / EN / figure          （有译文的常规情形）
+          EN / figure               （代码块等无译文，行为不变）
+      连续多个行间元素共享同一锚点时，按原顺序一起排在译文之后。
     """
     if not kids:
         return ""
+
     labels, ens, zhs, others = [], [], [], []
     for k in kids:
         cls_m = re.search(r'class="([^"]*)"', k)
@@ -3140,15 +3261,75 @@ def _inject_zh(kids: list) -> str:
             labels.append(k)          # 提示框标签（Note/Warning/Tip）
         elif "zh" in cset:
             zhs.append(k)
+        elif _is_inter(k) and "zh" not in cset:
+            # ⚠ 顺序陷阱（2026-09-19 实测踩过）：代码块带 `class="en en_original
+            #   code"` —— **既有 en 又有行间语义**。若先判 `"en" in cset`，
+            #   代码块会被当成普通英文段落，永远进不了行间队列，本轮的图/
+            #   表/代码落位对代码块整个失效。故行间判定必须**优先于侧别**。
+            others.append(k)
         elif "en" in cset:
             ens.append(k)
         else:
             others.append(k)
+
     # 无英文骨架（中文独有段/兜底段）→ 维持原次序，不动
     if not ens:
         return "".join(labels + zhs + others)
-    # 有英文骨架 → 标签在顶、英文原样、译文随后
-    return "".join(labels + ens + others + zhs)
+
+    # 无行间元素 → 老路（零风险，保持回归）
+    if not others:
+        return "".join(labels + ens + zhs)
+
+    # ⚠ 2026-09-19 §6.62 设计取舍 —— 为什么不按「第 i 个英文 ↔ 第 i 个译文」配：
+    #   实测 ML 成品里 `EN EN EN ZH ZH` 形态的中英**根本不等长**：
+    #     · 3 段英文地址 → 2 段中文（中文把 3 段意思合并了）
+    #     · 3 段英文正文 → 2 段中文（内容还错位）
+    #   逐位硬配会是我自己臆想的映射，只会把中文彻底打乱（同 §6.16(3) 教训）。
+    #   所以行间元素**不依赖中英配对**，只依赖一条确定的事实：
+    #   「中文读者要看到它之前，得先看到指代它的那句话的译文」。
+    #
+    # 落位规则（按原始次序扫，只记「最近一个英文条目」的槽位）：
+    #   · 出现在某个英文之后的行间元素 → 挂到该英文槽位（会排到译文之后）
+    #   · 出现在所有英文之前           → 保持原位（tail）
+    #   · 非行间杂项（裸 img/脚注锚/空 span）→ 跟随锚点，且**不抢锚点**
+    slots: list[list[str]] = [[] for _ in ens]   # 每个英文条目后面挂的行间元素
+    tail: list[str] = []                         # 英文之前/无归属的行间元素
+    ei = -1                                      # 最近一个英文条目的槽位
+    for k in kids:
+        cls_m = re.search(r'class="([^"]*)"', k)
+        cset = (cls_m.group(1) if cls_m else "").split()
+        if re.match(r"<h6\b", k) and "box-label" in cset:
+            continue                             # 标签另算，不参与归属
+        if "zh" in cset:
+            continue                             # 译文不参与归属
+        if "en" in cset and not _is_inter(k):
+            # ⚠ 同样必须**行间优先**：代码块带 `en` 类，若这里认成英文条目，
+            #   `ei` 会被代码块推进一格，后面真正的图就会挂错槽位。
+            ei += 1
+            continue
+        if ei >= 0:
+            slots[ei].append(k)
+        else:
+            tail.append(k)
+
+    # 发射：label 在顶 → 英文之前的前置杂物 → [全部英文] → [全部译文]
+    #       → 每个英文槽位里的行间元素（按原顺序、附在该英文**整组之后**）
+    #
+    # ⚠ 为什么是「全部英文 → 全部译文 → 再统一撒行间元素」，而不是
+    #   「英文₁ 译文₁ 图₁ 英文₂ 译文₂ …」：中英不等长时后者必然错配。
+    #   统一撒能保证两件确定的事：
+    #     ① 每一张图都在它**引用者的译文之后**（用户的核心诉求）
+    #     ② 图仍然紧跟自己锚定的那一段（§6.16 的段落邻接没丢）
+    #   代价：多图 pair 里图会集中排在末尾，但**顺序与英文侧一致**，
+    #   「Figure 5-10 → Figure 5-11」的阅读指引不会乱。
+    out_parts: list[str] = list(labels)
+    if tail:
+        out_parts.extend(tail)                   # 出现在所有英文之前的，保持最前
+    out_parts.extend(ens)
+    out_parts.extend(zhs)
+    for bucket in slots:
+        out_parts.extend(bucket)
+    return "".join(out_parts)
 
 
 def _reorder_pairs(html_str: str, zh_first: bool = True) -> str:
