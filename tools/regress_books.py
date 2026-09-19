@@ -225,7 +225,7 @@ def main():
             if "error" in v:
                 continue
             o = (old.get(k) or {}).get("probe") or {}
-            diffs = [f"{f}: {o.get(f)} → {v[f]}"
+            diffs = [f"{f}: {o.get(f)} → {v2}"
                      for f, v2 in v["probe"].items()
                      if f in o and o[f] != v2]
             if diffs:

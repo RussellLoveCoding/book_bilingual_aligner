@@ -1,0 +1,46 @@
+# ── 密钥：绝对不入库 ──
+.env
+.env.local
+*.key
+
+# ── WorkBuddy 工作区数据（会话状态，不是项目内容）──
+.workbuddy/
+
+# ── agent 记忆文件：本机级不入库（含本机路径），项目级入库 ──
+CODEBUDDY.local.md
+
+# ── 缓存与运行产物 ──
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 网页版上传的源书（版权内容 + 体积大）
+uploads/
+
+# 构建产物（可由源码重新生成）
+build/
+dist/
+
+# Node 依赖（tools/eqrender 用 npm 装，不入库）
+node_modules
+
+# 公式渲染的冒烟测试输出（tools/eqrender/_smoke_out/）
+_smoke_out/
+
+# 其他
+*.log
+.DS_Store
+Thumbs.db
+review_ch1.md
+
+# 诊断样章 / 成品（可由 run_book 重新生成，二进制体积大不入库）
+diag/
+
+# LLM/解析缓存（迁至 WSL 原生盘 ~/.cache/bil，tools/.cache 是符号链接；机器本地，不入库）
+tools/.cache
+tools/.cache.win-backup/
+.cache-win/
+
+# agent 工作区数据（本机级，不入库）
+.workbuddy-ai/

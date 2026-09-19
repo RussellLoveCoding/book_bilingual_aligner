@@ -242,6 +242,138 @@ _FILL_MIN_WORDS = 3
 _INDEX_ENTRY_RE = re.compile(r"[,，]\s*\d+")
 
 
+# 跨对重复守卫（2026-09-19 §6.45）—— 为什么**不用长度比**：
+# 我一度用「候选中文对自己那对偏长 / 对本对合适」做判据，并用自编的 5 条
+# 测试串标定出「零误报平台」。**拿真样本一验就崩**：
+#   真命中 r_self = 0.91   （中文对自己那对**并不偏长**，因为两段英文恰好等长）
+#   反例   r_self = 1.78   （反例反而更高）
+# ⇒ 长度比在本问题上**根本没有分离度**，那套阈值是我自证自话（§6.16(3)）。
+#
+# 真正存在的信号 = **锚**：中文里的 `第7章` / `min_samples_leaf` / `95%`
+# / `图6-4` 等，若命中一个**只出现在本对英文、不在候选自己那对英文里**的锚，
+# 就说明这段中文是**本对英文**的译文。真样本实测：
+#   真命中 2/2 · 3/3 · 3/3 命中独有锚  →  反例一律 0/3、0/0
+# 零误报。判不出（无锚）的就不搬，交给 AI 补译 —— 保守默认。
+_STEAL_WINDOW = 3          # 只搜邻近 ±3 对（中文版重排通常相邻）
+
+
+def _anchors_en(e: str) -> set:
+    """英文侧的**锚**：图号 / 章号 / 代码标识符 / 函数 / 裸数字。"""
+    a = set()
+    a |= {"fig" + m.lower() for m in re.findall(r"Figure\s+(\d+-\d+)", e)}
+    a |= {"ch" + m for m in re.findall(r"Chapter\s+(\d+)", e)}
+    a |= {m.lower() for m in re.findall(r"[A-Za-z]+_[A-Za-z_]+", e)}    # snake_case
+    a |= {m.lower() for m in re.findall(r"[A-Za-z]+\(\)", e)}          # func()
+    a |= set(re.findall(r"\d+", e))                                     # 裸数字
+    return a
+
+
+def _anchors_zh(z: str) -> set:
+    """中文侧的锚（与英文侧同口径，图/章前缀归一）。"""
+    a = set()
+    a |= {"fig" + m for m in re.findall(r"图\s*(\d+-\d+)", z)}
+    a |= {"ch" + m for m in re.findall(r"第\s*(\d+)\s*章", z)}
+    a |= {m.lower() for m in re.findall(r"[A-Za-z]+_[A-Za-z_]+", z)}
+    a |= {m.lower() for m in re.findall(r"[A-Za-z]+\(\)", z)}
+    a |= set(re.findall(r"\d+", z))
+    return a
+
+
+# 题注专用形态：中文以「图/公式/表 N-M：」开头。
+# 为什么需要单独一条：题注的编号**两侧英文都会出现**（正文引一次、题注写一次），
+# 所以「本对独有锚」判据对题注天然失效（实测 ml_uni pair[179]：独有锚 = 空）。
+# 但题注有更强的结构信号 —— **中文以编号开头**，且编号与本对英文的
+# `Figure N-M` / `Equation N-M` 完全一致。
+_CAP_ZH_RE = re.compile(r"^\s*(图|公式|表)\s*(\d+[-–]\d+)\s*[：:.]")
+_CAP_EN_RE = re.compile(r"(?:Figure|Equation|Table)\s+(\d+[-–]\d+)", re.I)
+
+
+def _cap_num_zh(z: str):
+    m = _CAP_ZH_RE.match(z or "")
+    return m.group(2).replace("–", "-") if m else None
+
+
+def _cap_nums_en(e: str) -> set:
+    return {m.group(1).replace("–", "-") for m in _CAP_EN_RE.finditer(e or "")}
+
+
+def _steal_nearby_zh(s, pi: int) -> bool:
+    """英文段缺中文时，看邻近对里是否**已有这段话的源中文**；有则搬过来。
+
+    命中则把源中文**搬**到本对（源对退回只英文或保持其余段），而不是让
+    LLM 补译。返回 True 表示已处理（调用方应跳过补译）。
+
+    动机（§6.45）：宽组拆分后被摘出的英文段，其中文常因中文版重排而落在
+    邻对。直接补译会造出与源中文高度重复的译文 —— 成品里同一句出现两遍，
+    这正是用户截图里「错配」的观感来源。实测 ml_uni 38 个 AI 段中 11 个
+    （29%）属于此类，重叠度 64%~87%。
+
+    判据（两条路径，命中任一即可）：
+      ① **本对独有锚** —— 候选中文命中一个只出现在本对英文、不在候选自己
+         那对英文里的锚（`第7章` ↔ `Chapter 7`、`min_samples_leaf`、`95%`）。
+      ② **题注形态** —— 候选中文以「图/公式/表 N-M：」开头，且 N-M 出现在
+         本对英文里。题注需要单独一条：它的编号**两侧英文都会出现**
+         （正文引一次、题注写一次），独有锚判据天然失效（实测 ml_uni
+         pair[179] 独有锚 = 空）。
+
+    为什么不用词面重叠/长度比：两段英文被中文版重排后，中文是同一句的两种
+    译法，词面完全对不上（「决策树」↔「decision tree」）；长度比实测**无
+    分离度**（真命中 r_self=0.91 < 反例 r_self=1.78）。只有**锚**（图号、
+    章号、代码标识符、数字）是跨语言稳定且可判的。
+
+    ⚠ 保守默认：判不出（无锚 / 锚不独有 / 非题注形态）**就不搬** ——
+    错搬一段无关中文给读者，比「该段只有英文」严重得多。
+    """
+    p = s.pairs[pi]
+    if not p.en or p.zh:
+        return False
+    pen = " ".join(s.en_paras[x].text for x in p.en)
+    A_need = _anchors_en(pen)
+    cap_nums = _cap_nums_en(pen)            # 本对英文提到的图/公式编号
+    if not A_need and not cap_nums:
+        return False                       # 本对英文没有任何锚 → 判不了，不搬
+    lo = max(0, pi - _STEAL_WINDOW)
+    hi = min(len(s.pairs), pi + _STEAL_WINDOW + 1)
+    best = None
+    for q in range(lo, hi):
+        if q == pi or not s.pairs[q].zh:
+            continue
+        # ★★ 非破坏性硬闸（2026-09-19 实测踩坑）：源对**必须还有别的中文**
+        #    才能搬。否则搬完源对就变成「仅英文」—— 实测把 7 段本来有中文的
+        #    段落搬成了孤儿（legacy 里有中文、unified 里没了），是**净损失**。
+        #    真重复场景（中文版给一段喂了两份中文）源对天然有余量；只有余量
+        #    充足时才搬，等价于「只清理多余的那份」。
+        if len(s.pairs[q].zh) < 2:
+            continue
+        qen = " ".join(s.en_paras[x].text for x in s.pairs[q].en)
+        A_hold = _anchors_en(qen)
+        uniq = A_need - A_hold              # 本对独有锚
+        for zp in s.pairs[q].zh:
+            zt = (s.zh_paras[zp].text or "").strip()
+            if len(zt) < 8:
+                continue
+            score = 0
+            # 路径①：命中本对独有锚
+            if uniq:
+                score = len(_anchors_zh(zt) & uniq)
+            # 路径②：题注形态 —— 中文以「图/公式 N-M：」开头，编号与本对一致
+            if not score:
+                zn = _cap_num_zh(zt)
+                if zn and zn in cap_nums:
+                    score = 1
+            if score and (best is None or score > best[0]):
+                best = (score, q, zp)
+    if best is None:
+        return False
+    _, q, zp = best
+    # 搬运：中文归本对，源对删掉它（源对已由上面硬闸保证还留有中文）
+    s.pairs[pi].zh = [zp]
+    s.pairs[q].zh = [x for x in s.pairs[q].zh if x != zp]
+    _metrics(s.pairs[pi], s.en_paras, s.zh_paras)
+    _metrics(s.pairs[q], s.en_paras, s.zh_paras)
+    return True
+
+
 def _too_short_to_translate(t: str) -> bool:
     """英文段短到**没有可翻译内容**（≤2 词且无句末标点）→ 不发给 LLM 补译。
 
@@ -258,6 +390,33 @@ def _too_short_to_translate(t: str) -> bool:
     if _INDEX_ENTRY_RE.search(s):      # 索引条目：`词, 页码`
         return False
     return len(s.split()) < _FILL_MIN_WORDS
+
+
+# ── §6.50 代码块不补译（2026-09-19 用户铁律④：「这种代码就不要翻译了吧」）──
+# 背景（用户 2026-09-19 截图，元数据见本节末）：
+#   英文原书的 `<pre>` 代码块在中文版里**被拍成 JPG 图**（`image_1259.jpg`），
+#   于是流水线视角下 = 英文有代码段、中文侧没有对应 → 走 AI 补译。
+#   LLM 拿到 `# create a small 3D dataset` 就老老实实译成
+#   `# 创建一个小型的三维数据集`，还把 `# d equals 154` 译成 `# d 等于 154`
+#   —— **代码里出现中文，且与英文原版不一致**。实测 ML 一书 9 处。
+#
+# 判据用**结构性信号**（铁律 11，不用词表）：
+#   `b.type == "code"` —— epubparse 在 `<pre>`（含 O'Reilly 的
+#   `data-type="programlisting"`）上就已打过这个标，见 epubparse.py:551。
+#
+# ⚠ 为什么不是「代码块一律不输出」：英文侧照常渲染（照抄原版），
+#   只是**不再为它生成中文**。这与用户「代码/图片/公式以英文原版为主，
+#   中文的不要了」完全一致 —— 连中文版的代码图一并不取。
+#
+# ⚠ 别改成 `_is_codeish(text)`（汉字占比 <15%）：那个判据会把
+#   「一两句英文散文」也判成代码（`and in` 之类），误杀补译。
+#   块类型是确定性信号，不需要宽度调参。
+_CODE_TYPES = ("code", "pre")
+
+
+def _is_code_block(b) -> bool:
+    """英文块是不是代码块（`<pre>` / programlisting）。确定性，零 LLM。"""
+    return (getattr(b, "type", "") or "").lower() in _CODE_TYPES
 
 
 def _valid_refine_map(mapping, n, m, min_cov: float = 0.70,
@@ -368,16 +527,28 @@ def _sane_section_map(mapping, en_secs, zh_secs, max_ratio: float = 8.0,
 
     实测 ML ch1：LLM 曾把 7 个中文节（262 段）全塞给 1 个 27 段的
     英文节、其余全判 1:0 —— 形式合法（单调+全覆盖）但语义是懒政。
-    两侧段数都 > floor 时比值失衡即判废（小节允许失衡，比如英文
-    代码节对中文极短节；floor 之下不检查）。
+
+    ⚠⚠ 2026-09-19 §6.51 修：原判据是 `n_en > floor **and** n_zh > floor`。
+      **AND 是错的** —— 它恰好放过了最该拦的那类畸形：一侧极胖、另一侧
+      极瘦。实测 `_sane_section_map([([0],[0])], EN(5 段), ZH(400 段))`
+      返回 **True**（比 80 倍！），因为 `n_en=5` 不满足 `> 10`，整个检查
+      被短路跳过。这正是 ch1 那次事故的形状（27 段 ↔ 262 段）。
+      ⇒ 改成 **`or` + 只要求**「大的一侧 ≥ floor」：只要两边段数不等且
+      大的一侧有实质体量，就该查比值。
+      （§6.16(3)「先证尺子」：这个 bug 是写 `test_section_map_sane.py`
+      的段数比反例时被单测抓出来的 —— 判据自己有洞，不是测试写错。）
     """
     for ea, zb in mapping:
         n_en = sum(len(en_secs[i].paras) for i in (ea or [])
                    if 0 <= i < len(en_secs))
         n_zh = sum(len(zh_secs[j].paras) for j in (zb or [])
                    if 0 <= j < len(zh_secs))
-        if n_en > floor and n_zh > floor:
-            r = n_zh / n_en if n_en else float("inf")
+        # 单侧为空 → 是「中文版缺此小节」的正常形态，不查比值
+        if not n_en or not n_zh:
+            continue
+        # 大的一侧有实质体量就查：小的一侧可以极瘦（英文代码节对中文短节）
+        if max(n_en, n_zh) > floor:
+            r = n_zh / n_en
             if r > max_ratio or r < 1 / max_ratio:
                 return False
     return True
@@ -674,9 +845,19 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
     if translate:
         todo = []
         _skipped_short = 0
+        _skipped_code = 0
+        _moved_cross = 0
         for si, s in enumerate(res.sections):
             for pi, p in enumerate(s.pairs):
                 if not (p.en and not p.zh):
+                    continue
+                # ★★ 代码块不补译（2026-09-19 §6.50，用户铁律④）：
+                #   英文 `<pre>` 块在中文版里是 JPG 图 → 流水线视角「无中文」
+                #   → 走补译。LLM 会把代码注释译成中文（`# create a small 3D
+                #   dataset` → `# 创建一个小型的三维数据集`），实测 ML 9 处。
+                #   用户明确「代码不要翻译」→ 英文侧照常渲染，不生成中文。
+                if any(_is_code_block(s.en_paras[x]) for x in p.en):
+                    _skipped_code += 1
                     continue
                 # ★ 太短的残片不补译（见 _too_short_to_translate 注释）：
                 #   英文段只剩 1~2 个词时，LLM 拿不到任何可译内容，实测会
@@ -686,10 +867,32 @@ def apply_llm(res: ChapterResult, llm, title="", refine=True, translate=True,
                 if _too_short_to_translate(_etxt):
                     _skipped_short += 1
                     continue
+                # ★★ 跨对重复守卫（2026-09-19 §6.45）：宽组拆分（_split_wide_pairs）
+                #   把「多段合一的英文」拆开后，被摘出的英文段往往**它的中文
+                #   就在紧邻的下/上一对里**（中文版重排段落所致）。此时若直接
+                #   补译，就凭空造出一段与源中文高度重复的译文 —— 用户截图里
+                #   看到的「同一句话出现两遍、且位置错开」正是这么来的。
+                #   实测 ml_uni：38 个 AI 段里 11 个（29%）命中此坑，重叠度
+                #   64%~87%，样本：
+                #     pair[1] AI「决策树也是随机森林（参见第7章）…」
+                #            源「决策树也是随机森林的基本组成部分（见第7章）…」
+                #   处理：**把源中文搬过来**（而不是补译），源对退回只英文。
+                #   判据用**汉字二元组重叠**（不像长度比那样怕意译），
+                #   门槛 0.55 是实测分离度（真重复 64%+，无关最高 51%）。
+                _mv = _steal_nearby_zh(s, pi)
+                if _mv:
+                    _moved_cross += 1
+                    continue
                 todo.append((si, pi, p))
         if _skipped_short:
             print(f"    [补译] 跳过 {_skipped_short} 个「≤2 词的残片」"
                   f"（无可译内容，防幻觉）")
+        if _skipped_code:
+            print(f"    [补译] 跳过 {_skipped_code} 个**代码块**"
+                  f"（用户铁律：代码不翻译，英文原版照抄）")
+        if _moved_cross:
+            print(f"    [补译] {_moved_cross} 段改「搬运邻对已有中文」"
+                  f"（跨对重复守卫，避免造出重复译文）")
         for i in range(0, len(todo), batch):
             chunk = todo[i:i + batch]
             texts, ctx = [], ""
@@ -810,7 +1013,174 @@ def apply_error_repair(res: ChapterResult, llm, title="",
     return st
 
 
-def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
+_ZH_SUBHEAD_RE = re.compile(
+    r"^\s*(\d+)\s*[.．]\s*(\d+)\s*[.．]\s*(\d+)\s*[\s：:、.．]?\s*(\S.*)$")
+_ZH_TOPHEAD_RE = re.compile(
+    r"^\s*(\d+)\s*[.．]\s*(\d+)\s*[\s：:、.．]?\s*(\S.*)$")
+
+
+def _zh_embedded_subheads(sec) -> list[tuple[str, str]]:
+    """中文节内「段落式小标题」→ [(编号, 标题文本)]。
+
+    为什么要它：中译本常把子节标题**排成正文段**而不是 heading ——
+    ML ch8 实测 `8.3 PCA` 这一节（62 段）里嵌着 9 个段落式小标题
+    `8.3.1 保留方差` … `8.3.9 增量PCA`，而英文侧对应 9 个独立 deep 节
+    （`Preserving the Variance` … `Incremental PCA`）。这些子编号是
+    **跨语言保真的结构信号**（铁律 11：结构信号，不是词表），
+    拿到它们就能确定性地把 1:9 合并推出来。
+
+    只认「短段落 + 编号开头」：正文里偶尔出现的 `8.3.1` 引用不算
+    （那些后面通常跟长句子；小标题一般 ≤ 30 字且不以句号结尾）。
+    """
+    out = []
+    for p in sec.paras:
+        t = (p.text or "").strip()
+        if not t or len(t) > 40:
+            continue
+        m = _ZH_SUBHEAD_RE.match(t)
+        if not m:
+            continue
+        body = m.group(4).strip()
+        # 小标题不该以句末标点收尾；以「，。」收尾的是碰巧带编号的正文
+        if body.endswith(("。", "，", "；", ".", ",")):
+            continue
+        out.append((f"{m.group(1)}.{m.group(2)}.{m.group(3)}", body))
+    return out
+
+
+def _sections_by_subchain(en_secs, zh_secs, min_hits: int = 3):
+    """§6.48：用中文**段落式小标题的子编号**，确定性推出中↔英小节配对。
+
+    背景（ML ch8 实测，用户反复报的「错配」根因）：
+      * 英文原版 19 个 deep 节，标题**一个编号都没有**（纯文字标题）；
+      * 中译本 8 个节，标题带 `8.1`~`8.7`，且 `8.3 PCA` 一节里
+        把 9 个英文子节合并了（`8.3.1 保留方差`…`8.3.9 增量PCA`）。
+      * ⇒ `match_chains` 需要两边同编号 → 返回空 → 退化裸 DP 只能邻近
+        1:1，走不到 1:9 → 该节起**整章相位平移**。
+
+    做法（纯结构、零成本、无 LLM）：
+      中文节 j 的**槽位数** `k_j` =
+        1（节自身标题对应的那个英文节）
+        + len(内嵌子编号段)（每个段落式小标题各占一个英文子节）
+      ⇒ `k_j` 即「这一节合并了几个英文 deep 节」。
+      英文 deep 节按顺序依次填满这些槽位。
+      槽位总数与英文节数对不上时，把差额分配给**最可能被拆细的一节**，
+      仍对不上才拒绝（返回 None，交上层）。
+
+    为什么可信：`k_j` 是**计数信号**（1:1 / 1:3 / 1:9 都写得下），不是
+    长度比、不是词表 —— 这正是铁律 11 要的结构判据。实测 ch8：
+      ZH[2] `8.2降维的主要方法` 内嵌 `8.2.1 投影`/`8.2.2 流形学习`
+        → k=1+2=3  ←→ EN[2] Main Approaches + [3] Projection +
+                        [4] Manifold Learning ✓
+      ZH[3] `8.3 PCA` 内嵌 9 个（`8.3.1 保留方差`…`8.3.9 增量PCA`）
+        → k=1+9=10  ←→ EN[5]…[14] 共 10 个 ✓（`PCA` 自身占 1 个）
+    """
+    n, m = len(en_secs), len(zh_secs)
+    if n < min_hits or m < min_hits:
+        return None
+    from . import toc_tree as TT
+    # ── 预处理：把「无编号的续接节」并回前一个编号节 ────────────────────
+    # 中译本有时把英文一个编号大节的中段内容**另起一个无编号标题**
+    # （ML ch4 实测：`4.2梯度下降` 之后跟一个无编号的 `收敛速度`，
+    #  里面嵌着 `随机梯度下降`/`小批量梯度下降` 两个段落式小标题）。
+    # 这类节不是独立小节，是前一个编号节的**续接**。
+    # 判据（纯结构）：① 本节标题无编号；② 前一个有编号节存在且相邻；
+    #                 ③ 本节**带有内嵌子标题**（说明它接的是子节序列）。
+    # 不满足③的无编号节（如章首块「训练模型」）保持独立 —— 它确实
+    # 对应英文的章首块。
+    heads = []
+    for j, s in enumerate(zh_secs):
+        t = (s.title or "").strip()
+        heads.append(TT.num_of(t) if t else "")
+    _merges: dict[int, list[int]] = {}          # 目标节下标 → 并入的节下标
+    _drop: set[int] = set()
+    for j in range(1, m):
+        if heads[j] or not _zh_embedded_subheads(zh_secs[j]):
+            continue
+        # 往前找最近的**有编号**节
+        k = j - 1
+        while k >= 0 and not heads[k]:
+            k -= 1
+        if k < 0:
+            continue
+        _merges.setdefault(k, []).append(j)
+        _drop.add(j)
+
+    counts, n_sub = [], 0
+    zmap: list[list[int]] = []                  # 槽位 j → 原始中文节下标列表
+    for j, s in enumerate(zh_secs):
+        if j in _drop:
+            continue
+        grp = [j] + _merges.get(j, [])
+        subs = []
+        for _g in grp:
+            subs += _zh_embedded_subheads(zh_secs[_g])
+        if subs:
+            n_sub += len(subs)
+        counts.append((1 + len(subs)) if subs else 1)
+        zmap.append(grp)
+    m = len(counts)
+    # 信号量下限（铁律 10）：子标题太少说明这不是「段落式小标题」的书
+    if n_sub < min_hits:
+        return None
+    # ── 闸门：只在**结构性畸形**时才接管（否则不碰 DP 已经算对的情况）────
+    # 为什么必须设闸：ch4 的 DP 本来是对的（`4.2梯度下降` 收 4 个英文节），
+    # 但其中文「续接节」`收敛速度` 也带子标题 → 槽位算术多算名额，
+    # 一旦无条件接管，ch4 反被改坏（实测 `4.3多项式回归` 被配到
+    # `Stochastic Gradient Descent`）。
+    #
+    # 真正的病灶信号（ch8）＝**某一节声称要合并的子节数 > DP 的合并上限**。
+    # 超过上限时 DP 几何上根本走不到那格 → 必然相位平移，必须接管；
+    # 没超过 → DP 有解，把决定权留给它（先证明尺子，再信数字）。
+    from .align import MERGE_CAP
+    if max(counts) <= MERGE_CAP:
+        return None
+    # 槽位总数应约等于英文节数。差额用**逐节局部调整**消化，不做全局缩放。
+    diff = n - sum(counts)
+    if abs(diff) > max(2, n // 3):
+        return None
+    if diff > 0:
+        # 英文节更多 → 把多余名额补给「缺得最多」的节。
+        # 怎么算「缺」：按顺序模拟填槽，看每节**实际拿到几个英文节**，
+        # 与它**内嵌子标题所要求的个数**差多少。差得多的先补 —— 这是
+        # 纯结构对账（哪些节声明了 N 个子标题却没拿到 N 个英文节）。
+        # ML ch4 实测：`4.1线性回归` 声明 2 个子标题（标准方程/计算复杂度）
+        #   却只拿到 `EN[1]` 一个 → 缺 2，差额补给它才对吧台摆平。
+        _need, _pos = [], 0
+        for j, k in enumerate(counts):
+            take = min(k, max(0, n - _pos))
+            _need.append((counts[j] - take, -j))     # (缺口, 越靠后越优先)
+            _pos += take
+        order = [j for j, _ in sorted(enumerate(_need),
+                                      key=lambda t: (-t[1][0], t[1][1]))]
+        for _t in range(diff):
+            counts[order[_t % m]] += 1
+    elif diff < 0:
+        # 英文节更少 → 从中嵌子标题最少的节里回收名额（不能降到 0）
+        order = sorted(range(m), key=lambda j: (counts[j], -j))
+        for _t in range(-diff):
+            for j in order:
+                if counts[j] > 1:
+                    counts[j] -= 1
+                    break
+    out, ei = [], 0
+    for j, k in enumerate(counts):
+        take = en_secs[ei:ei + k]
+        if not take:
+            break
+        out.append((list(range(ei, ei + len(take))), list(zmap[j])))
+        ei += len(take)
+    # 英文侧还剩（比槽位多）→ 尾部多余的英文节按序补成单边对，不丢内容
+    for i in range(ei, n):
+        out.append(([i], []))
+    if not out:
+        return None
+    out.sort(key=lambda x: (x[0] or x[1]))
+    return out
+
+
+def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3,
+                        llm=None, en_firsts=None, zh_firsts=None):
     """策略 v2 第 1 步：按**标题编号**配对小节（零成本、精确、抗倒装）。
 
     为什么它比 DP/LLM 都可靠：编号是跨语言保真的（'2.6.1' ↔ '2.6.1'），
@@ -819,6 +1189,25 @@ def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
 
     返回 [(en_idx_list, zh_idx_list)]，含未配上的小节（单侧为空 →
     下游按「中文版缺/多此小节」处理，**不会丢内容**）；覆盖率不足返回 None。
+
+    ⚠ 2026-09-19 §6.48（**单边编号链**）：`match_chains` 要求**两边同编号**，
+      但真书里常常只有一侧带编号。ML ch8 实测：中文 `8.1`~`8.7` 编号齐全，
+      英文 19 个标题**一个编号都没有**（原版用 `The Curse of Dimensionality`
+      这种纯文字标题）→ `match_chains` 返回 `pairs=[]` → 编号链整条失效，
+      退化成带 `band=2` 的裸 DP，而真实对应是 `ZH 8.3 PCA ↔ EN[5..14]`
+      这个 **1:9 合并**，几何上 DP 根本走不到 → `该节之后整章相位平移`
+      （用户反复报的「错配」根因）。
+      ⇒ 两级兜底，按**成本从低到高**：
+         ① `_sections_by_subchain` —— 用中文**段落式小标题的子编号**
+            （`8.3.1 保留方差`…）数出槽位数，确定性推出 1:9 合并。
+            纯结构、零成本，覆盖绝大多数技术书。
+         ② `_sections_by_one_sided_number` —— 实在没有结构信号时才请
+            LLM 按标题语义配（结果落磁盘缓存，同章重跑免费）。
+      ⚠ 试过的**错误**做法（勿重蹈）：拿「段落累积量比例」当跨语言网格。
+        英文段天然约是中文的 3 倍长，累积比例**不可比** —— ch8 实测把
+        `8.2降维的主要方法` 配成 `EN[5..11]`，`8.6其他降维技术` 配成空，
+        还把本来 DP 已正确的 ch4/ch6 改坏。铁律：跨语言只用**语义/结构**
+        （标题、层级、编号），不用长度。
     """
     try:
         from . import toc_tree as TT
@@ -829,7 +1218,14 @@ def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
     pairs, en_un, zh_un = TT.match_chains(en_chain, zh_chain)
     need = min(len(en_secs), len(zh_secs))
     if not need or len(pairs) < min_hits or len(pairs) < need * min_cover:
-        return None
+        # ① 优先走**确定性**的子编号槽位（零成本、可解释、不烧钱）
+        _sub = _sections_by_subchain(en_secs, zh_secs, min_hits=min_hits)
+        if _sub:
+            return _sub
+        # ② 实在没有结构信号，才请 LLM 按标题语义配
+        return _sections_by_one_sided_number(en_secs, zh_secs, llm=llm,
+                                             en_firsts=en_firsts,
+                                             zh_firsts=zh_firsts)
     out = [([i], [j]) for i, j, _n in pairs]
     # 未配上的小节（多半是无编号的**章首块** / 尾部附录）。旧实现「按顺序
     # zip 互配」会把两条毫不相干的无编号小节硬凑一对 —— prob ch3 实测：
@@ -871,6 +1267,119 @@ def _sections_by_number(en_secs, zh_secs, min_cover=0.5, min_hits=3):
     out += [([], [j]) for j in zh_un if j not in used_zh]
     out.sort(key=lambda x: (x[0] or x[1]))
     return out
+
+
+def _sections_by_one_sided_number(en_secs, zh_secs, llm=None,
+                                  en_firsts=None, zh_firsts=None):
+    """§6.48 兜底：一侧几乎没有编号时，**请 LLM 配小节**（零猜测、可缓存）。
+
+    为什么不能让 DP 硬扛：`match_chains` 要求同编号两边都有。可真书常常
+    只有中译本在标题里写编号（`8.1维度的诅咒`），原著是纯文字标题
+    （`The Curse of Dimensionality`）—— ML ch8 实测英文 19 个标题编号
+    **全为空**，编号链整条废掉。此时 DP 带 `band` 只能做邻近 1:1，而真实
+    对应是 **1:9 合并**（`ZH 8.3 PCA` ←→ `EN[3..11]`：中文把
+    「保留方差/主成分/降到 d 维/用 sklearn/解释方差比/选维度/PCA 压缩/
+    随机化 PCA/增量 PCA」九个小节合成了「8.3 PCA」一大节）→ DP 走不到那格
+    → 该节起整章相位平移（用户反复报的「错配」根因）。
+
+    ⚠ 试过的**错误**做法（2026-09-19，勿重蹈）：拿「段落累积量比例」当
+      跨语言网格。英文段天然是中文的约 3 倍长，累积比例**不可比** ——
+      ch8 实测把 `8.2降维的主要方法` 配成 `EN[5..11]`（含 PCA 全部子节），
+      而 `8.6其他降维技术` 被配到 `EN[]`。ch4/ch6 本来 DP 是对的被它改坏。
+      铁律：跨语言只用**语义**（标题）+ **结构**（层级/编号），不用长度。
+
+    做法：把两侧标题（+首段预览）交给 `llm.map_sections` —— 这正是它
+    `level="section"` 的用途，prompt 里已明确允许 `[i,[j1,j2]]` 的合并
+    形态，而 `_valid_section_map_nm` + `_coalesce_section_map` 会把
+    多对一归一化。结果**磁盘缓存**（键 = 模型+system+user），同章重跑免费。
+
+    只有两侧都 ≥ 3 节、且 `llm` 可用时才启用；否则返回 None 交回 DP。
+    """
+    if llm is None or not getattr(llm, "enabled", False):
+        return None
+    n, m = len(en_secs), len(zh_secs)
+    if n < 3 or m < 3:
+        return None
+    from . import toc_tree as TT
+    en_num = sum(1 for s in en_secs if TT.num_of(s.title or ""))
+    zh_num = sum(1 for s in zh_secs if TT.num_of(s.title or ""))
+    # 只有**真正单边**才走这条路：一侧编号过半，另一侧编号不足三分之一。
+    # 两侧都有编号 → `match_chains` 本来就够用，不必花钱。
+    # 两侧都没有编号 → 编号链压根不成立，DP/LLM 章窗才是正解，这里不插手。
+    def _dom(k, n_sec):
+        return k >= max(3, n_sec * 0.5)
+
+    def _sparse(k, n_sec):
+        return k < max(3, n_sec * 0.34)
+
+    if not ((_dom(en_num, n) and _sparse(zh_num, m))
+            or (_dom(zh_num, m) and _sparse(en_num, n))):
+        return None
+    try:
+        out = llm.map_sections(
+            [s.title or "" for s in en_secs],
+            [s.title or "" for s in zh_secs],
+            [len(s.paras) for s in en_secs],
+            [len(s.paras) for s in zh_secs],
+            en_firsts=en_firsts, zh_firsts=zh_firsts)
+    except Exception:                                   # noqa: BLE001
+        return None
+    if not out:
+        return None
+    _mapped = _coalesce_section_map(out, n, m)
+    if not _section_map_sane(_mapped, en_secs, zh_secs, n, m):
+        return None
+    return _mapped
+
+
+def _section_map_sane(mapping, en_secs, zh_secs, n: int, m: int,
+                      max_ratio: float = 8.0, floor: int = 10) -> bool:
+    """§6.49：LLM 小节映射的**结构自检** —— 不通过就整条丢弃回退 DP。
+
+    ⚠ 为什么必须有这道闸门（2026-09-19 实测血账）：ML ch4 的英文侧
+      **编号 0/21**、中文侧 7/11 —— 确实是「真正单边」，`_dom`/`_sparse`
+      闸门放行，于是走了 LLM。可 LLM 返回的映射**整片错位**：
+        `en[2] The Normal Equation` ↔ `zh[2] 4.2梯度下降`（错一格）
+        `en[1] Linear Regression` / `en[4..6]` 全判空
+      结果 `命中中文 209 → 156`（**掉 53 段**，`告警 52 → 149`）。
+      旧代码毫无校验就采纳 → legacy 指标静默塌方（铁律 3：只看 stdout
+      的「段落对」数看不出来，是回归脚本抓到的）。
+      ⇒ 铁律 10 的翻版：**LLM 裁决必须有「信号量下限」**，没有证据
+        证明它配得比 DP 好，就不要它。
+
+    两道**结构性**判据（都不用词表、不用长度比例当主判据）：
+      ① **单调性**：映射必须严格推进（en/zh 下标各自不回退）。
+         LLM 输出乱序/交错是多对一归一化后的典型症状。
+      ② **段数比**：单个映射对两侧段数比不得超 `max_ratio`（复用
+         `_sane_section_map` 的判据，两侧都 > floor 才查）。
+
+    ⚠⚠ **第 0 道：下标必须落在界内**（2026-09-19 §6.51 补）。
+      前两道闸门**都放过了越界下标** —— 单调性只看「不回退」，
+      `zh=[10]` 比 `prev_z=9` 大，判定通过；`_sane_section_map` 只比段数。
+      实测 ML ch3（EN 14 节 / ZH 10 节）LLM 吐出 `en=[13] zh=[10]`
+      → 调用方 `zh_secs[j]` 直接 **IndexError 崩掉整章**，该章未进成品
+      （整本构建 26 章只出 24 章 → 构建被拒）。ch5 同因。
+      ⇒ 越界是**硬错误**，必须第一道就拦。
+    """
+    for ea, zb in mapping:
+        for i in (ea or []):
+            if not (0 <= i < n):
+                return False
+        for j in (zb or []):
+            if not (0 <= j < m):
+                return False
+    prev_e, prev_z = -1, -1
+    for ea, zb in mapping:
+        for i in (ea or []):
+            if i < prev_e:
+                return False
+            prev_e = i
+        for j in (zb or []):
+            if j < prev_z:
+                return False
+            prev_z = j
+    return _sane_section_map(mapping, en_secs, zh_secs,
+                             max_ratio=max_ratio, floor=floor)
 
 
 def _chapter_units(llm_map, en_secs, zh_secs, en_off, zh_off):
@@ -1649,14 +2158,56 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     # 策略 v2：**只有编号链真的成立时**才切成完整标题树（deep）。
     # 实测 ML ch4 编号覆盖率不足 → 编号链没生效，但 deep 把小节切碎后
     # DP 反而变差（bad 57%→69%）；prob ch2 编号链成立 → deep 是必要的。
+    #
+    # ⚠ 2026-09-19 §6.46：上面那条「deep 让 ML 变差」的结论要**限定条件** ——
+    #   当年测的是 **ch4**，而 ch4 的问题不是 deep 本身，是「英文侧根本没有
+    #   编号」（EN 0/21 有编号，ZH 7/11）→ deep 切碎后 DP 无锚可依。
+    #   但 ch8 是另一回事：**众数层级切法**把 4 个大节（h1：Random Projection /
+    #   LLE / Other… / Exercises）整个吞进 `Incremental PCA`（h2），
+    #   造出「EN 一节 60 段 ↔ ZH 一处 11 段」的畸形节，DP 再怎么算都对不上
+    #   → **该节之后整章相位平移**（用户反复报的「错配」根因之一）。
+    #   判据换成**结构性**的：deep 之后两侧节数是否更接近（粒度是否更匹配）。
+    #   —— 不用词表、不用固定书配置（铁律 11）。
     _deep_pairs = None
     if _NUM_CHAIN:
         _en_d = A.split_sections(en_blocks, deep=True)
         _zh_d = A.split_sections(zh_kept, deep=True)
-        _deep_pairs = _sections_by_number(_en_d[1], _zh_d[1])
+        # §6.48：一侧没有编号时，`match_chains` 会返回空 → 交给 LLM 按标题
+        # 语义配（prompt 本就允许 `[i,[j1,j2]]` 的合并形态）。
+        # 首段预览是真正的锚点（ch8 的 `8.3 PCA` ↔ 9 个英文小节，
+        # 光看标题 LLM 会犹豫，看首段就知道是同一个主题）。
+        _de = lambda secs: [next((p.text.strip() for p in s.paras
+                                  if (p.text or "").strip()), "")
+                            for s in secs]
+        _deep_pairs = _sections_by_number(_en_d[1], _zh_d[1], llm=llm,
+                                          en_firsts=_de(_en_d[1]),
+                                          zh_firsts=_de(_zh_d[1]))
         if _deep_pairs:
             en_title, en_secs = _en_d[0], _en_d[1]
             zh_title, zh_secs = _zh_d[0], _zh_d[1]
+        else:
+            # 编号链不成立 → 看 deep 是否消除**畸形胖节**。
+            # ⚠ 判据不能用「两侧节数更接近」：ML ch8 的 shallow 是 12 节、
+            #   deep 是 19 节，而中文只有 8 节 —— 按节数差会误判 shallow 更好，
+            #   可 shallow 里正藏着「Incremental PCA 60 段」这个畸形节
+            #   （4 个 h1 大节全被吞进去了）。真正的病灶是**单节段数畸大**：
+            #   它让节内段落 DP 面对 60 段 × 11 段，怎么算都对不上，
+            #   于是该节起全章平移。
+            #   所以判据 = **单节段数的离散度是否下降**（用「最大节/中位节」
+            #   这个比值，比值越小说明越均衡）。只在 deep **严格更均衡**
+            #   时才切换 —— 结构信号，不用词表（铁律 11）。
+            def _fat_ratio(secs):
+                _sz = sorted(len(s.paras) for s in secs) or [0]
+                _md = _sz[len(_sz) // 2] or 1
+                return (max(_sz) or 0) / _md
+
+            _fr_shal = _fat_ratio(en_secs)
+            _fr_deep = _fat_ratio(_en_d[1])
+            if _fr_deep < _fr_shal:
+                en_title, en_secs = _en_d[0], _en_d[1]
+                zh_title, zh_secs = _zh_d[0], _zh_d[1]
+                print(f"    [节切分] 众数层级有畸形胖节（最大/中位 "
+                      f"{_fr_shal:.1f} → {_fr_deep:.1f}）→ 改用 deep")
 
     # 图位：章节内按顺序配对（视觉单位不进段落 DP，见 A.pair_visuals 的说明）
     zh_vs_all = [v for s in zh_secs for v in A.visual_of_sec(s)]
@@ -1814,6 +2365,23 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
     _zh_anchor_at: list = []
     for ei, zi in sec_pairs:
         ei, zi = list(ei or []), list(zi or [])
+        # ⚠ 边界自检（2026-09-19 §6.51）：`sec_pairs` 的**每一份来源**
+        # 都可能吐出越界下标 —— 实测 ML ch3/ch5 直接 `IndexError` 崩在
+        # 这里（整章未进成品）。上游有四处会构造 sec_pairs：
+        # 编号链 `_deep_pairs`、章窗 LLM `_chapter_units`、小节 LLM 映射、
+        # DP `align_sections`；另加 `_merge_onesided_sections` 后处理。
+        # 与其逐个堵，不如**在这一处收口**：越界就是上游 bug，直接丢弃该
+        # 单元（会让中文少几段，但不毁整章），并把现场打出来。
+        _oob_e = [i for i in ei if not (0 <= i < len(en_secs))]
+        _oob_z = [j for j in zi if not (0 <= j < len(zh_secs))]
+        if _oob_e or _oob_z:
+            print(f"    [下标越界!] {key} 单元 ei={ei} zi={zi} "
+                  f"（en_secs={len(en_secs)} zh_secs={len(zh_secs)}）"
+                  f" oob_en={_oob_e} oob_zh={_oob_z} → 丢弃越界项")
+            ei = [i for i in ei if 0 <= i < len(en_secs)]
+            zi = [j for j in zi if 0 <= j < len(zh_secs)]
+            if not ei and not zi:
+                continue
         a_paras = [p for i in ei for p in en_secs[i].paras]
         b_paras = [p for j in zi for p in zh_secs[j].paras]
         # b_paras 每段对应的全章段序（供图注编号匹配锚定 pair）

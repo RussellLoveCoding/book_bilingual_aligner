@@ -938,6 +938,118 @@ def _plain_text(html_str: str) -> str:
     return _html_mod.unescape(re.sub(r"<[^>]+>", "", html_str or ""))
 
 
+# ── §6.49 孤立碎片判据（2026-09-19 起三代迭代，v3 定稿）────────────────
+# 中文源把公式图排成一串独立 `<p>`，每段只剩 `（i）（i）（i）` / `i，j，j，j` /
+# 裸页码 `322` / `01` / `（t）（t-1）` 这类残渣（EN 侧公式是图，天然没有对应
+# 文本）。全量实测 ML 一书 4868 段正文里有 115 段是这种东西（2.4%）。
+#
+# ⚠ 判据**刻意写窄**，只抓「**整段就是一个碎片**」，不做子串匹配。
+#
+# ⚠⚠ 三代迭代的血账（**照抄结论，别再重走**）：
+#   v1（括号 + 小写 token）——31 例单测当场抓到 6 处误判：
+#     · 漏判相邻括号串 `（i）（i）（i）（j）`（分隔符切不开无空格相邻）；
+#     · **误杀真正文** `2016`（年份）/ `PCA` / `LLE`（缩写）。
+#   v2（字符种类摊开判）——把「数字串」一刀切判碎片 → **误杀乘法算式**
+#     `8×7×6×5×4×3×2×1。`（think2 实测 3 处）。
+#   v3（定稿）——加三道**结构性**护栏：句末标点 / 有序列表项 / 信息量闸门。
+#     · 以句末标点收尾 → 完整句子（残渣从不以 `。` 结尾）；
+#     · `N. ` 开头 → 算法步骤（`1. m←βm-η（∇θJ（θ）` 是**真内容**）；
+#     · `×`/`÷` 两侧都是 ≥2 位数字 → 算式；
+#     · ≥2 个「≥2 位的独立数字」→ 真数据列表（`·40，27，25，36，…`）。
+#   单测 55 例全绿（`tests/test_orphan_junk.py`）。
+#
+# ⚠ 试过但**失败**的路线（别再试，全是 §6.16(3)「先证尺子」的教训）：
+#   * **字体判据**（`font-size:13px` + `PingFang SC`）——PingFang SC 是本书
+#     **正文字体**，全书 3279 段命中、3063 段含汉字，毫无区分度；
+#   * **紧邻 figure**——只有 7/236 命中，大量残渣并不挨着图；
+#   * **HTML 特征聚类**（span 数 / 有无 `<i>`）——残渣与正文重叠严重。
+#
+# ⚠ 另一条重要事实：**判碎片必须用「整段文本」，不能用 HTML 判**。
+#   残渣段的 HTML 是 `<span style="font-size:13px;…">` 内套若干 `<i>`，
+#   与「正文里含公式的行内 span」形态相同，只有**文本内容**能分开。
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_WORD3_RE = re.compile(r"[a-z]{3,}")
+_LIST_ITEM_RE = re.compile(r"^\s*\d{1,3}\s*[.、)）]\s*\S")
+_SIGCH_RE = re.compile(r"[_@/=#\"'`|\\<>~^&%$§¶†‡]")
+_SENT_END_RE = re.compile(r"[。．.！？!?；;]\s*$")
+_MATH_SYM = set("⊤∞←→∇θηβΦ∑∏√±≈≤≥⋅×÷·°ℓ⊆⊇∈∉∪∩+-*")
+_BREAK_CH = "（）()[]{}，,、．.。;；:： \u00a0"
+
+
+def _junk_tokens(t: str):
+    """把串切成 (kind, text)；kind ∈ num/alpha/sym/br/other。"""
+    out, i, n = [], 0, len(t)
+    while i < n:
+        c = t[i]
+        if c.isdigit():
+            j = i
+            while j < n and t[j].isdigit():
+                j += 1
+            out.append(("num", t[i:j]))
+            i = j
+        elif c.isalpha():
+            out.append(("alpha", c))
+            i += 1
+        elif c in _MATH_SYM:
+            out.append(("sym", c))
+            i += 1
+        elif c in "（）()[]{}":
+            out.append(("br", c))
+            i += 1
+        elif c in _BREAK_CH:
+            i += 1
+        else:
+            out.append(("other", c))
+            i += 1
+    return out
+
+
+def _is_orphan_junk(text: str) -> bool:
+    """整段是否为「公式图残渣」——只有在这时兜底/配对才丢弃它。
+
+    判据见上方长注释（v3 定稿）。核心思想：残渣 = 只由「数字 / 单个小写
+    字母 / 数学符号 / 括号」构成，且**没有**任何「真实内容」的结构特征
+    （汉字、大写、≥3 连小写英文词、句末标点、有序列表项、标识符字符、
+    数据列表、算式）。
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 40:
+        return False
+    if _CJK_RE.search(t) or _WORD3_RE.search(t):
+        return False
+    # 大写只在**括号外**出现才算正文（`ISBN`/`PCA`）；`（T）` 是数学下标。
+    _t_out = re.sub(r"[（(][^）)]{0,6}[)）]", " ", t)
+    if re.search(r"[A-Z]", _t_out):
+        return False
+    if _SENT_END_RE.search(t) or _LIST_ITEM_RE.match(t) or _SIGCH_RE.search(t):
+        return False
+    # 纯下标串（`i，j，j，j` / `，j`）：只由单小写字母 + 分隔符 + 括号组成
+    if (len(t) <= 12 and re.fullmatch(r"[a-z，,、\s（）()]+", t)
+            and any(c.isalpha() for c in t)):
+        return True
+    if not re.search(r"[\d（()）]", t):     # 至少要有数字或括号
+        return False
+    for op in ("×", "÷"):                  # 算式（`17×24`）→ 正文
+        for m in re.finditer(re.escape(op), t):
+            left = re.search(r"(\d+)\s*$", t[:m.start()])
+            right = re.match(r"\s*(\d+)", t[m.end():])
+            if (left and right and len(left.group(1)) >= 2
+                    and len(right.group(1)) >= 2):
+                return False
+    toks = _junk_tokens(t)
+    if not toks or any(k == "other" for k, _ in toks):
+        return False
+    nums = [s for k, s in toks if k == "num"]
+    if len([s for s in nums if len(s) >= 2]) >= 2:
+        return False                       # 真数据列表
+    for s in nums:
+        if len(s) >= 7:
+            return True                    # 一坨粘在一起的角标（`1111111`）
+        if len(s) > 6 or re.fullmatch(r"(19|20)\d{2}", s):
+            return False                   # 年份（4 位）等
+    return True
+
+
 def _rewrite(html_str: str, n_notes: int, prefix: str = "",
              note_texts: dict | None = None) -> str:
     """脚注链接指向本章注释区；编号超出注释条数时降级为纯上标。
@@ -1692,14 +1804,43 @@ def render_chapter(res, prefix=""):
                     parts.append(_head_block("h4", "st", "", _zh_hp[_hiz][1]))
                     _emitted_zh.add(_zh_hp[_hiz][0])   # 同 1171 处：记账防误报
                     _hiz += 1
+                # ⚠ 2026-09-19 §6.49：**先剔掉孤立碎片**再拼多段。
+                # 中文源把公式图排成独立 `<p>`，一段只剩 `（i）（i）（i）（j）…`
+                # 这种残渣（EN 侧公式是图，天然没对应）。它们**已被 DP 认领**
+                # 为正经 p.zh，所以走不到孤儿兜底那条路 —— 必须在这里拦。
+                # 判据同 `_is_orphan_junk`（55 例回归，见 tests/）。
+                #
+                # ⚠ 这里**不要**加 `len(p.zh) > 1` 门槛。v1 加过，理由是
+                # 「单段 p.zh 就是正文，别动」——**错的**：实测 ML ch9 有个
+                # 单段对，p.zh = [`111`]（源里 `value=0.111` 的下标溢出来的
+                # 独立 `<p>`），门槛把它放行了，产物第 3 处垃圾就是这么来的。
+                # 正确做法：**逐段**判，碎片一律剔；剔空了就当本对无中文。
+                _zh_keep, _zh_junk = [], []
+                for _x in p.zh:
+                    _tx = (sec.zh_paras[_x].text or "").strip()
+                    if _is_orphan_junk(_tx):
+                        _zh_junk.append(_x)
+                    else:
+                        _zh_keep.append(_x)
+                if _zh_junk:
+                    _DROPPED_ZH_ONLY.extend(
+                        (sec.zh_paras[_x].text or "").strip()[:40]
+                        for _x in _zh_junk)
+                    _emitted_zh.update(_zh_junk)
+                    # 全段都是碎片 → 已记账丢弃，本对不再输出中文侧
+                    # （英文侧照常，不 break：下面还有图/收尾逻辑要走）
+                    p.zh = _zh_keep
                 zh_html = _put_notes(
                     _zh_math("\x01".join(sec.zh_paras[x].html for x in p.zh)),
-                    p, prefix, note_texts)
+                    p, prefix, note_texts) if p.zh else ""
                 _zplain = " ".join(sec.zh_paras[x].text for x in p.zh).strip()
                 _eplain = " ".join(sec.en_paras[x].text for x in p.en).strip()
                 # 渲染时提升（决策中性）：中文小标题在源文件里常是普通段
                 # （不是 heading），位置与英文小标题对应 → 渲染成标题
-                if _is_formula_ocr(_zplain):
+                if not p.zh:
+                    # §6.49：中文侧全是碎片、已丢弃（上面已记账）→ 本对只留英文
+                    pass
+                elif _is_formula_ocr(_zplain):
                     # 中文「公式图 OCR」段（见 _is_formula_ocr 注释）：丢弃中文、
                     # 保留英文原版公式图 —— 用户 2026-09-18 明确要求。计数不静默。
                     _DROPPED_ZH_ONLY.append(_zplain[:40])
@@ -1807,6 +1948,16 @@ def render_chapter(res, prefix=""):
             _txt = (_blk.text or "").strip()
             if not _txt:
                 continue
+            # ⚠ 2026-09-19 §6.49：**残渣块不许吸附渲染**。
+            # 中文源把公式图排成独立 `<p>`，枚举块摘取（`peel_enum_blocks`）
+            # 会把这些角标残渣当成「原版用公式图、中译排成散文」的内容摘出来，
+            # 再挂到公式组下面 —— 实测 ML ch8 LLE 节的
+            # `（i）（i）（i）（j）（i）（i）` 就是这么进产物的（用户截图里那处）。
+            # 它既不是枚举内容、也没有任何信息量，直接丢弃并记账（不静默）。
+            if _side != "en" and _is_orphan_junk(_txt):
+                _DROPPED_ZH_ONLY.append(_txt[:40])
+                print(f"    [枚举块] {res.key} 丢弃残渣「{_txt[:24]}」（公式图角标）")
+                continue
             # ⚠ 这些块**不在** sec.zh_paras / sec.en_paras 里（已被摘出），
             # 不属于下面「段未渲染」自检的统计范围，无需记账，也不会误报。
             if _side == "en":
@@ -1831,15 +1982,30 @@ def render_chapter(res, prefix=""):
         _claimed |= {j for j, _t in (getattr(sec, "zh_heads_at", None) or [])}
         _orphan = [j for j in range(len(sec.zh_paras)) if j not in _claimed]
         if _orphan:
-            print(f"    [渲染] {res.key} 小节「{(sec.en_title or '章首')[:20]}」"
-                  f"有 {len(_orphan)} 段中文未被配对覆盖 → 兜底渲染")
+            _n_junk = 0
             for j in _orphan:
                 bp = sec.zh_paras[j]
                 if not (bp.text or "").strip():
                     continue
+                # ⚠ 2026-09-19 §6.49：**孤立碎片**不该兜底渲染。
+                # 中文源把公式图拍成了一串独立 `<p>`，每段只剩 `（i）（i）（i）`、
+                # `i，j，j，j`、裸页码 `322` 这类残渣（EN 侧公式是图，天然没有
+                # 对应文本）。旧实现无条件兜底 → 这些碎片挂进正文流，实测
+                # ML ch8 LLE 节末尾多出 5 段碎片（`ml_uni` 3 → `ml_uni2` 5）。
+                # 判据**刻意写窄**（只抓「整段就是个碎片」），宽了会误杀
+                # 短正文（`(III) 具有一致性.` 那种——它有实词、以句号收尾）。
+                if _is_orphan_junk(bp.text or ""):
+                    _emitted_zh.add(j)
+                    _DROPPED_ZH_ONLY.append((bp.text or "").strip()[:40])
+                    _n_junk += 1
+                    continue
                 _emitted_zh.add(j)
                 parts.append(f'<p class="zh zh_transed zh-orphan">'
                              f'{_zh_math(bp.html)}</p>')
+            _kept = len(_orphan) - _n_junk
+            print(f"    [渲染] {res.key} 小节「{(sec.en_title or '章首')[:20]}」"
+                  f"有 {len(_orphan)} 段中文未被配对覆盖 → 兜底渲染 {_kept} 段"
+                  + (f" · 丢碎片 {_n_junk} 段" if _n_junk else ""))
         if sec.degrade and DEGRADE_ON_FAIL and sec.zh_paras:
             _emitted_zh.update(range(len(sec.zh_paras)))
             parts.append('<div class="zh-fallback">')

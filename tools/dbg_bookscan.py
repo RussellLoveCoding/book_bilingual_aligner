@@ -31,18 +31,28 @@ _BLOCKS = ("p", "div", "blockquote", "li", "pre") + tuple(sorted(_HEAD_TAGS))
 _HEAD_CLS = re.compile(r"\b(ct|ch-num|h1|h2|h3|h4|st|head|title)\b")
 _ZH_CLS = re.compile(r"\bzh\b|zh_transed")
 _EN_CLS = re.compile(r"\ben\b|en_original")
+
+# ⚠ 2026-09-19 §6.51：LaTeX 判据**必须排除 Python 转义序列**。
+# 旧判据 `\\[a-zA-Z]{2,}` 会把 `b'caf\xc3\xa9'` 里的 `\xc` 当成 LaTeX 命令
+# —— ML 整本构建因此**误报 9 处「标记泄漏」**（实数 0），全是原书里
+# 合法的 Python 字节串字面量（`tf.string` 那节的 `café` 例子）。
+# 真 LaTeX 命令名**不含数字**，且转义序列必形如 `\x` + 十六进制。
+# 排除式：`\x`/`\u`/`\N` 后跟十六进制或大括号的，不当 LaTeX。
+_LATEX_CMD = re.compile(r"\\(?![xXuUN](?:\{[0-9a-fA-F ]+\}|[0-9a-fA-F]))"
+                        r"[a-zA-Z]{2,}")
+
 _LEAKS = [
     ("图片语法残留", re.compile(r"!\[[^\]]*\]\([^)]*\)")),
     ("$$ 残留", None),                       # 字面计数
     ("行内array未出图", re.compile(r"begin\{?array|end\{?array")),
     ("表格转义残留", re.compile(r"&lt;/?table")),
-    ("裸露 LaTeX 命令", re.compile(r"\\[a-zA-Z]{2,}")),
+    ("裸露 LaTeX 命令", _LATEX_CMD),
     ("裸露 $ 公式", re.compile(r"\$[^$\n]{1,40}\$")),
     ("<eq> 残留", re.compile(r"(?:&lt;|<)/?eq(?:&gt;|>)")),
 ]
 # 正文文本级泄漏（只看中英段落与标题，避开代码块里的 $PATH 这类误报）
 _TEXT_LEAKS = [
-    ("段内 LaTeX 残留", re.compile(r"\\[a-zA-Z]{2,}")),
+    ("段内 LaTeX 残留", _LATEX_CMD),
     ("段内 $ 残留", re.compile(r"\$")),
     ("段内 <eq> 残留", re.compile(r"&lt;/?eq")),
 ]
@@ -223,7 +233,10 @@ def main() -> int:
         if 3 in want:
             if d.en and len(d.zh) == 0:
                 print(f"  ③ [{short}] 有 {len(d.en)} 个英文段但**零中文段**")
-                n_empty += len(d.en)
+                # §6.52（2026-09-19）：这里是**文档**计数，不是段落计数。
+                # 原来写成 `+= len(d.en)`，于是「1 个文档 44 段」被报成「44 个文档」，
+                # 拿它跟 legacy 对比会凭空多出 43 的"回归"。计数口径必须与标签一致。
+                n_empty += 1
             for label, pat in _TEXT_LEAKS:
                 hit = [t for t in (d.zh + [x for _tg, x in d.heads])
                        if pat.search(t)]

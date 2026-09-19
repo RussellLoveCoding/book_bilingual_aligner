@@ -40,6 +40,17 @@ USE_LEXICON = True
 LEX_W = 1.5      # L1 对译词覆盖率奖励权重（MAC 语料上 0.6→0.900、1.5→0.945）
 ANCHOR_BONUS = 0.5   # L0 软锚点奖励（只影响 1:1 候选，不切矩阵）
 
+# 小节 DP 的**合并上限**（一侧最多并几节）。2026-09-19 §6.46 从 2 放宽到 6：
+# 中英小节粒度常不同步（英文 h1 大节 + h2 子节，中文把所有编号节拍平成一级），
+# 真实对应可能是 1:9 的合并（ML ch8：中文 `8.3 PCA` 一节 = 英文 10 个 deep 节），
+# 旧上限 2 表达不出来 → DP 只能做邻近 1:1 → 该节起整章相位平移。
+# 取 6 的折中：够覆盖「大节含 4~6 个子节」的常见形态，又不至于让 DP
+# 退化成「把所有节并成一对」的平凡解（那会让代价失去区分度）。
+# ⚠ `pipeline._sections_by_subchain` 用它当**接管闸门**：只有当某一节
+#   声称要合并的子节数**超过**这个上限（DP 几何上走不到）时，确定性
+#   子编号槽位配对才接管；否则把决定权留给 DP。改这里会同时影响两边。
+MERGE_CAP = 6
+
 _EN_STOP = {
     "the", "and", "for", "that", "with", "this", "from", "they", "have",
     "are", "was", "were", "not", "but", "his", "her", "its", "you", "our",
@@ -506,7 +517,16 @@ def align_sections(en_secs, zh_secs, band=3, skip_k=0.4, anchor_w=0.15,
     dp = [[INF] * (m + 1) for _ in range(n + 1)]
     bp = [[None] * (m + 1) for _ in range(n + 1)]
     dp[0][0] = 0.0
-    OPS = [(1, 1), (1, 2), (2, 1), (1, 0), (0, 1)]
+    # 合并算子放宽到最多 `MERGE_CAP` 节（原因见模块顶部 MERGE_CAP 注释）。
+    _MM = MERGE_CAP
+    OPS = [(1, 1)] + [(a, 1) for a in range(2, _MM + 1)] \
+        + [(1, b) for b in range(2, _MM + 1)]
+    # ⚠ 2026-09-19 §6.46：`band`（旧默认 2）是「1:1 对角线带宽」的老约束，
+    # 它假设跨节约等于 1:1。放宽 OPS 后这一步会**反噬**：走一步 `(6,1)`
+    # 就让 `i-j` 跳 5，下一格 `abs(i-j) > band` 直接被判死 → `bp` 大量留
+    # `None` → 回溯时 `TypeError: cannot unpack non-iterable NoneType`。
+    # 因此带宽必须**至少容得下一次最宽算子**，再留 1 格余量。
+    _band = max(int(band or 0), _MM - 1)
     for i in range(n + 1):
         for j in range(m + 1):
             cur = dp[i][j]
@@ -517,7 +537,7 @@ def align_sections(en_secs, zh_secs, band=3, skip_k=0.4, anchor_w=0.15,
                 if ni > n or nj > m:
                     continue
                 if a and b:
-                    if abs(i - j) > band:
+                    if abs(i - j) > _band:
                         continue
                     c = raw(i, a, j, b)
                 elif a:
@@ -530,6 +550,14 @@ def align_sections(en_secs, zh_secs, band=3, skip_k=0.4, anchor_w=0.15,
     out = []
     i, j = n, m
     while (i, j) != (0, 0):
+        # ⚠ 2026-09-19 §6.46 兜底：正常路径下 `_band` 已保证 `(n,m)` 可达。
+        # 但若将来有人再调 OPS / 传了更小的 band，宁可退化成「就近 1:1 回退」
+        # 也不能让整章构建崩在回溯上（崩了就是全章 0 产出，代价远大于几段错配）。
+        if bp[i][j] is None:
+            pi, pj = max(0, i - 1), max(0, j - 1)
+            out.append((list(range(pi, i)), list(range(pj, j))))
+            i, j = pi, pj
+            continue
         pi, pj, a, b = bp[i][j]
         out.append((list(range(pi, pi + a)), list(range(pj, pj + b))))
         i, j = pi, pj

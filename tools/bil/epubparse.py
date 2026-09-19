@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import html as _html
+import os
 import re
 from collections import Counter
 import struct
@@ -402,6 +403,68 @@ _ATTR_SRC_RE = re.compile(
     r"^[^，,。.;；!！?？]{1,40}([,，]\s*\d{3,4}\s*年?|[(（]\s*\d{3,4}\s*[)）])\s*$")
 
 
+# ── 伪标题降级（2026-09-19 §6.47）───────────────────────────────────────
+# 中文译本 epub 里有大量「排版上被标成 h1-h6、其实不是标题」的块：
+#   <h2>12</h2>  <h3>3</h3>  <h3>1</h3>  <h3>d</h3>  <h3>T</h3>  <h3>1.</h3>
+# 来源是页码、公式编号、图注残渣。危害：`split_sections(deep=True)` 会为
+# **每一个** heading 切一刀 → 中文小节数虚增、与英文小节错位 →
+# **该章此后所有段落的配对整体平移**（用户反复报的「错配」真正根因之一）。
+# 实测 ML ch8：中文侧多出 4 个伪标题（12 / 3 / 1 / d），
+# 导致 EN 19 节 vs ZH 12 节、[3] 节起标题完全错位、pair[165..] 全book 平移。
+#
+# ⚠ 判据必须是**结构性的**（铁律 11），不能是中文词表 —— 换本书就冒新词。
+#   这里只用三条与语言无关的结构信号：
+#     ① 纯数字或纯标点           → 页码/编号残渣（`12` `1.` `3.`）
+#     ② 单字符且非 CJK           → 孤立符号（`d` `T` `B`）
+#     ③ 夹在公式段里             → 见下面 _looks_like_formula_fragment
+#   实测「降维」「分类」「前言」「方差」「聚类」等**真**短标题：
+#     前两者前面紧跟「第N章」（章标题第二行）→ 显式豁免；
+#     后三者不在公式上下文 → 不触发 ③。
+_PURE_NUM_HEAD_RE = re.compile(r"^[\d\s\.\-–—:：()（）]+$")
+_CJK_RE = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_CN_CHAPTER_RE = re.compile(r"^第\s*[0-9一二三四五六七八九十百零]+\s*[章篇部节]$")
+# 开关：`BIL_BOGUS_HEAD=0` 关掉本修复（A/B 与排障用；默认开）
+_BOGUS_HEAD_ON = os.environ.get("BIL_BOGUS_HEAD", "1") != "0"
+# 公式上下文：紧邻文本里出现「公式N-M」「Equation」或裸等号，
+# 或紧接一个纯编号段（`（1）` / `(1)`）—— 公式编号常单独成块。
+_FORMULA_CTX_RE = re.compile(r"(?:公式|Equation)\s*\d|=")
+_EQNUM_ONLY_RE = re.compile(r"^[（(]?\s*\d{1,3}\s*[)）]?\s*$")
+
+
+def _is_bogus_heading(text: str, prev_head: str, ctx_before: str,
+                      ctx_after: str) -> tuple[bool, str]:
+    """结构性判定：这个 heading 是不是伪标题？
+
+    :param prev_head: 同文档里**上一个 heading 的文本**（用于豁免章标题第二行）
+    :param ctx_before/ctx_after: 紧邻的纯文本（同文件内前后各 ~120 字）
+    :returns: (是否伪标题, 理由)
+    """
+    t = (text or "").strip()
+    if not t or not _BOGUS_HEAD_ON:
+        return False, ""
+    # 豁免：章标题的第二行（「第8章」+「降维」）。
+    # 这是结构性信号 —— 前一个 heading 是标准「第N章」形态。
+    if _CN_CHAPTER_RE.match(prev_head or ""):
+        return False, ""
+    # ① 纯数字/标点
+    if _PURE_NUM_HEAD_RE.match(t):
+        return True, "纯数字/标点（页码或编号残渣）"
+    # ② 单字符且非 CJK
+    if len(t) == 1 and not _CJK_RE.search(t):
+        return True, "单字符非汉字（孤立符号）"
+    # ③ 短词且夹在公式上下文里。
+    #    ⚠ 必须**看两侧**：`<h3>和</h3>` 的公式证据在**后面**
+    #      （前段「…那么」→ h3「和」→ 后段「（1）」→「y=156400」），
+    #      只看前面会漏（本规则初版就漏了它）。
+    if len(t) <= 3:
+        if _FORMULA_CTX_RE.search(ctx_before or ""):
+            return True, "短词且前邻公式上下文"
+        if _EQNUM_ONLY_RE.match((ctx_after or "").strip()) \
+                or _FORMULA_CTX_RE.search((ctx_after or "")[:40]):
+            return True, "短词且后接公式编号/等式"
+    return False, ""
+
+
 def _fold_head_noise(blocks: list[Block]) -> list[Block]:
     """章首噪音与引语署名（解析层收口，2026-09-16 用户点名 prob ch2 章首）。
 
@@ -419,9 +482,29 @@ def _fold_head_noise(blocks: list[Block]) -> list[Block]:
     first_head = next((b.text.strip() for b in blocks
                        if b.type == "heading" and b.text), "")
     out: list[Block] = []
-    n_sep = n_src = 0
+    n_sep = n_src = n_bogus = 0
+    # ── 伪标题降级（§6.47）：先算出每个 heading 的前后文，再逐块判 ──────
+    # 前后文取的是**同一文档里紧邻的非标题块文本**，用于 ③ 的公式上下文判据。
+    _heads = [i for i, b in enumerate(blocks) if b.type == "heading"]
+    _bogus: dict[int, str] = {}
+    _prev_head = ""
+    for hi in _heads:
+        b = blocks[hi]
+        before = "".join((blocks[j].text or "") for j in range(hi - 1, -1, -1)
+                         if blocks[j].type != "heading")[:120]
+        after = "".join((blocks[j].text or "") for j in range(hi + 1, len(blocks))
+                        if blocks[j].type != "heading")[:120]
+        bad, why = _is_bogus_heading(b.text, _prev_head, before, after)
+        if bad:
+            _bogus[hi] = why
+        _prev_head = b.text or ""
     for i, b in enumerate(blocks):
         t = (b.text or "").strip()
+        if i in _bogus:
+            # 降级为普通段：内容一个不丢，只是不再切小节。
+            b.type = "para"
+            n_bogus += 1
+            continue
         if i < 10 and b.type == "para" and _PAGENUM_RE.match(t):
             n_sep += 1
             continue                       # ① 页码
@@ -436,8 +519,9 @@ def _fold_head_noise(blocks: list[Block]) -> list[Block]:
             n_src += 1
             continue
         out.append(b)
-    if n_sep or n_src:
-        print(f"[解析] 章首清理：丢噪音块 {n_sep} · 署名并入引语 {n_src}")
+    if n_sep or n_src or n_bogus:
+        print(f"[解析] 章首清理：丢噪音块 {n_sep} · 署名并入引语 {n_src}"
+              + (f" · 伪标题降级 {n_bogus}" if n_bogus else ""))
     return out
 
 
