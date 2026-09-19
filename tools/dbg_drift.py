@@ -70,6 +70,10 @@ _IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
 _Z_RE = re.compile(r'class="[^"]*\bzh\b', re.I)
 _E_RE = re.compile(r'class="[^"]*\ben\b', re.I)
 _CAP_ONLY_RE = re.compile(r'class="caption"', re.I)
+# §6.61：图注判定（`class="zh caption"` 这类）。实测 ML 全书 223 个图注、
+# **英文侧 0 个** —— 图注按设计只渲染中文，所以「中文侧有图号、英文侧没有」
+# 不是张冠李戴，是设计使然。
+_CAP_RE = re.compile(r'\bcaption\b', re.I)
 
 _HAN_RE = re.compile(r"[㐀-鿿]")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'\-]+")
@@ -90,6 +94,16 @@ _INT_RE = re.compile(r"(?<![\d.])(\d{2,}|[A-Za-z]\d+)(?!\.?\d)")
 _EQ_RE = re.compile(r"[(（]\s*(\d{1,2}\.\d{1,3})\s*[)）]")
 # 引号内拉丁串（书名/期刊/人名，常被保留原形，但也可能被译 —— 需实测精度）
 _QUOT_RE = re.compile(r"[「『\"“‘(（]([A-Za-z][A-Za-z0-9 .'\-]{3,})[」』\"”’）)]")
+# 「图/表编号」：`图3-4` / `表1-1` / `Figure 3-4` / `Table 2.1`。
+# ⚠ §6.61 实测：**中文侧独有**的图号**不能**算 MISATTR —— 中译本会**自行补**
+#   图号引用（EN `they are not all shown in the screenshot` ↔ ZH「图2-6中没有
+#   全部显示」，EN 原文根本没有编号）。这与代码上方已排除的「公式号」同类
+#   （中译本重编公式号，实测 7.29↔7.30）。
+#   ⇒ 规则是**非对称**的：中文侧独有图号不立罪；英文侧图号缺失**仍算漂移证据**
+#     （英文的 `Figure 3-4` 理应在译文里出现，否则多半是错位）。
+_FIG_RE = re.compile(
+    r"(?:[图表]|Fig(?:ure)?s?\.?|Tables?\.?)\s*(\d{1,2})\s*[-–—.]\s*(\d{1,2})",
+    re.I)
 
 # ⚠ 2026-09-18 实测：**长拉丁词（w:）不能当跨语言信号**。
 # 英文 `Daniel Bernoulli and Laplace` ↔ 中文「丹尼尔·伯努利和拉普拉斯」——
@@ -120,7 +134,8 @@ def _clean(s: str) -> str:
 
 
 class Cell:
-    __slots__ = ("i", "doc", "en", "zh", "sig", "nhan", "nword", "side")
+    __slots__ = ("i", "doc", "en", "zh", "sig", "nhan", "nword", "side",
+                 "zh_cap", "zh_cap_only")
 
     def __init__(self, i, doc):
         self.i = i
@@ -132,6 +147,11 @@ class Cell:
         self.nhan = 0
         self.nword = 0
         self.side = ""
+        # §6.61：图注是 `pair` 的**兄弟节点**（排在 </div> 之后），`_PAIR_RE`
+        # 会把它算进前一对 → 图号 `图N-M` 只出现在 ZH 侧 → 误报 MISATTR。
+        # 这里把图注文本**单独留一份**，`sig` 只从**非图注**文本算。
+        self.zh_cap = ""
+        self.zh_cap_only = False
 
     @property
     def ratio(self) -> float:
@@ -179,6 +199,10 @@ def _sig_of(t: str) -> dict[str, set[str]]:
         "eq": {m.group(1) for m in _EQ_RE.finditer(t)},
         # 长拉丁词（专名）—— 会被音译，默认不用，见 SIG_KINDS 注释
         "word": {x for x in cs if x.startswith("w:")},
+        # §6.61：图/表编号**单列**（不参与 kinds 默认集）。用途：判定 MISATTR 时
+        # 把「中文侧独有的图号」剔掉（见 _FIG_RE 注释）。
+        "fig": {_norm(f"{m.group(1)}.{m.group(2)}")
+                for m in _FIG_RE.finditer(tn)},
     }
 
 
@@ -190,19 +214,31 @@ def parse(html: str) -> list[Cell]:
         inner = m.group(1)
         c = Cell(n, _bucket_of(marks, m.start()))
         n += 1
-        eparts, zparts = [], []
+        eparts, zparts, zcaps = [], [], []
         for k in _KID_RE.finditer(inner):
             s = _kside(k.group(2))
             if not s:
                 continue
-            (eparts if s == "en" else zparts).append(_clean(k.group(3)))
+            if s == "zh" and _CAP_RE.search(k.group(2) or ""):
+                zcaps.append(_clean(k.group(3)))
+            else:
+                (eparts if s == "en" else zparts).append(_clean(k.group(3)))
         c.en = " ".join(x for x in eparts if x)
-        c.zh = " ".join(x for x in zparts if x)
-        c.side = ("en" if eparts else "") + ("zh" if zparts else "")
+        c.zh = " ".join(x for x in zparts + zcaps if x)     # 展示用：含图注
+        c.zh_cap = " ".join(x for x in zcaps if x)
+        c.zh_cap_only = bool(zcaps) and not any(zparts)
+        c.side = ("en" if eparts else "") + ("zh" if (zparts or zcaps) else "")
         for k, v in _sig_of(c.en).items():
             c.sig[("en", k)] = v
-        for k, v in _sig_of(c.zh).items():
+        # ⚠ §6.61：中文侧要**两套信号**，因为图注只在中文侧：
+        #   ("zh", k)  = **不含图注** → 用于判 MISATTR（图号是中译本自己补的，
+        #                算进去就是假警报，实测占 MISATTR 的 57%）
+        #   ("zhc", k) = **含图注**   → 用于判 DRIFT（英文的 `Figure 5-10`
+        #                其译文可能就落在图注里，排除掉会**反过来造出假漂移**）
+        for k, v in _sig_of(" ".join(x for x in zparts if x)).items():
             c.sig[("zh", k)] = v
+        for k, v in _sig_of(c.zh).items():
+            c.sig[("zhc", k)] = v
         c.nhan = len(_HAN_RE.findall(c.zh))
         c.nword = len(_WORD_RE.findall(c.en))
         cells.append(c)
@@ -240,18 +276,25 @@ def judge(cells: list[Cell], win: int = 2, kinds=("num", "int", "quot"),
         nb = [x for x in cells[lo:hi] if x.i != i]
 
         # EN 的信号 → 本对 ZH 没有 → 但邻格 ZH 有  == 漂移
+        # ⚠ §6.61：这一侧用 **含图注** 的中文信号（"zhc"）——英文的 `Figure 5-10`
+        #   译文常常就落在图注里，用不含图注的信号会反过来造出假漂移（实测 6 例）。
         drift: set[str] = set()
         for k in kinds:
-            miss = c.sigs("en", (k,)) - c.sigs("zh", (k,))
+            miss = c.sigs("en", (k,)) - c.sigs("zhc", (k,))
             if miss:
                 for j in nb:
-                    hit = miss & j.sigs("zh", (k,))
+                    hit = miss & j.sigs("zhc", (k,))
                     if hit:
                         drift |= {f"{k}:{x}" for x in hit}
         # ZH 的信号 → 本对 EN 没有 → 但邻格 EN 有  == 张冠李戴
         mis: set[str] = set()
         for k in kinds:
             extra = c.sigs("zh", (k,)) - c.sigs("en", (k,))
+            # §6.61：剔掉「中文侧独有的图/表编号」—— 中译本会自行补图号引用
+            # （EN "the screenshot" ↔ ZH「图2-6」），不是挂错英文。**只剔 ZH 侧**：
+            # 英文侧的图号缺失仍算漂移证据。
+            if k == "num":
+                extra -= c.sig.get(("zh", "fig"), set())
             if extra:
                 for j in nb:
                     hit = extra & j.sigs("en", (k,))
@@ -385,6 +428,12 @@ def main() -> int:
         print(f"  {label.get(k, k):<28} {cnt.get(k, 0):>6}")
     ok = total - len(verdicts)
     print(f"  {'未报（形式+语义都无信号）':<26} {ok:>6}")
+    # §6.61：图注信号已从判定里摘出，这里单列，别让它污染 DRIFT/MISATTR 精度
+    ncap = sum(1 for c in cells if c.zh_cap)
+    ncap_only = sum(1 for c in cells if c.zh_cap_only)
+    if ncap:
+        print(f"  {'（图注已单列，不计入判定）':<26} {ncap:>6}"
+              f"   其中「ZH 侧只有图注」{ncap_only}")
     print("-" * 66)
     print(f"  有信号率 {len(verdicts)/max(1,total)*100:.1f}%   "
           f"（其中 DRIFT+MISATTR 是硬漂移证据）")

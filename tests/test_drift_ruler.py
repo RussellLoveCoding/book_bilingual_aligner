@@ -86,4 +86,44 @@ if FAILS:
     for f in FAILS:
         print("  - " + f)
     sys.exit(1)
-print("✓ 漂移尺子编号抽取：8 项抽取 + 4 项判定，全部通过")
+
+# ---------------------------------------------------------------- ③ 图注（§6.61）
+# 实测：图注是 `pair` 的**兄弟节点**，且**只在中文侧**（ML 全书 223 个，英文侧 0）。
+# 规则必须**方向相关**：
+#   MISATTR（中文侧多出）→ 排除图注（中译本会自行补图号引用）
+#   DRIFT （英文号在中文侧找不到）→ **包含图注**（英文 `Figure 5-10` 的译文
+#                                    常常就落在图注里）
+HTML2 = """<html><body>
+<div class="pair"><p class="en en_original">Each row represents one district.</p>
+<p class="zh zh_transed">每一行代表一个地区（图2-6中没有全部显示）。</p></div>
+<div class="pair"><p class="en en_original">See Figure 2-6 for the histogram.</p>
+<p class="zh zh_transed">见图2-6的直方图。</p></div>
+<div class="pair"><p class="en en_original">See Figure 5-10 for the SVM regression model.</p>
+<p class="zh caption">图5-10：SVM回归模型</p></div>
+<div class="pair"><p class="en en_original">No numbers in this english paragraph at all.</p>
+<p class="zh zh_transed">这段中文提到了3.7这个数，但英文里没有。</p></div>
+<div class="pair"><p class="en en_original">See section 3.7 for details.</p>
+<p class="zh zh_transed">见3.7节。</p></div>
+</body></html>"""
+
+cells2 = D.parse(HTML2)
+v2 = D.judge(cells2, win=2, kinds=("num", "eq", "quot"))
+flag2 = {c.i: k for k, _, c in v2 if k in ("DRIFT", "MISATTR")}
+
+# ① 中文侧独有「图2-6」→ **不许**算张冠李戴（译者自己补的图号）
+if 0 in flag2:
+    FAILS.append(f"图注假警报未消：pair0（中文独有图号 2-6）被报成 {flag2[0]}")
+# ② 英文 `Figure 5-10` 的译文在**图注**里 → **不许**算漂移
+if 2 in flag2:
+    FAILS.append(f"图注译文被误判为漂移：pair2 被报成 {flag2[2]}")
+# ③ 真·中文独有编号（非图/表号）→ **必须**仍报 MISATTR（防修过头）
+if flag2.get(3) != "MISATTR":
+    FAILS.append(f"真张冠李戴漏报：pair3 应为 MISATTR，实得 {flag2.get(3)}")
+
+if FAILS:
+    print(f"✗ 漂移尺子：{len(FAILS)} 项不合格\n")
+    for f in FAILS:
+        print("  - " + f)
+    sys.exit(1)
+
+print("✓ 漂移尺子：8 项抽取 + 4 项判定 + 3 项图注方向规则，全部通过")
