@@ -4338,3 +4338,165 @@ push：**未推**（按你之前的要求，push 由你自己来）
    条件（把「缺中文 pair」纳入送检）。**这是改代码，等你拍板。**
 2. **push** `fbd979e`（你自行执行）。
 3. 若要在别的书上做 A/B 对拍，`BIL_USE_LEXICON=1 sh tools/run_four_par.sh` 即可。
+
+---
+
+## §6.74 本轮交接单（2026-09-19 · `d772bf9`）—— 敏感内容修复：qwen 不可用 + 历史回滚 + ch5 测试材料
+
+### 一、结论先行：qwen3.7-flash 不适合做敏感内容删改修复
+
+用户实测硬证据（system prompt 已带 `CENSORSHIP_NOTICE` 学术声明）：
+
+1. 第 1 段（斯大林相关数字）→ 译出；
+2. 第 2 段（含 `Communist Party`）→ **漏译** `Communist Party`；
+3. 追问「你为啥漏了 Communist Party 没翻译」→ 回「抱歉，我无法回答这个问题」，
+   并报 `DataInspectionFailed: Output data may contain inappropriate content.`
+
+⇒ **漏译 + 拒答 + 审查拦截**三连。用户定论：「不要搞了」。
+本项目已停止在 qwen 上做敏感内容修复。
+
+> **★ 我的误判教训**：曾用「斯大林 681,692 人处决」纯数字段测 qwen，它翻出来了，
+> 我据此下结论「qwen 老实、能干这活」。**错因**：该样本不涉 Party，根本没触发审查。
+> 评估模型能否处理审查边界，**必须挑最能触发边界的样本**
+> （本例 = 含 `Communist Party` 的段，即 EN-004）。
+
+### 二、代码：v5/v6 全部回退，历史已清干净
+
+v5/v6 做过什么（现已全部不存在）：
+
+- **v5**：`apply_error_repair` 入口拆两级，把「缺中文 pair」纳入送检 + 闸门 A/B + `only_en_scan`
+- **v6**：`todo_c`/`todo_m` 分离 + `screen_censorship` 二次专审 + `tools/run_nexus_censor.sh`
+
+回滚过程（**关键**）：
+
+- 先按用户要求 revert → `5d608bc`
+- 用户再要求「回退到 `fd24ec9`，把新的内容全删掉」
+- **但 `fd24ec9` 的树里含 v5** —— 因为 `3c952ff`(v5) 是它的**祖先**。
+  `git diff --stat 5df19a9 fd24ec9` 证明：
+  `pipeline.py +65` / `tests/test_censor_only_en.py +172` / `run_book.py +4`
+  ⇒ 直接跳过去会**把 v5 复活**
+- 正确落点 = **`5df19a9`（v5 之前那个）** + 捡回 `.gitignore` 的 `output/` 规则
+
+最终历史：
+
+```
+d772bf9  chore: gitignore 忽略 output/          ← HEAD
+5df19a9  §6.73 本轮交接单
+fbd979e  §6.68 USE_LEXICON 默认改 0 + webui 口径对齐 CLI
+31b10c7  §6.67-6.72 nexus 审查：跳节算子修复 + 两把新尺子
+```
+
+**已消失**：`3c952ff`(v5 代码)、`83ac931`+`d066d90`+`bf12cbb`(§6.74 三篇反复自我推翻的复盘)、
+`fd24ec9`、`5d608bc`(revert)
+
+验证结果：
+
+- `only_en_scan` / `screen_censorship` / `todo_m` 在 `pipeline.py`+`llm.py` **0 命中**
+- `tests/test_censor_only_en.py`、`tools/run_nexus_censor.sh` 不存在
+- `docs/HANDOFF.md` 中旧的 `6.74` **0 命中**（回到 §6.73）
+- unittest ✅ 全通过
+- `output/` 8 个成品完好，nexus sha256 `08a9407918c86d5a`
+
+备份 tag：**`backup/before-reset-20260919` → `5d608bc`**（要反悔随时可回滚）
+
+### 三、★ 铁律 13 第 5 次 —— 新变种：`git reset --hard` 也会清 ref
+
+现象：`git reset --hard 5df19a9` 打印 `HEAD is now at 5df19a9`、rc=0，
+但 `.git/refs/heads/feat/` **整个目录消失**：
+
+- `git rev-parse --short HEAD` → 吐 `0`
+- `git rev-parse HEAD` → `fatal: ambiguous argument 'HEAD'`
+- 随后的 commit `d772bf9` 同样中招
+
+**结论：铁律 13 不止于 commit，`reset` 同样中招。**
+
+修法不变：
+
+```
+mkdir -p .git/refs/heads/feat
+printf '%s\n' <full-sha> > .git/refs/heads/feat/unified-immersive
+sync
+```
+
+再用三层核实：`git cat-file -t HEAD` / `git for-each-ref` / `.git/logs/HEAD`。
+
+### 四、澄清：代码里从来没有 `--repair` 参数
+
+用户质疑「原来已经有一个 AI 修复审查内容的大哥，你还加个 --repair 参数干嘛」。核实：
+
+- `docs/HANDOFF.md` grep `--repair` → **0 命中**
+- `tools/run_book.py` 参数全为原版，第 97 行 `--ai-repair-censor` **原版就有**
+- `tools/bil/llm.py` 原版链路完整：
+  - `CENSORSHIP_NOTICE`（44 行）学术声明
+  - `flag_errors`（1008）判 skew/missing/offset/censor，1046 行拼声明
+  - `repair_censored`（1092）补中文，1107 行拼声明
+- v6 只改过 `--ai-repair-censor` 的 help 文案，已随 revert 消失
+
+### 五、《智人之上》第 5 章测试材料已抽出 → `output/ch5_test/`
+
+供手动换模型测试用：
+
+| 文件 | 内容 |
+|---|---|
+| `en_ch5.txt` | 英文 Chapter 5，**214 段** |
+| `zh_ch5.txt` | 中译本第五章《抉择：民主与极权制度简史》，**306 段** |
+| `敏感测试点.md` | 英文侧命中敏感词的 **130 段** + 中文侧词频 |
+| `README.md` | 最小复现集 + 学术声明原文 + 判定标准 |
+
+关键定位（下次直接复用）：
+
+- **EN-004**（`en_ch5.txt` 第 10 行）= qwen 漏译 `Communist Party` 那段
+  （Roman Senate / Soviet judicial system / Stalinist show trials）
+- **EN-156**（第 314 行）= 帕夫利克·莫罗佐夫段，中文侧 `莫罗佐夫` **0 次**、
+  `帕夫利克` **0 次** ⇒ **中译本整段删除**
+
+中文侧词频：苏联 97 / 斯大林 41 / 纳粹 23 / 尼禄 16 / 希特勒 7 / 共产党 6 /
+元老院 6 / 苏共 1 / 古拉格 1 / **莫罗佐夫 0 / 帕夫利克 0 / 大清洗 0**
+
+源 epub：`uploads/en_en.epub` = Nexus，`uploads/zh_zh.epub` = 智人之上；
+`uploads/en_en_chapter5.epub`(Chapter 5) 与 `uploads/zh_zh_chapter5.epub`(第五章)
+已存在且完整（英文 214 段/15.1 万字符，中文 306 段/7.3 万字）。
+
+**换模型只需改 `.env` 两行**：`LLM_BASE_URL` + `LLM_MODEL`。
+跑流水线必须显式带 `--llm --ai-repair-censor`，且**不要**带 `--skip-flag`
+（`run_book.py:216` 会整步短路）。
+
+### 六、diag/ 清理：342M → 264M
+
+已删：`_probekey_chapter9~13`、`ml_ch3`/`ml_ch3dbg`/`ml_ch5`/`ml_ch8`/`ml_6pt`、
+`nexus_v70`/`nexus_v72`/`nexus_v73_censor`/`nexus_fix`、`_check_v62.html`、
+`_check_ml_v62.html`、`shots/`、`webshot/`、`sample_uni.html`、`ab_unified.html`、
+散落 png、`_snip.html`/`_snip_win.html`/`_snippet_code.html`、`zoom_uni_*.html`
+
+保留（成品源 + 验收材料）：`ml_v72` 104M / `样章` 78M / `prob_v72` 50M /
+`review` 13M / `think2_v72` 12M / `nexus_orig` 6.8M +
+`统一架构-六点验收.html`、`统一架构-样章.html`、`sample_legacy.html` +
+`refine_review_ch2.md`、`截图对账_20260918.md`
+
+> 注：`nexus_v73_censor/` 与 `diag/_ml_uni.html`(180B) 被 safe-delete 的
+> genie-trash fail-closed / bulk-guard stat 失败挡下，删不掉，留着无害。
+
+### 七、仓库状态与 push
+
+```
+HEAD = d772bf9  chore: gitignore 忽略 output/
+       5df19a9  §6.73 本轮交接单
+       fbd979e  §6.68
+       31b10c7  §6.67-6.72
+分支：feat/unified-immersive（当前）, main
+工作区：干净
+origin/feat/unified-immersive = bf12cbb（本地缓存值，push 前应先 fetch 确认）
+```
+
+**已分叉**：远程独有 4 个（`3c952ff` / `83ac931` / `d066d90` / `bf12cbb`），
+本地独有 1 个（`d772bf9`）。普通 push 会被拒，**需要 force**。
+
+### 八、下一步
+
+1. **push**（你自行执行）：先 `git fetch origin`，
+   再 `git push --force-with-lease origin feat/unified-immersive`。
+   建议同时推备份 tag：`git push origin backup/before-reset-20260919`
+2. **换模型重做敏感内容修复** —— 等你指定模型（deepseek / GLM / GPT-4o / 本地 Qwen）。
+   换后**必须**用 EN-004 / EN-156 重测，不许再拿纯数字段下结论。
+3. `diag/` 若还要再瘦身，需删 `ml_v72`/`prob_v72`/`think2_v72`/`样章`
+   （`output/` 已有副本），但会失去回滚余量 —— **等你拍板**。
