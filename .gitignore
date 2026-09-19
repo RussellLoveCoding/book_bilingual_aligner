@@ -37,6 +37,9 @@ review_ch1.md
 # 诊断样章 / 成品（可由 run_book 重新生成，二进制体积大不入库）
 diag/
 
+# 成品汇总输出（从 diag/*_vNN 复制而来，二进制体积大不入库）
+output/
+
 # 评测/实验的中间产物（T1 估算、T2 盲筛、gold 真值快照 —— 证据留档，不入库）
 tests/t1/
 tests/t2/
