@@ -159,9 +159,19 @@ def _norm(x: str) -> str:
 def _sig_of(t: str) -> dict[str, set[str]]:
     t = t or ""
     cs = content_signals(t)
+    # ⚠ 2026-09-19 实测：编号抽取前必须**吃掉「数字类字符之间」的空白**。
+    #   成因：`_clean` 把标记换成空格，而中文侧的公式号是**逐字符 span 包裹**的，
+    #   于是 `公式 4-10` 在文本里成了 `公 式 4 - 1 0` —— 不光分隔符被切开，
+    #   **多位数 `10` 也被切成 `1 0`**。旧正则只要求编号中间无空白 → 抽不到；
+    #   只吃「数字↔分隔符」的空白也不够（会抽出错的 `4.1`，照样误报）。
+    #   实测（ML 全书，num,eq,quot）：DRIFT 103 → 26，**77 格（75%）是假警报**。
+    #   做法刻意**只合并 `[0-9.\-–—]` 之间**的空白，不做全量去空白
+    #   （全量会把 `Figure 3-5. The` 的句号与下一句粘成假编号）；两侧同时生效
+    #   （只放宽一侧会凭空造出 MISATTR 假警报）。
+    tn = re.sub(r"(?<=[0-9.\-–—])\s+(?=[0-9.\-–—])", "", t)
     return {
         "num": {_norm(m.group(1) or m.group(2))
-                for m in _NUM_RE.finditer(t)},
+                for m in _NUM_RE.finditer(tn)},
         "int": {m.group(1) for m in _INT_RE.finditer(t)},
         "quot": {"q:" + m.group(1).strip().lower()
                  for m in _QUOT_RE.finditer(t)
