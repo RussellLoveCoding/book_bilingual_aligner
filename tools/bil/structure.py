@@ -250,11 +250,37 @@ def map_chapters(en_docs: dict[str, list], zh_docs: dict[str, list],
     zh_by_key = {}
     for p, k in zh_keys.items():
         zh_by_key.setdefault((k.kind, k.num), p)
+
+    # §6.56（2026-09-19）：**other 桶内按文档顺序 1:1 配对**，不许挤成一坨。
+    #
+    # 原实现 `zh_by_key.setdefault((kind,num), p)` 一个键只留**一个**中文文档，
+    # 而 `other` = 「认不出章号」的文档（前言/附录/版本页…）全部是 ("other",0)。
+    # 结果：英文的 O'Reilly 页 / Preface / 附录 A~D / Colophon **7 个章全部
+    # 指向中文书第一页**（ML 实测：ch01、ch21~24 每章都挂着同一段
+    # O'Reilly 宣传语，真实中文 0 段，bookscan 却报「缺中文 0」—— 指标好≠内容对）。
+    #
+    # 对认不出章号的文档，**文档顺序就是唯一的结构信号**（铁律 11：用结构信号，
+    # 不用词表去猜「附录」长什么样）。两侧按出现次序依次配对，配不完的英文
+    # 宁可空着，也不要挂错中文。
+    #
+    # 影响面：只改 ①「章号键匹配」这一支。`_map_chapters_sequential`（顺序兜底）
+    # 根本不读这里的 `pairs`（形参 `old_pairs` 从未使用），走 seq 的书不受影响
+    # —— 实测 prob / think2 都是 seq 来源，ML 才是 key 来源。
+    _OTHER = ("other", 0)
+    zh_other_seq = [p for p, k in zh_keys.items() if (k.kind, k.num) == _OTHER]
+    _other_i = 0
+
     pairs = []
     for p, k in en_keys.items():
         if k.kind == "skip":
             continue
-        zp = zh_by_key.get((k.kind, k.num), "")
+        if (k.kind, k.num) == _OTHER:
+            # 依次取用；用完了就留空（比挂错中文好）
+            zp = zh_other_seq[_other_i] if _other_i < len(zh_other_seq) else ""
+            if zp:
+                _other_i += 1
+        else:
+            zp = zh_by_key.get((k.kind, k.num), "")
         label = f"{k.kind}{k.num if k.num > 0 else ''}"
         en_title = next((b.text for b in en_docs[p] if b.type == "heading"), "")
         zh_title = next((b.text for b in zh_docs[zp] if b.type == "heading"), "") if zp else ""
