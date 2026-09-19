@@ -2107,14 +2107,27 @@ def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off,
     _peel = peel or set()
     _peel_en = peel_en or set()
     g2la = {}
-    for li, i in enumerate(ei):
+    # ⚠⚠ 2026-09-19 §6.66 修：`local0` 原来每个小节都**重算**
+    #   `sum(len(en_secs[x].paras) for x in ei[:li])` —— 那是「前面所有
+    #   小节的**全部** paras 数」，**没有扣掉被 peel 的段**；而循环体里
+    #   又 `if base + k in _peel_en: continue` 跳过了 peel 段。
+    #   两者不自洽 ⇒ 只要**前面**的小节有 peel 段，`local0` 初值就偏大，
+    #   后面小节的 `la` 一路虚高，最终超出 `a_paras`（它已被 peel 裁剪）
+    #   → `_metrics` 抛 IndexError → `_run_parallel` 吞掉 → **整章从成品消失**
+    #   （2026-09-19 实测 ML chapter2：`en=[66](共 66)`、26 章只出 25 章）。
+    #   触发条件：`peel_en`（英文侧摘出的短定义段）非空 **且** 它落在
+    #   第一个小节之后。`_promote_split_headings` 升格 213 个小节标题后
+    #   小节切分变细、peel 集合随之变化 → 把这个**既有洞**暴露出来。
+    #   修法：`local0` 改成**单调节器**，与循环体用同一套「跳过 peel」口径。
+    local0 = 0
+    for i in ei:
         base = en_off[i]
-        local0 = sum(len(en_secs[x].paras) for x in ei[:li])
         for k in range(len(en_secs[i].paras)):
             if base + k in _peel_en:
                 continue
             g2la[base + k] = local0
             local0 += 1
+    n_a = local0                      # 裁剪后英文段数（= len(a_paras)）
     g2lb, b_base = {}, 0
     for j in zi:
         base = zh_off[j]
@@ -2143,6 +2156,17 @@ def _pairs_from_map(llm_map, ei, zi, en_secs, zh_secs, en_off, zh_off,
     for z in range(n_b):                            # 尾部落单中文
         if z not in claimed:
             pairs.append(A.Pair(en=[], zh=[z]))
+    # 收口自检（§6.66）：这里的下标是**局部段序**，必须落在裁剪后的
+    # 段数范围内。越界说明 `g2la`/`g2lb` 的构造口径与调用方的
+    # `a_paras`/`b_paras` 不一致 —— 让它**在这里炸**，而不是等到
+    # `_metrics` 才炸（那里已经跨了一层调用，现场全丢）。
+    for _p in pairs:
+        if any(not (0 <= x < n_a) for x in _p.en):
+            raise IndexError(
+                f"_pairs_from_map：en 下标越界 {_p.en}（裁剪后英文段 {n_a}）")
+        if any(not (0 <= x < n_b) for x in _p.zh):
+            raise IndexError(
+                f"_pairs_from_map：zh 下标越界 {_p.zh}（裁剪后中文段 {n_b}）")
     return pairs
 
 
@@ -2357,6 +2381,26 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
 
     zh_fig_i = 0
     zh_claims = [False] * len(zh_pos)     # 已被认领的中文图（避免一章内重复使用）
+    # ── L1 对译词表：**暂不接入**（§6.69，2026-09-19 实测否决）────────────
+    # 假设：`align.USE_LEXICON`/`LEX_W` 声明了但生产路径从未传 `lex` 进来
+    # （`build_lexicon` 只在 bench_align.py / bench_mac.py 被调用），
+    # 段落对齐实际只有「长度 + 数字」两个信号。猜想接上词表能修 nexus ch5
+    # Kulaks 的跳段错位（1:0 代价正比于英文段长度 → DP 偏爱跳最短的那段，
+    # 而「译本删了哪一段」与长度无关）。
+    #
+    # 实测（四本全书 v66 vs v65）：
+    #   * **隔离单元实验**里确实修对了：`EN[5]↔ZH[5]`（emass 174.7 vs 174.0，
+    #     近乎完美）保住，词表能看见「Altogether↔总共」「kulaks↔富农」；
+    #   * **但真实构建路径的单元是 `EN[13,14] ↔ ZH[13]`（合并后 20E/8Z）**，
+    #     接入词表后 ZH 反而**多滑一格**：v65 里 `Kulak status…` 正确拿到
+    #     `就像10岁的"男巫"…`，v66 变成 `Altogether…` 拿走它、`Kulak status…`
+    #     拿到下一节的中文 → **净退化**。
+    #   * 全书指标混合：nexus gapmisplace 2→1（好）、ml 1→2（坏）、
+    #     prob/think2 不变；但 nexus 的 drift A（缺中文）19→20、ml 的
+    #     drift A 1378→1478、qa 类问题 ml 272→193（好）—— **方向不一致**。
+    # 结论：**不接入**。留此注释是为了记录「查过、有证据、已否决」，
+    # 避免下次重复踩坑。若要再试，必须先解决「合并单元内部 20E/8Z 的
+    # 跳段定位」这个更底层的问题（见 §6.68）。
     # ── 全章中文段序 -> (小节, pair 下标) 索引 ──────────────────────────
     # 供「中文多出来的图」按**原位**落点（见下方 leftover_zh 的注释）。
     # 两条列表同序（按段序升序），用二分查找取最近锚点。
@@ -2588,6 +2632,9 @@ def process_chapter(en_blocks, zh_blocks, key="", llm=None,
                     _metrics(p, a_paras, b_paras)
                 n_fix = 0
             else:
+                # ⚠ 2026-09-19 §6.69：这里**不传 lex**。试过接 L1 对译词表，
+                # 全书四本 A/B 显示净退化（nexus Kulaks 段 ZH 多滑一格），
+                # 详见本函数上方 `_CH_LEX` 段的完整实测记录。留原样。
                 pairs = A.align_section(a_paras, b_paras, k=K)
                 pairs, n_fix = A.fix_skew(pairs, a_paras, b_paras, K,
                                           r_lo=max(1.2, r_lo), r_hi=r_hi)

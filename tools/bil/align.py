@@ -397,6 +397,80 @@ def visual_of_sec(sec):
 
 
 GAP = 1.7          # 跳过一段的代价系数（相对平均段长）
+# ★ 2026-09-19 §6.70：**跳段代价是否该正比于段长**？
+#
+# 现状 `gap_cost = GAP * emass[i] / avg` —— **正比于被跳段的长度**。
+# 直接后果：DP 天生偏爱「跳最短的那段」。而「译者删了哪一段」与长度
+# 毫无关系 —— 当译本删掉的恰是**较长**的那段时，DP 会宁可拆掉一个
+# **近乎完美**的 1:1 配对去换那点折扣。
+#
+# nexus ch5 `The Kulaks` 单元实测（10E/8Z）：
+#   EN[6] `The absurdity…Streletsky family`（**译本整段删除**，中文源书
+#         「斯特列」0 次）—— 正确解应跳它；
+#   EN[7] `Altogether, some five million kulaks…` ↔ ZH[6] `时至1933年，
+#         总共约有500万富农…枪决的户主高达3万人` —— 语义完全对应。
+#   但 DP 选了把 gap 放 EN[5]：
+#     正确 (EN5↔ZH5 + gap@EN6) = 0.0038 + 2.0674 = 2.0711
+#     错误 (gap@EN5  + EN6↔ZH5) = 1.5785 + 0.2913 = 1.8698  ← 更便宜 0.20
+#   其中 `EN[5]↔ZH[5]` 的 emass 174.7 vs zmass 174.0（差 0.4%）—— 近乎
+#   完美，却因为 gap 折扣被牺牲。
+#
+# ── 备选模型 `c`（`BIL_GAP_MODEL=c`）：**实测已否决，勿再上线** ──
+#   gap_cost = GAP_CONST(1.2) + GAP_MASS(0.5) * mass / avg
+# 直觉：「跳一段」首先是一个**计数**事件（少了一个段落），其次才与
+# 质量有关。给一个下限常数，本意是让「跳长段」不再比「跳短段」便宜太多。
+#
+# ❌ 四本全书 A/B（v65 基线 ↔ v67c）实测**净退化**，硬证据如下：
+#
+#   1) **中文凭空蒸发**（最致命，任何对齐改动都不许丢正文）：
+#      统计成品里 `zh` 侧汉字总数（单调质量指标 —— 每丢一个汉字，
+#      读者就少读一个字）：
+#         nexus   230572 → 230572   （持平）
+#         ml      300555 → 295008   （**−5547 字**）
+#         think2  251352 → 251283   （−69 字）
+#         prob    426419 → 419996   （**−6423 字**）
+#      ⚠ 注意 prob 的 `en_only` 反而是 **768 → 747（减少）**，中文却少
+#      了 6.4k —— 说明 `c` **不是**把配对拆成「英文独有」，而是把中文
+#      **整段吞掉**。比错位更糟：错位至少两边都在，吞掉是不可逆丢失。
+#
+#   2) **参考文献区被系统性剥离中文**（定位到的病灶）：
+#      prob 的「参考文献」小节是「英文条目 + 中文译注」**物理交错**的。
+#      v65 正确保住（`Aczél, J. (1966)` / `Aczél, J. (1987)` /
+#      `Aitken, G. A. (1892)` 都是 `enzh` 双侧），v67c 下：
+#         `Aczél, J. (1966)` → **整个元素消失**；
+#         `Aczél, J. (1987)` → 退化成 `en`，中文译注丢失；
+#         `Aitken, G. A. (1892)` → 退化成 `en`，中文译注丢失。
+#      常数项抹平了「跳短引注」与「跳长引注」的差别 ⇒ DP 在条目流里
+#      疯狂跳段，把中文译注挤掉。
+#
+#   3) 人眼级门禁 `dbg_qa` 类问题数暴增：
+#         prob 37 → **206**（`×3 侧=en` 从 7 → 56，`×4 侧=en` 从 1 → 28）
+#         ml   1 → 2（bookscan 缺中文），1 → 3（gapmisplace）
+#      仅 `drift` 的 B/C/A 数下降 —— 但 drift 是**编号锚点**尺子
+#      （nexus 覆盖率仅 27.4%，纯散文看不见），属于「指标好看」而非改对。
+#
+#   结论：`drift` 局部变好换不来「正文不丢」这条底线。默认**保持 mass**。
+#   若将来仍想解决「跳长段太便宜」，方向应是**让 gap 代价与段长脱钩但
+#   不设下限**（如直接常数 `GAP`、或按「跳的是不是语义完整段落」），
+#   而不是「常数 + 质量项」；且必须先过「中文汉字总数不下降」这条一票
+#   否决线。详见 docs/HANDOFF.md §6.70。
+GAP_MODEL = os.environ.get("BIL_GAP_MODEL", "mass").lower()
+GAP_CONST = float(os.environ.get("BIL_GAP_CONST", "1.2") or 1.2)
+GAP_MASS = float(os.environ.get("BIL_GAP_MASS", "0.5") or 0.5)
+
+
+def gap_cost(mass: float, avg: float) -> float:
+    """单侧跳段（1:0 / 0:1）的代价。
+
+    `mass` 是被跳一侧的质量（emass 或 zmass）。
+    * `mass`（默认）：`GAP * mass / avg` —— 历史行为，纯质量比例。
+    * `c`：`GAP_CONST + GAP_MASS * mass / avg` —— 常数 + 小质量项。
+    """
+    if avg <= 0:
+        return GAP
+    if GAP_MODEL == "c":
+        return GAP_CONST + GAP_MASS * mass / avg
+    return GAP * mass / avg
 ANCHOR = -0.45     # 每个共享数字的奖励
 ANCHOR_CAP = -1.2
 # ★ 2026-09-18（§6.29）：**非 1:1 合并的固定代价**。
@@ -456,9 +530,9 @@ def _pair_raw_cost(p: Pair, ew, zc, k: float, avg: float) -> float:
     eM = sum(ew[i] * k for i in p.en)
     zM = sum(zc[j] for j in p.zh)
     if not p.zh:
-        return GAP * eM / avg
+        return gap_cost(eM, avg)
     if not p.en:
-        return GAP * zM / avg
+        return gap_cost(zM, avg)
     return abs(eM - zM) / avg + 1.2 * max(0.0, abs(math.log((zM + 1) / (eM + 1))) - 0.35)
 
 
@@ -518,9 +592,25 @@ def align_sections(en_secs, zh_secs, band=3, skip_k=0.4, anchor_w=0.15,
     bp = [[None] * (m + 1) for _ in range(n + 1)]
     dp[0][0] = 0.0
     # 合并算子放宽到最多 `MERGE_CAP` 节（原因见模块顶部 MERGE_CAP 注释）。
+    #
+    # ⚠⚠ 2026-09-19 §6.67：**合并算子必须与跳节算子共存**。
+    #   本条上一版（commit 8204afd，统一架构推全量那次）写成
+    #       OPS = [(1,1)] + [(a,1) …] + [(1,b) …]
+    #   把旧集里的 `(1,0)` / `(0,1)` **静默丢掉了** —— 于是整段
+    #   `elif a:` / `else:` 跳节分支、`skip_cost()`、`skip_k=0.4`、
+    #   `absolute=True` 全部变成**死代码**，函数 docstring 里
+    #   「允许跳节（1:0 / 0:1）」成了假话。
+    #
+    #   后果（nexus ch5 实测，2026-09-19）：中译本删掉了英文的
+    #   `One Big Happy Soviet Family` 整节（含斯大林笑话），英文 19 节 /
+    #   中文 18 节。DP 无法跳节 → 只能把 EN[14,15] 并成一节去配 ZH[14]
+    #   （代价 11.005），而正确解「跳 EN14 + EN[15]↔ZH[14]」只要 9.702。
+    #   合并把 ZH[14] 的真正文挤到错位槽位 → **该节起整节段落错位 3~4 格**，
+    #   而它**不含编号**，`dbg_drift` 的编号尺子完全看不见（报 DRIFT 0）。
     _MM = MERGE_CAP
     OPS = [(1, 1)] + [(a, 1) for a in range(2, _MM + 1)] \
-        + [(1, b) for b in range(2, _MM + 1)]
+        + [(1, b) for b in range(2, _MM + 1)] \
+        + [(1, 0), (0, 1)]           # ← 跳节：一侧独有的小节（译本删节/多出）
     # ⚠ 2026-09-19 §6.46：`band`（旧默认 2）是「1:1 对角线带宽」的老约束，
     # 它假设跨节约等于 1:1。放宽 OPS 后这一步会**反噬**：走一步 `(6,1)`
     # 就让 `i-j` 跳 5，下一格 `abs(i-j) > band` 直接被判死 → `bp` 大量留
@@ -1060,13 +1150,13 @@ def align_section(en_ps: Sequence, zh_ps: Sequence,
         if a == 0 and b == 0:
             return 0.0
         if a == 0:
-            return GAP * sum(zmass[j:j + b]) / avg
+            return gap_cost(sum(zmass[j:j + b]), avg)
         if b == 0:
-            return GAP * sum(emass[i:i + a]) / avg
+            return gap_cost(sum(emass[i:i + a]), avg)
         # §6.57：英文侧**全是代码块** → 不许消耗中文段。
         # 挂上去的是图注 / 代码约定说明 / 正文，全都是别的段落该用的中文。
         if a > 0 and all(en_is_code[i:i + a]):
-            return GAP * sum(emass[i:i + a]) / avg + CODE_NOZH
+            return gap_cost(sum(emass[i:i + a]), avg) + CODE_NOZH
         eM = sum(emass[i:i + a])
         zM = sum(zmass[j:j + b])
         cost = abs(eM - zM) / avg

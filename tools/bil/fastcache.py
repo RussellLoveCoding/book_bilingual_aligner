@@ -19,7 +19,19 @@ import json
 import os
 from pathlib import Path
 
-_V = 36  # v36（2026-09-19 §6.51）：**`_sane_section_map` 的 AND 洞**。
+_V = 36  # v36（2026-09-19 §6.66）：**`_pairs_from_map` 英文侧下标口径**（pipeline 层，不进缓存键）。
+         #     `_pairs_from_map` 造 `g2la` 时 `local0` 每节重算
+         #     `sum(len(en_secs[x].paras) for x in ei[:li])` —— **不扣 peel**，
+         #     而循环体 `if base + k in _peel_en: continue` **跳过 peel**。
+         #     两口径不自洽 ⇒ 只要**非首位小节**里有 peel 段，后面小节的
+         #     `la` 整体虚高，超出 `len(a_paras)`（已被 peel 裁剪）⇒
+         #     `_metrics` 抛 IndexError ⇒ `_run_parallel` 吞掉 ⇒ **整章消失**。
+         #     实测 ML chapter2：`en=[66](共 66)`，26 章只出 25 章，构建被拒。
+         #     修法：`local0` 改**单调节器**（与循环体同口径）+ 返回前**收口自检**。
+         #     单测 `tests/test_pairs_from_map_off.py` 反向验证有牙（回退→3 项报红）。
+         #     ⚠ 同轮试过的「编号型小节标题升格」**已回退** —— 它让 DRIFT+MISATTR
+         #     从 41 涨到 57（层级猜测引入新的两侧不对称，比不升更糟）。
+_V_prev = 36  # v36（2026-09-19 §6.51）：**`_sane_section_map` 的 AND 洞**。
          #     原判据 `n_en > floor **and** n_zh > floor` —— **AND 是错的**，
          #     它放过了最该拦的畸形：一侧极胖、另一侧极瘦。
          #     实测 `_sane_section_map([([0],[0])], EN 5 段, ZH 400 段)`
