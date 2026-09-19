@@ -3318,3 +3318,66 @@ def _is_code_block(b) -> bool:
 - `tools/run_one_uni.sh <书名> <英> <中> <章key> <输出目录>` —— 单章（全量日志）
 - `tools/gates_uni.sh <产物目录>…` —— 通用四项门禁
 
+
+---
+
+## §6.55（2026-09-19）ML 全书那本是 legacy 建的 —— 交付表造假，已重建
+
+### 现象
+交付表里写着「ML 全书 4853 对 / 待补 1630 / 门禁全绿」，看着很漂亮。
+去查 `diag/ml_full` 的 DOM，第一个 `pair` 是：
+
+```html
+<div class="pair"><p class="zh zh_transed">…中文…</p><p class="en en_original">…英文…</p></div>
+```
+
+**ZH 在 EN 之前** —— 而统一架构的定义就是「英文骨架在前、译文紧随」，不可能长这样。
+
+### 判定（先验尺，不猜）
+`build.py` 里 `_reorder_pairs` 是唯一咽喉（2882 行无条件调用），内部按 `BIL_ARCH` 分叉：
+
+| 模式 | 代码位置 | 输出 |
+|---|---|---|
+| legacy | `build.py:3190` `zh_k + rest` | `ZH, EN`（提示框标签还被挤到中间） |
+| unified | `build.py:3151` `labels + ens + others + zhs` | `L, EN, …, ZH` |
+
+直接喂样本给 `_reorder_pairs` 实测（不是读代码推的）：
+
+```
+BIL_ARCH=None      → <p zh><p en>              legacy
+BIL_ARCH=unified   → <p en><p zh>              unified
+带 Note 标签 legacy → <p zh><h6 box-label><p en>   ← 标签卡中间
+带 Note 标签 unified→ <h6 box-label><p en><p zh>   ← 标签在最上
+```
+
+`diag/ml_full` 是 `ZH,EN` ⇒ **legacy**。原因：它 04:19 就建完了，
+而统一入口 `tools/run_full_uni.sh` **10:34 才写出来**，那次根本没走统一路径。
+prob / think2 建于 10:35 / 10:36，在脚本之后 ⇒ 是真的 unified（已复验 en 在前 100% / 99.85%）。
+
+### 教训（写进流程）
+**「产物是不是这条路建的」不能靠记忆，只能靠产物自身的指纹。**
+判据 = `pair` 内 EN/ZH 的 DOM 次序（legacy `ZH,EN` / unified `EN,ZH`），
+一行就能查：
+
+```bash
+grep -o 'class="pair"><p class="[a-z]*' <成品.html> | head -3
+```
+
+已把这条固化进 `tools/gates_uni.sh` 的 `dbg_order`（统一架构下「en 在前」应 ≈100%）。
+
+### 处置
+- 用 unified 重建 ML → **`diag/ml_full_uni`**（17 秒，缓存命中，AI补译 0）
+  4853 对 / 命中中文 3230 / 待补 1623；bookscan 0/0/**0**；order **en 在前 99.91%**。
+- 旧 `diag/ml_full` **保留**（legacy 对照样本，别删）。
+- 设计文档 §9 的表格已更正并标注这条事故。
+
+### 顺带查清的两个"假警报"（都是 §6.16(3) 的功劳）
+1. **「789 个 `<pre>` 里有 2 个含汉字」** → 一个是成品头部我自己注入的 CSS
+   `<style>`（里面是中文注释），一个是**英文原书本来就写了**
+   `["Café","Coffee","caffè","咖啡"]`。真实漏网 **0**。
+2. **「266 个提示框里 13 个标签后紧跟中文」** → 按 `build.py:3148`，
+   `labels + zhs` 只在 `not ens` 时出现，即**英文侧本来就没有对应段落**，
+   属待补范畴，不是排序 bug。
+
+### 回归
+`regress.py` 三本无变化；单测 125 例全绿；prob / think2 门禁重跑仍全绿。

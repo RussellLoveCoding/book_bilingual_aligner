@@ -109,3 +109,11 @@ bash tools/_run.sh dbg_eqcheck.py <成品.html>   # exit 0 = 全绿（张数守�
     同位置有没有登记标题（`en_heads_at`）。
 12. **`dbg_qa` 类数 +1 要先跑「多版本逐项 diff」再定性**（2026-09-18 §6.36）：
     可能是既有缺陷被新内容暴露（相位移动），不是本轮引入。别急着改代码。
+13. **commit 后必须 `git log --oneline -1` 复核**（2026-09-19）：本机实测
+    `git commit` 退出码 0，但 `.git/refs/heads/<branch>` **没落盘**（沙箱拦了
+    `.git/refs` 写入）→ 随后 `git log` 报「does not have any commits yet」、
+    `git branch -a` 返回空、`git status` 把所有文件显示成 `A`（看着像没提交）。
+    `git update-ref` 也 rc=0 但无效。**对象库是完好的，别 gc、别重建仓库。**
+    恢复：① `cat .git/logs/refs/heads/<branch>` 取最后那个 SHA；
+    ② `git cat-file -t <sha>` 校验（应输出 `commit`）；
+    ③ 直接用编辑器写 `.git/refs/heads/<branch>`（内容 = 40 位 SHA + 换行）。
